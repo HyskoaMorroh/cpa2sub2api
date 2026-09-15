@@ -1,0 +1,21 @@
+# CPA2SUB2API - Sub2API连接配置
+{
+  "sub2api_base_url": "",
+  "sub2api_admin_key": "",
+  "cpa_base_url": "",
+  "cpa_management_key": "",
+  "import_workers": 4,
+  "test_plan_workers": 8,
+  "pricing_workers": 8,
+  "default_concurrency": 3,
+  "batch_size": 50,
+  "fallback_proxy": "",
+  "health_rerank_enabled": true,
+  "auto_recover_enabled": true,
+  "auto_recover_cron": "*/30 * * * *",
+  "respect_weight_zero": true,
+  "weight_zero_policy": "deprioritize",
+  "zero_model_policy": "inactive",
+  "sync_existing_accounts": true,
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+}

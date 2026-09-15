@@ -1,0 +1,74 @@
+# mihomo 配置 —— 为 CLIProxyAPI 提供可切换出口，绕过按 IP 拦截的上游站点。
+
+# 混合端口：同一端口同时接受 HTTP 代理与 SOCKS5。
+mixed-port: 7890
+
+allow-lan: true
+bind-address: "*"
+mode: rule
+log-level: info
+
+# RESTful API。用来读节点列表、切换出口，healthcheck.py 也依赖它。
+external-controller: "0.0.0.0:9090"
+
+# API 鉴权密钥，从环境变量注入。留空则不设鉴权（同网段容器可直连 9090）。
+secret: "${MIHOMO_SECRET}"
+
+dns:
+  enable: true
+  ipv6: false
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+
+proxy-providers:
+  wog:
+    type: http
+    url: "${MIHOMO_SUB_WOG}"
+    path: ./providers/wog.yaml
+    interval: 21600
+    health-check:
+      enable: true
+      url: "https://www.gstatic.com/generate_204"
+      interval: 300
+      lazy: false
+
+  wogb:
+    type: http
+    url: "${MIHOMO_SUB_WOGB}"
+    path: ./providers/wogb.yaml
+    interval: 21600
+    health-check:
+      enable: true
+      url: "https://www.gstatic.com/generate_204"
+      interval: 300
+      lazy: false
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - AUTO
+      - DIRECT
+    use:
+      - wog
+      - wogb
+
+  - name: AUTO
+    type: url-test
+    use:
+      - wog
+      - wogb
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    # 请勿删除本行注释：update-mihomo-subscriptions.sh 与外部脚本靠它定位插入点
+    filter: "×1倍率"
+
+rules:
+  # 订阅域名必须直连，否则形成"要先有代理才能拉到代理"的死循环。
+  # 下面两行只是占位示例 —— bootstrap-mihomo.sh 会按 MIHOMO_SUB_* 里的
+  # 实际订阅域名整段重写它们，不必手工改。
+  - DOMAIN,vpn.example.com,DIRECT
+  - DOMAIN,sub.example.net,DIRECT
+  - MATCH,PROXY
