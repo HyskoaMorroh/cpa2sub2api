@@ -192,6 +192,28 @@ gpt-6 的 openai 上游误当 codex，砍掉它其余全部模型。
 | `524 origin_response_timeout` | CF 回源超时 120 秒不可延长，需压缩 CPA 的重试预算；见教程 8.5 |
 | `empty or malformed response (HTTP 200)` + 0 SSE 事件 | 流式引导未缓冲；见教程 8.6 |
 | `403 error code: 1010` | CF 浏览器完整性检查，设置浏览器 `USER_AGENT` |
+| CPAMP 面板提示"管理员密钥无效" | 是**面板登录密钥**，不是 CPA 管理密钥。改文件无效，只能 `reset-admin-key`；见教程 8.9 / 8.10 |
+| `{"error":"IP banned due to too many failed attempts"}` | 认证失败超 5 次触发 30 分钟 IP 封禁。先停 CPAMP 再重启 CPA；见教程 8.11 |
+| 改了 `secret-key` 之后彻底登不进 | 该字段要的是 **bcrypt 哈希**（`$2a$` 开头），不是明文；见教程 8.12 |
+
+### 密钥排障速查（教程 8.9–8.13）
+
+管理 CPA/CPAMP 时会遇到几个**名字相近但用途完全不同**的密钥，改错对象是常见的时间黑洞：
+
+| 你要做的事 | 用哪个密钥 | 存在哪 |
+|---|---|---|
+| 登录 `cpas.域名/management.html` 面板 | **面板登录密钥** | CPAMP 首次启动时写入 `/data/usage.sqlite`，之后改文件无效 |
+| 让 CPAMP 读到 CPA 的账号数据 | **CPA 管理密钥** | CPAMP 侧 `secrets/cpa_management_key`，必须与 CPA 侧 `config.yaml` 的 `secret-key` **哈希对应同一把明文** |
+| Claude Code / Codex 客户端连 CPA | **下游 api-key** | `config.yaml` 的 `api-keys` 列表（`sk-` 开头） |
+| 用 curl 调 `/v0/management/*` | CPA 管理密钥 | 同上，或环境变量 `MANAGEMENT_PASSWORD`（明文，优先于哈希） |
+
+**换 CPA 管理密钥时优先用环境变量方式**，不需要 bcrypt、删掉即可回退：
+
+```yaml
+# docker-compose.yml 的 cli-proxy-api 服务
+environment:
+  - MANAGEMENT_PASSWORD=${CPA_MANAGEMENT_PASSWORD}
+```
 
 详细排查步骤见 [`tutorial.html`](tutorial.html) 第八章。
 
