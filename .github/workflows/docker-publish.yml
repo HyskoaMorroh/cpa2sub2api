@@ -1,54 +1,164 @@
-name: Docker Build and Push
+# 多架构镜像构建与发布。
+#
+# 触发：推 master / main、推 tag（v*）、PR、手动。
+# 目标：GHCR 始终发；Docker Hub 仅当仓库变量 DOCKERHUB_USERNAME 已设置时才发。
+#
+# ── 零硬编码 ────────────────────────────────────────────────────────
+# 镜像名、仓库地址、owner 全部来自 GitHub 上下文或仓库变量，fork 后无需改动：
+#   GHCR       ghcr.io/${{ github.repository }}                    自动
+#   Docker Hub ${{ vars.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_IMAGE }}
+#
+# ── 首次使用需要配置（在仓库 Settings 里） ─────────────────────────
+#
+#   GHCR：什么都不用配。GITHUB_TOKEN 自带 packages:write 权限。
+#
+#   Docker Hub（可选，不配就只发 GHCR，那一步会被跳过而不是失败）：
+#     Settings → Secrets and variables → Actions
+#
+#       Variables 标签 → New repository variable
+#         DOCKERHUB_USERNAME  Docker Hub 用户名。**必填**，它同时是
+#                             「要不要发 Docker Hub」的开关。
+#                             放进 Secrets 也能用（本工作流两处都读），
+#                             但**推荐 Variables**：放 Secrets 会让它在日志里
+#                             被打成 ***，镜像名跟着显示成 ***/xxx，
+#                             出问题时看不出到底推到哪个命名空间去了
+#         DOCKERHUB_IMAGE     镜像名，可选。留空 = 用 GitHub 仓库名
+#                             （即 cpa2sub2api）
+#
+#       Secrets 标签 → New repository secret
+#         DOCKERHUB_TOKEN     hub.docker.com/settings/security 生成的
+#                             Access Token。**不要填登录密码** —— token
+#                             可单独吊销、可限定权限（Read & Write 即够），
+#                             密码泄露等于整个 Docker Hub 账号失守
+#
+#   为什么 USERNAME 放 Variables 而 TOKEN 放 Secrets：Variables 在日志里是
+#   明文（用户名本来就公开，明文便于排查），Secrets 会被 Actions 自动打码。
+#   把 token 放进 Variables 等于把它印在每一次构建日志里。
 
-# 触发分支必须是**仓库实际使用的分支**。
-# 本仓库的默认分支是 master（不是 main）。以前两个工作流都只监听 main，
-# 于是推送后 CI 一次都不会跑、镜像也永远不会被构建 —— 而部署方式是
-# "VPS 拉远程镜像"，这条链路就断在这里，且界面上看不出任何报错，
-# 只会表现为"改了代码但 VPS 拉到的还是旧镜像"。
+name: build
+
 on:
   push:
-    branches:
-      - master
-      - main
-    tags:
-      - 'v*'
+    branches: [master, main]
+    tags: ["v*"]
   pull_request:
-    branches:
-      - master
-      - main
+    branches: [master, main]
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "构建目标平台（逗号分隔）"
+        required: false
+        default: "linux/amd64,linux/arm64"
 
-env:
-  DOCKER_HUB_USERNAME: hyskaamorroh
-  IMAGE_NAME: cpa2sub2api
+# 同一分支的新推送取消旧的构建 —— 多架构构建很贵，别让队列堆积
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-and-push:
+  # ── 先测再构建。测试失败就不该产出镜像 ────────────────────────────
+  test:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 是下限：代码只用到 dict 有序、f-string、类型注解，
+        # 没用 match/结构化模式。3.9 能跑说明兼容面够宽。
+        python: ["3.9", "3.12", "3.13"]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 装依赖
+        run: pip install "PyYAML>=6.0.1"
+
+      - name: 语法编译（先于测试 —— 编译不过就没必要跑）
+        run: |
+          python -m compileall -q tool.py model_selection.py \
+            new_remap_priority.py pricing.py extract.py run.py 一键导入.py tests
+
+      - name: 代码规范（只拦语法错误与未定义名称）
+        run: |
+          pip install flake8
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: 回归测试
+        # 纯函数测试，不联网、不读写 out/
+        run: python tests/test_fixes.py
+
+  # ── 构建多架构镜像 ────────────────────────────────────────────────
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write        # 推 GHCR 需要
+
+    # Docker Hub 的三个输入在这里统一算好，后面的步骤只看这三个 env。
+    #
+    # 为什么不能在 steps 的 if: 里直接写 secrets.DOCKERHUB_TOKEN != ''：
+    # `secrets` 上下文在 steps.if 里**不可用**。官方 Context availability 表
+    # 给 jobs.<job_id>.steps.if 列的是
+    #     github, needs, strategy, matrix, job, runner, env, vars, steps, inputs
+    # 没有 secrets。写了不报错，只是恒为空 —— 那一步会永远被跳过，
+    # 「配好了却不发布」还没有任何提示，比直接失败更难查。
+    # jobs.<job_id>.env 那一行**允许** secrets，所以在这里算。
+    #
+    # 用户名同时接受 Variables 与 Secrets 两种放法（vars 优先）。
+    #
+    # 注意 DOCKERHUB_READY 里必须把表达式重算一遍，不能引用上面的
+    # DOCKERHUB_USER —— jobs.<job_id>.env 允许的上下文里**没有 env**，
+    # 同一个 env 块内互相引用取不到值。
+    env:
+      DOCKERHUB_USER: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_REPO: ${{ vars.DOCKERHUB_IMAGE || github.event.repository.name }}
+      DOCKERHUB_READY: >-
+        ${{ ((vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME) != ''
+             && secrets.DOCKERHUB_TOKEN != '') && 'yes' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU 让 x86 runner 能构建 arm64 镜像
+      - name: 装 QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: 装 buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: 登录 GHCR
+        # PR 不推镜像（fork 的 PR 拿不到写权限，推了也会失败）
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          # secret 名统一为 DOCKER_HUB_TOKEN。以前本文件用 DOCKER_HUB_TOKEN、
-          # docker-build.yml 用 DOCKER_PASSWORD，两个工作流都会触发，
-          # 其中至少一个必然因为读不到对应 secret 而登录失败。
-          # 仓库里只需要配置这一个 secret。
-          username: ${{ env.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: 登录 Docker Hub
+        # 两个都要有才登录。缺任何一个都安静跳过，GHCR 照常发 ——
+        # 「先设用户名、稍后再加 token」这个正常的操作顺序
+        # 不该让每次构建都红。
+        if: >-
+          github.event_name != 'pull_request' &&
+          env.DOCKERHUB_READY == 'yes'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 算镜像名与标签
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.DOCKER_HUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          images: |
+            ghcr.io/${{ github.repository }}
+            ${{ env.DOCKERHUB_READY == 'yes' &&
+                format('{0}/{1}', env.DOCKERHUB_USER, env.DOCKERHUB_REPO) || '' }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -56,36 +166,35 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Docker image
+      - name: 构建并推送
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          # 多架构：VPS 可能是 amd64 或 arm64，两种都出。
-          platforms: linux/amd64,linux/arm64
+          # 默认双架构。手动触发时可覆盖（比如只发 amd64 省时间）。
+          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # 构建缓存：多架构构建很贵，缓存能显著缩短后续构建
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build summary
+      - name: 构建摘要
         if: github.event_name != 'pull_request'
         run: |
           {
-            echo "## Docker Image Build Summary"
+            echo "## 镜像构建结果"
             echo ""
-            echo "**Image**: \`${{ env.DOCKER_HUB_USERNAME }}/${{ env.IMAGE_NAME }}\`"
-            echo ""
-            echo "**Tags**:"
+            echo "**标签**"
             echo '```'
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'
             echo ""
-            echo "**Platforms**: linux/amd64, linux/arm64"
+            echo "**平台**：${{ inputs.platforms || 'linux/amd64,linux/arm64' }}"
             echo ""
-            echo "**Pull command**:"
+            echo "**拉取**"
             echo '```bash'
-            echo "docker pull ${{ env.DOCKER_HUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
+            echo "docker pull ${{ env.DOCKERHUB_USER }}/${{ env.DOCKERHUB_REPO }}:latest"
             echo '```'
           } >> $GITHUB_STEP_SUMMARY

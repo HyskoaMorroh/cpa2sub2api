@@ -59,8 +59,14 @@ Actions 构建推 Docker Hub → VPS 拉镜像运行。**VPS 上不需要源码*
 
 ### 2.1 拉取镜像
 
+镜像名由**你自己的环境变量**决定，仓库里不写死账号名：
+
 ```bash
-docker pull hyskaamorroh/cpa2sub2api:latest
+# .env
+DOCKERHUB_USERNAME=你的DockerHub用户名
+DOCKERHUB_IMAGE=cpa2sub2api        # 可选，留空用仓库名
+
+docker pull $DOCKERHUB_USERNAME/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
 ```
 
 ### 2.2 准备文件
@@ -336,19 +342,27 @@ git push origin master
 `.github/workflows/docker-publish.yml` 会构建 `linux/amd64` + `linux/arm64`
 双架构镜像并推送到 Docker Hub。
 
-**前提：仓库里要配置好 secret `DOCKER_HUB_TOKEN`**
-（Settings → Secrets and variables → Actions）。
-缺少它登录会失败，而工作流只监听 `master`/`main` 与 `v*` tag，
-推别的分支不会触发。
+**前提：仓库里配置好以下内容**（Settings → Secrets and variables → Actions）：
+
+| 类型 | 名称 | 必需 | 说明 |
+|---|---|---|---|
+| Variable | `DOCKERHUB_USERNAME` | ✅ | Docker Hub 用户名。**它同时是"要不要发 Docker Hub"的开关** |
+| Variable | `DOCKERHUB_IMAGE` | — | 镜像名。留空 = 用仓库名 |
+| Secret | `DOCKERHUB_TOKEN` | ✅ | Docker Hub Access Token，**不要填登录密码** |
+
+只配了用户名没配 token 不会让构建失败 —— Docker Hub 那一步会安静跳过，
+GHCR 照常发布。
+
+工作流只在 `master` / `main` 分支和 `v*` tag 上触发，推别的分支不会跑。
 
 ### 7.2 本地构建（调试用）
 
 ```bash
-docker build -t hyskaamorroh/cpa2sub2api:latest .
+docker build -t $DOCKERHUB_USERNAME/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest .
 
 # 多架构
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t hyskaamorroh/cpa2sub2api:latest --push .
+  -t $DOCKERHUB_USERNAME/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest --push .
 ```
 
 ### 7.3 运行单个容器
@@ -361,5 +375,5 @@ docker run -it --rm \
   -e SUB2API_ADMIN_KEY=admin-xxx \
   -e FALLBACK_PROXY=http://mihomo:7890 \
   --network your-stack_default \
-  hyskaamorroh/cpa2sub2api:latest python 一键导入.py
+  $DOCKERHUB_USERNAME/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest python 一键导入.py
 ```

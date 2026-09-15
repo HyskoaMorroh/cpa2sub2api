@@ -21,7 +21,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: hyskaamorroh/cpa2sub2api:latest
+    # 镜像名由环境变量决定，与 .github/workflows/docker-publish.yml 用的是
+    # 同一组名字，避免"CI 推到 A、VPS 拉 B"这种静默不一致。
+    # 在 .env 里设：
+    #   DOCKERHUB_USERNAME=你的用户名
+    #   DOCKERHUB_IMAGE=cpa2sub2api      # 可选，默认用仓库名
+    image: ${DOCKERHUB_USERNAME:?请在 .env 里设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
     container_name: cpa2sub2api
 
     env_file:
@@ -73,7 +78,12 @@ services:
   # Mihomo 配置自举（init 容器，跑完即退）
   # ====================================
   mihomo-init:
-    image: hyskaamorroh/cpa2sub2api:latest
+    # 镜像名由环境变量决定，与 .github/workflows/docker-publish.yml 用的是
+    # 同一组名字，避免"CI 推到 A、VPS 拉 B"这种静默不一致。
+    # 在 .env 里设：
+    #   DOCKERHUB_USERNAME=你的用户名
+    #   DOCKERHUB_IMAGE=cpa2sub2api      # 可选，默认用仓库名
+    image: ${DOCKERHUB_USERNAME:?请在 .env 里设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
     build:
       context: .
       dockerfile: Dockerfile
