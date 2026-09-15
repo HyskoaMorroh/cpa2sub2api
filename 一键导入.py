@@ -247,6 +247,40 @@ def main():
         print(" 没有这个选项。")
         return 1
 
+    # ======== 前置校验：连接信息 ========
+    #
+    # 必须在**发任何网络请求之前**做。以前没有这一步，地址为空时会一路走到
+    # Sub2Api._call -> _http -> urllib.request.Request("/api/...")，
+    # 甩出一串 traceback：
+    #     ValueError: unknown url type: '/api/v1/admin/groups/all'
+    # 那句话既没说是"地址没配"，也没说"该怎么配"。
+    #
+    # 顺序也不对：清空（菜单 [3]）本来不需要 config.yaml，却先跑
+    # [1/5] 测试连接才崩 —— 一个无关的前置检查挡住了正常操作。
+    base = str(s.get("sub2api_base_url") or "").strip()
+    key = str(s.get("sub2api_admin_key") or "").strip()
+    if not base or not key:
+        print("=" * 64)
+        print(" 还没配置 sub2api 连接信息，无法继续")
+        print("=" * 64)
+        print("  缺少：")
+        if not base:
+            print("    目标地址（sub2api_base_url）")
+        if not key:
+            print("    管理密钥（sub2api_admin_key）")
+        print()
+        print("  三种填法，任选其一：")
+        print("    · 本机：回到菜单选 [5] 修改地址和管理密钥（写入 设置.json）")
+        print("    · 本机：直接编辑同目录的 设置.json")
+        print("    · 容器：在部署根的 .env 里设（注意用服务名，不要写 127.0.0.1）")
+        print("        SUB2API_BASE_URL=http://sub2api:8080")
+        print("        SUB2API_ADMIN_KEY=你的管理员密钥")
+        print()
+        print("  当前读到：")
+        print("    目标地址: %s" % (base or "（空）"))
+        print("    管理密钥: %s" % mask(key))
+        return 1
+
     print()
 
     # 常量同步：上游一旦往请求头黑名单加一项，不同步就会整批 400。

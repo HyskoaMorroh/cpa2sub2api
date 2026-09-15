@@ -482,8 +482,29 @@ def idempotency_key(payload):
 
 class Sub2Api(object):
     def __init__(self, s):
-        self.base = s["sub2api_base_url"].rstrip("/")
-        self.key = s["sub2api_admin_key"]
+        # 地址为空时立刻报错，不要等到发请求才炸。
+        #
+        # 以前这里是 `s["sub2api_base_url"].rstrip("/")`，空字符串能通过，
+        # 然后 self.base + path 得到 "/api/v1/admin/groups/all"，
+        # 最后在 urllib 里抛：
+        #     ValueError: unknown url type: '/api/v1/admin/groups/all'
+        # 那句报错完全没提"是你的地址没配"，排查要往回翻好几层。
+        # 这里兜住，任何入口（菜单、一键导入、别的脚本 import）都绕不过去。
+        base = str(s.get("sub2api_base_url") or "").strip()
+        if not base:
+            raise RuntimeError(
+                "sub2api 地址为空（sub2api_base_url）。\n"
+                "        本机：菜单选 [5] 填写，或编辑同目录的 设置.json。\n"
+                "        容器：在 .env 里设 SUB2API_BASE_URL=http://sub2api:8080\n"
+                "        （容器里不要写 127.0.0.1，那指向容器自己）")
+        if not base.lower().startswith(("http://", "https://")):
+            raise RuntimeError(
+                "sub2api 地址缺少协议头：%r\n"
+                "        要写成 http://主机:端口 或 https://主机，例如\n"
+                "            http://sub2api:8080\n"
+                "            https://your-sub2api.example.com" % base)
+        self.base = base.rstrip("/")
+        self.key = str(s.get("sub2api_admin_key") or "").strip()
         self.timeout = 30
         # 批量创建一次要服务端逐条建号并触发异步探测，30 秒太紧，单独放宽
         self.batch_timeout = 120

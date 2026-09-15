@@ -504,6 +504,66 @@ check("K9 Dockerfile 给 entrypoint.sh 加了执行位",
 
 print()
 print("=" * 70)
+print("L. 连接信息的前置校验（地址为空不再甩 traceback）")
+print("=" * 70)
+
+
+def _expect_raise(fn, exc=RuntimeError):
+    try:
+        fn()
+        return None
+    except exc as e:
+        return str(e)
+    except Exception as e:
+        return "__WRONG__%s: %s" % (type(e).__name__, e)
+
+
+# 地址为空：以前会一路走到 urllib 抛 "unknown url type: '/api/v1/...'"
+msg = _expect_raise(lambda: tool.Sub2Api({"sub2api_base_url": "",
+                                          "sub2api_admin_key": "k"}))
+check("L1 地址为空时立刻报错（不是 urllib 的 unknown url type）",
+      msg is not None and "unknown url type" not in msg and "地址为空" in msg,
+      "%r" % msg)
+
+# 缺协议头
+msg = _expect_raise(lambda: tool.Sub2Api({"sub2api_base_url": "sub2api:8080",
+                                          "sub2api_admin_key": "k"}))
+check("L2 地址缺协议头时给出明确提示",
+      msg is not None and "协议头" in msg, "%r" % msg)
+
+# 报错信息里要包含"怎么填"，不能只说错
+msg = _expect_raise(lambda: tool.Sub2Api({"sub2api_base_url": "",
+                                          "sub2api_admin_key": "k"})) or ""
+check("L3 报错里给了三种填法",
+      "设置.json" in msg and "SUB2API_BASE_URL" in msg, "%r" % msg[:120])
+check("L4 报错里提醒容器不要用 127.0.0.1",
+      "127.0.0.1" in msg, "%r" % msg[:160])
+
+# 正常地址仍然工作，且尾部斜杠被去掉
+api = tool.Sub2Api({"sub2api_base_url": "http://sub2api:8080/",
+                    "sub2api_admin_key": "k"})
+check("L5 正常地址可构造且去尾斜杠", api.base == "http://sub2api:8080", api.base)
+api = tool.Sub2Api({"sub2api_base_url": "https://a.example.com",
+                    "sub2api_admin_key": "k"})
+check("L6 https 地址正常", api.base == "https://a.example.com", api.base)
+
+# 一键导入.py 的入口校验必须在 sync_constants 之前 ——
+# 否则地址没配也会先发网络请求去拉 GitHub 源码
+_oneclick = open(os.path.join(ROOT, "一键导入.py"), encoding="utf-8").read()
+_i_guard = _oneclick.find("还没配置 sub2api 连接信息")
+_i_sync = _oneclick.find("sync_constants(s, verbose=False)")
+check("L7 入口校验位于常量同步之前（不会先发网络请求）",
+      _i_guard != -1 and _i_sync != -1 and _i_guard < _i_sync,
+      "guard@%d sync@%d" % (_i_guard, _i_sync))
+
+# 清空模式（菜单 3）不应被 needs-config 类检查挡住
+check("L8 清空模式在取 config 之前就返回",
+      _oneclick.find("if wipe_mode:") < _oneclick.find("build_plan(s)"),
+      "wipe@%d build_plan@%d" % (_oneclick.find("if wipe_mode:"),
+                                 _oneclick.find("build_plan(s)")))
+
+print()
+print("=" * 70)
 print("G. 汇总")
 print("=" * 70)
 print("PASS %d / FAIL %d" % (len(PASS), len(FAIL)))
