@@ -5,7 +5,9 @@
 面向的部署形态是 **VPS 只拉远程镜像**：本机改代码 → 推 GitHub → Actions
 构建推 Docker Hub → VPS 拉镜像运行。VPS 上不需要源码。
 
-- 图文并茂的完整教程：[`tutorial.html`](tutorial.html)（含逐项配置说明与一键复制）
+- 图文并茂的完整教程：[`tutorial.html`](tutorial.html)
+  —— 12 张自绘示意图（架构 / 流程 / 数据可视化）+ 18 处一键复制 + 逐项配置说明。
+  所有插图均为**脱敏的自绘 SVG**，不含任何真实域名、密钥或账号数据。
 - 代理实现文档：[`mihomo-README.md`](mihomo-README.md)、[`mihomo-manager/README.md`](mihomo-manager/README.md)
 
 ---

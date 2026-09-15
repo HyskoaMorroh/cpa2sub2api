@@ -5,134 +5,162 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CPA2SUB2API 部署与使用教程</title>
 <style>
-  :root {
-    --bg-primary:#0A0D12; --bg-secondary:#0F131C; --bg-tertiary:#161D2B;
-    --bg-elevated:#1E2636;
-    --text-primary:#E5E7EB; --text-secondary:#9CA3AF; --text-muted:#6B7280;
-    --accent-cyan:#38BDF8; --accent-emerald:#6EE7B7; --accent-amber:#FBBF24;
-    --accent-violet:#A78BFA; --accent-rose:#FB7185; --accent-red:#EF4444;
-    --border-color:rgba(255,255,255,.1);
-    --shadow:0 4px 6px -1px rgba(0,0,0,.3);
-    --radius:12px;
+  :root{
+    --bg:#0A0D12; --bg2:#0F131C; --bg3:#161D2B; --bg4:#1E2636;
+    --fg:#E5E7EB; --fg2:#9CA3AF; --fg3:#6B7280;
+    --cyan:#38BDF8; --emerald:#6EE7B7; --amber:#FBBF24;
+    --violet:#A78BFA; --rose:#FB7185; --red:#EF4444;
+    --line:rgba(255,255,255,.10);
+    --shadow:0 8px 24px -8px rgba(0,0,0,.6);
+    --r:12px;
   }
   *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
   body{
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;
-    background:linear-gradient(135deg,var(--bg-primary) 0%,var(--bg-secondary) 100%);
-    color:var(--text-primary); line-height:1.75; padding:clamp(1rem,3vw,3rem);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Roboto,sans-serif;
+    background:
+      radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,.08),transparent 60%),
+      radial-gradient(900px 500px at 90% 0%,rgba(167,139,250,.08),transparent 60%),
+      var(--bg);
+    color:var(--fg); line-height:1.75; padding:clamp(1rem,3vw,3rem);
   }
-  .container{
-    max-width:1080px; margin:0 auto; background:var(--bg-secondary);
-    border-radius:16px; padding:clamp(1.5rem,4vw,3rem); box-shadow:var(--shadow);
-    border:1px solid var(--border-color);
+  .wrap{
+    max-width:1100px; margin:0 auto; background:var(--bg2);
+    border:1px solid var(--line); border-radius:18px;
+    padding:clamp(1.4rem,4vw,3rem); box-shadow:var(--shadow);
   }
+
+  /* ── 标题层级：颜色区分每一层 ─────────────────────────── */
   h1{
-    font-size:clamp(1.8rem,4.5vw,2.6rem); color:var(--accent-cyan);
-    margin-bottom:.5rem; letter-spacing:-.02em; line-height:1.25;
+    font-size:clamp(1.9rem,4.6vw,2.7rem); line-height:1.2; letter-spacing:-.02em;
+    background:linear-gradient(90deg,var(--cyan),var(--violet) 60%,var(--emerald));
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    margin-bottom:.6rem;
   }
-  .subtitle{color:var(--text-secondary); font-size:1rem; margin-bottom:2rem}
+  .lede{color:var(--fg2); font-size:1.02rem; margin-bottom:2.2rem}
   h2{
-    font-size:clamp(1.35rem,3vw,1.75rem); color:var(--accent-emerald);
-    margin-top:3rem; margin-bottom:1.2rem; padding-bottom:.5rem;
-    border-bottom:2px solid var(--border-color);
+    font-size:clamp(1.35rem,3vw,1.8rem); color:var(--cyan);
+    margin-top:3.4rem; margin-bottom:1.1rem; padding:.35rem 0 .35rem 1rem;
+    border-left:5px solid var(--cyan); border-radius:3px;
+    background:linear-gradient(90deg,rgba(56,189,248,.10),transparent);
   }
   h3{
-    font-size:clamp(1.1rem,2.2vw,1.3rem); color:var(--accent-violet);
-    margin-top:2rem; margin-bottom:.8rem;
+    font-size:clamp(1.1rem,2.2vw,1.32rem); color:var(--violet);
+    margin-top:2.1rem; margin-bottom:.75rem;
   }
   h4{
-    font-size:1.02rem; color:var(--accent-amber);
-    margin-top:1.4rem; margin-bottom:.6rem;
+    font-size:1.03rem; color:var(--amber);
+    margin-top:1.5rem; margin-bottom:.55rem;
   }
-  p{margin-bottom:1rem; color:var(--text-primary)}
-  ul,ol{margin:0 0 1rem 1.4rem}
+  h4::before{content:"▍"; color:var(--amber); margin-right:.35rem; opacity:.7}
+  p{margin-bottom:1rem}
+  ul,ol{margin:0 0 1rem 1.5rem}
   li{margin-bottom:.45rem}
-  a{color:var(--accent-cyan); text-decoration:none; border-bottom:1px dotted}
+  a{color:var(--cyan); text-decoration:none; border-bottom:1px dotted rgba(56,189,248,.5)}
   a:hover{border-bottom-style:solid}
+  strong{color:#fff}
   code{
-    background:var(--bg-elevated); padding:.12em .45em; border-radius:5px;
+    background:var(--bg4); padding:.13em .45em; border-radius:5px;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    font-size:.9em; color:var(--accent-amber);
+    font-size:.89em; color:var(--amber); border:1px solid var(--line);
   }
-  .code-wrap{position:relative; margin:1rem 0}
-  .copy-btn{
-    position:absolute; top:.55rem; right:.55rem; z-index:2;
-    background:var(--accent-cyan); color:#06131c; border:none;
-    padding:.28rem .75rem; border-radius:6px; font-size:.78rem;
-    font-weight:700; cursor:pointer; opacity:.85; transition:all .18s;
+
+  /* ── 代码块 + 一键复制 ─────────────────────────────────── */
+  .cw{position:relative; margin:1rem 0}
+  .cw .cp{
+    position:absolute; top:.6rem; right:.6rem; z-index:3;
+    background:var(--cyan); color:#06131c; border:0;
+    padding:.3rem .8rem; border-radius:7px; font-size:.76rem;
+    font-weight:800; cursor:pointer; opacity:.9;
+    transition:transform .14s,opacity .14s;
   }
-  .copy-btn:hover{opacity:1; transform:translateY(-1px)}
+  .cw .cp:hover{opacity:1; transform:translateY(-1px)}
   pre{
-    background:var(--bg-primary); border:1px solid var(--border-color);
-    border-left:3px solid var(--accent-cyan); border-radius:var(--radius);
-    padding:1.1rem 1.2rem; overflow-x:auto; font-size:.85rem; line-height:1.6;
+    background:var(--bg); border:1px solid var(--line);
+    border-left:3px solid var(--cyan); border-radius:var(--r);
+    padding:1.15rem 1.2rem; overflow-x:auto;
+    font-size:.845rem; line-height:1.65; color:#D7E3F4;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    color:#D7E3F4; white-space:pre;
   }
-  pre.no-copy{padding-top:1.1rem}
-  .note,.warn,.danger,.tip{
-    border-radius:var(--radius); padding:.9rem 1.1rem; margin:1rem 0;
-    border-left:4px solid; font-size:.94rem;
-  }
-  .note{background:rgba(56,189,248,.08); border-color:var(--accent-cyan)}
-  .tip{background:rgba(110,231,183,.08); border-color:var(--accent-emerald)}
-  .warn{background:rgba(251,191,36,.09); border-color:var(--accent-amber)}
-  .danger{background:rgba(239,68,68,.1); border-color:var(--accent-red)}
-  .note strong,.tip strong,.warn strong,.danger strong{display:block; margin-bottom:.25rem}
-  .grid{
-    display:grid; gap:1rem; margin:1.2rem 0;
-    grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
-  }
+
+  /* ── 提示框 ───────────────────────────────────────────── */
+  .box{border-radius:var(--r); padding:.95rem 1.15rem; margin:1.1rem 0; border-left:4px solid}
+  .box > b:first-child{display:block; margin-bottom:.3rem}
+  .note{background:rgba(56,189,248,.09); border-color:var(--cyan)}
+  .note > b:first-child{color:var(--cyan)}
+  .tip{background:rgba(110,231,183,.09); border-color:var(--emerald)}
+  .tip > b:first-child{color:var(--emerald)}
+  .warn{background:rgba(251,191,36,.10); border-color:var(--amber)}
+  .warn > b:first-child{color:var(--amber)}
+  .danger{background:rgba(239,68,68,.11); border-color:var(--red)}
+  .danger > b:first-child{color:var(--red)}
+
+  /* ── 卡片 / 表格 ──────────────────────────────────────── */
+  .grid{display:grid; gap:1rem; margin:1.3rem 0;
+        grid-template-columns:repeat(auto-fit,minmax(235px,1fr))}
   .card{
-    background:var(--bg-tertiary); border:1px solid var(--border-color);
-    border-radius:var(--radius); padding:1rem 1.1rem;
+    background:var(--bg3); border:1px solid var(--line);
+    border-radius:var(--r); padding:1.05rem 1.15rem;
+    transition:border-color .18s, transform .18s;
   }
-  .card h4{margin-top:0; color:var(--accent-cyan)}
-  .card p{margin-bottom:0; font-size:.9rem; color:var(--text-secondary)}
-  table{
-    width:100%; border-collapse:collapse; margin:1.2rem 0; font-size:.9rem;
-    display:block; overflow-x:auto; white-space:nowrap;
+  .card:hover{border-color:rgba(56,189,248,.45); transform:translateY(-2px)}
+  .card h4{margin-top:0; color:var(--cyan)}
+  .card p{margin-bottom:0; font-size:.9rem; color:var(--fg2)}
+  .tw{overflow-x:auto; margin:1.2rem 0}
+  table{width:100%; border-collapse:collapse; font-size:.9rem; min-width:520px}
+  th,td{padding:.62rem .8rem; text-align:left; border-bottom:1px solid var(--line)}
+  th{background:var(--bg4); color:var(--emerald); font-weight:700; white-space:nowrap}
+  tr:hover td{background:rgba(255,255,255,.025)}
+
+  /* ── 步骤 ─────────────────────────────────────────────── */
+  .step{display:flex; align-items:center; gap:.7rem; margin:1.6rem 0 .8rem}
+  .sn{
+    flex:0 0 auto; width:30px; height:30px; border-radius:50%;
+    background:linear-gradient(135deg,var(--cyan),var(--violet));
+    color:#06131c; font-weight:900; font-size:.95rem;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 0 0 4px rgba(56,189,248,.12);
   }
-  th,td{
-    padding:.6rem .8rem; text-align:left;
-    border-bottom:1px solid var(--border-color);
-  }
-  th{background:var(--bg-elevated); color:var(--accent-emerald); font-weight:700}
-  tr:hover td{background:rgba(255,255,255,.02)}
-  .step{
-    display:flex; align-items:center; gap:.7rem; margin-bottom:.9rem;
-  }
-  .step-num{
-    flex:0 0 auto; width:28px; height:28px; border-radius:50%;
-    background:var(--accent-cyan); color:#06131c; font-weight:800;
-    display:flex; align-items:center; justify-content:center; font-size:.9rem;
-  }
-  .step-title{font-size:1.15rem; font-weight:700; color:var(--accent-violet)}
-  .toc{
-    background:var(--bg-tertiary); border:1px solid var(--border-color);
-    border-radius:var(--radius); padding:1.1rem 1.3rem; margin-bottom:2rem;
-  }
-  .toc ol{margin-bottom:0}
-  .badge{
-    display:inline-block; padding:.15rem .5rem; border-radius:999px;
-    font-size:.75rem; font-weight:700; vertical-align:middle;
-  }
-  .badge-fix{background:rgba(110,231,183,.18); color:var(--accent-emerald)}
-  .badge-new{background:rgba(167,139,250,.2); color:var(--accent-violet)}
-  .badge-warn{background:rgba(251,191,36,.2); color:var(--accent-amber)}
-  footer{
-    margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--border-color);
-    color:var(--text-muted); font-size:.85rem;
-  }
+  .st{font-size:1.16rem; font-weight:800; color:var(--violet)}
+
+  /* ── 徽标 ─────────────────────────────────────────────── */
+  .bd{display:inline-block; padding:.13rem .55rem; border-radius:999px;
+      font-size:.73rem; font-weight:800; vertical-align:middle; white-space:nowrap}
+  .bd-fix{background:rgba(110,231,183,.2); color:var(--emerald)}
+  .bd-new{background:rgba(167,139,250,.22); color:var(--violet)}
+  .bd-hot{background:rgba(251,191,36,.22); color:var(--amber)}
+
+  /* ── 插图 ─────────────────────────────────────────────── */
+  figure{margin:1.6rem 0; background:var(--bg3); border:1px solid var(--line);
+         border-radius:var(--r); padding:1rem 1rem .7rem; overflow:hidden}
+  figure svg{display:block; width:100%; height:auto;
+             margin:0 auto; max-width:100%; background:transparent}
+  figcaption{color:var(--fg2); font-size:.85rem; text-align:center;
+             margin-top:.7rem; padding-top:.6rem; border-top:1px dashed var(--line)}
+  figcaption b{color:var(--cyan)}
+
+  /* ── 目录 ─────────────────────────────────────────────── */
+  .toc{background:linear-gradient(180deg,var(--bg3),rgba(22,29,43,.6));
+       border:1px solid var(--line); border-radius:var(--r);
+       padding:1.15rem 1.4rem; margin-bottom:1rem}
+  .toc > strong{color:var(--emerald); display:block; margin-bottom:.6rem;
+                letter-spacing:.05em; font-size:.92rem}
+  .toc ol{margin:0 0 0 1.3rem; columns:2; column-gap:2rem}
+  @media(max-width:680px){.toc ol{columns:1}}
+  .toc li{margin-bottom:.3rem; font-size:.94rem}
+
+  footer{margin-top:3.4rem; padding-top:1.5rem; border-top:1px solid var(--line);
+         color:var(--fg3); font-size:.86rem}
+  footer p{margin-bottom:.5rem}
 </style>
 </head>
 <body>
-<div class="container">
+<div class="wrap">
 
 <h1>CPA2SUB2API 部署与使用教程</h1>
-<p class="subtitle">
+<p class="lede">
   把 CPA / CPAMP 生成的 <code>config.yaml</code> 批量灌进 sub2api。
-  支持按域名分桶的优先级调度、智能健康度重排、模型"就高原则"、并发导入与定时探活。
+  支持按域名分桶的优先级调度、智能健康度重排、模型「就高原则」、并发导入与定时探活。
 </p>
 
 <div class="toc">
@@ -140,24 +168,119 @@
   <ol>
     <li><a href="#s1">它做什么，解决什么问题</a></li>
     <li><a href="#s2">环境要求</a></li>
-    <li><a href="#s3">Docker 部署（VPS 推荐）</a></li>
+    <li><a href="#s3">Docker 部署</a></li>
     <li><a href="#s4">配置文件逐项说明</a></li>
-    <li><a href="#s5">代理（mihomo）配置</a></li>
+    <li><a href="#s5">代理（mihomo）</a></li>
     <li><a href="#s6">执行导入</a></li>
-    <li><a href="#s7">工作原理：优先级、分桶与容灾</a></li>
-    <li><a href="#s8">常见故障排查</a></li>
-    <li><a href="#s9">附录：完整环境变量表</a></li>
+    <li><a href="#s7">工作原理</a></li>
+    <li><a href="#s8">故障排查</a></li>
+    <li><a href="#s9">附录：环境变量表</a></li>
   </ol>
 </div>
 
-<!-- ================================================================ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s1">一、它做什么，解决什么问题</h2>
 
 <p>
   CPA（CLIProxyAPI）用一份 <code>config.yaml</code> 管理几十到几百个上游凭据；
   sub2api 是网关，负责真正的调度与计费。两者的账号模型不通用，
-  手工搬运几百条凭据不现实，本工具就是这条搬运流水线。
+  手工搬运几百条凭据不现实。<b>本工具就是这条搬运流水线。</b>
 </p>
+
+<figure>
+<svg viewBox="0 0 900 400" role="img" aria-label="调用链与工具位置示意">
+  <defs>
+    <linearGradient id="gA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity=".22"/>
+      <stop offset="100%" stop-color="#38BDF8" stop-opacity=".04"/>
+    </linearGradient>
+    <linearGradient id="gB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#A78BFA" stop-opacity=".26"/>
+      <stop offset="100%" stop-color="#A78BFA" stop-opacity=".05"/>
+    </linearGradient>
+    <linearGradient id="gC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6EE7B7" stop-opacity=".24"/>
+      <stop offset="100%" stop-color="#6EE7B7" stop-opacity=".04"/>
+    </linearGradient>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+    </marker>
+    <marker id="arv" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#A78BFA"/>
+    </marker>
+  </defs>
+
+  <text x="450" y="26" fill="#6B7280" font-size="13" text-anchor="middle"
+        font-family="monospace">运行时调用链</text>
+
+  <!-- 客户端 -->
+  <rect x="30" y="52" width="120" height="52" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
+  <text x="90" y="76" fill="#E5E7EB" font-size="14" text-anchor="middle">客户端</text>
+  <text x="90" y="93" fill="#9CA3AF" font-size="11" text-anchor="middle">Claude Code / Codex</text>
+
+  <line x1="150" y1="78" x2="196" y2="78" stroke="#6B7280" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <rect x="200" y="52" width="110" height="52" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
+  <text x="255" y="76" fill="#E5E7EB" font-size="14" text-anchor="middle">Cloudflare</text>
+  <text x="255" y="93" fill="#FBBF24" font-size="11" text-anchor="middle">120s 回源超时</text>
+
+  <line x1="310" y1="78" x2="356" y2="78" stroke="#6B7280" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <rect x="360" y="40" width="120" height="76" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
+  <text x="420" y="66" fill="#E5E7EB" font-size="14" text-anchor="middle">sub2api</text>
+  <text x="420" y="84" fill="#9CA3AF" font-size="11" text-anchor="middle">:8080 网关</text>
+  <text x="420" y="101" fill="#6EE7B7" font-size="11" text-anchor="middle">调度 · 计费</text>
+
+  <line x1="480" y1="78" x2="526" y2="78" stroke="#6B7280" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <rect x="530" y="40" width="130" height="76" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
+  <text x="595" y="66" fill="#E5E7EB" font-size="14" text-anchor="middle">CPA</text>
+  <text x="595" y="84" fill="#9CA3AF" font-size="11" text-anchor="middle">cli-proxy-api :8317</text>
+  <text x="595" y="101" fill="#6EE7B7" font-size="11" text-anchor="middle">凭据池</text>
+
+  <line x1="660" y1="78" x2="706" y2="78" stroke="#6B7280" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <rect x="710" y="40" width="160" height="76" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
+  <text x="790" y="66" fill="#E5E7EB" font-size="14" text-anchor="middle">各上游站点</text>
+  <text x="790" y="84" fill="#9CA3AF" font-size="11" text-anchor="middle">中转站 / 官方 API</text>
+  <text x="790" y="101" fill="#FB7185" font-size="11" text-anchor="middle">可能按出口 IP 拦截</text>
+
+  <!-- mihomo 支线 -->
+  <rect x="530" y="165" width="130" height="60" rx="10" fill="url(#gC)" stroke="#6EE7B7" stroke-opacity=".5"/>
+  <text x="595" y="190" fill="#E5E7EB" font-size="14" text-anchor="middle">mihomo</text>
+  <text x="595" y="209" fill="#9CA3AF" font-size="11" text-anchor="middle">:7890 出口</text>
+  <path d="M595 155 L595 116" stroke="#6EE7B7" stroke-width="1.6"
+        stroke-dasharray="4 3" marker-end="url(#ar)"/>
+  <path d="M660 195 L706 195 L790 130" stroke="#6EE7B7" stroke-width="1.6"
+        stroke-dasharray="4 3" fill="none" marker-end="url(#ar)"/>
+  <text x="700" y="215" fill="#6EE7B7" font-size="11">config.yaml 里配了</text>
+  <text x="700" y="231" fill="#6EE7B7" font-size="11">proxy-url 的条目走这里</text>
+
+  <!-- 分隔线 -->
+  <line x1="30" y1="268" x2="870" y2="268" stroke="#1E2636" stroke-width="2"/>
+  <text x="450" y="292" fill="#6B7280" font-size="13" text-anchor="middle"
+        font-family="monospace">本工具的位置（一次性运维，不进请求路径）</text>
+
+  <!-- 工具 -->
+  <rect x="330" y="308" width="240" height="66" rx="12" fill="url(#gB)"
+        stroke="#A78BFA" stroke-opacity=".6" stroke-width="1.5"/>
+  <text x="450" y="336" fill="#E5E7EB" font-size="15" text-anchor="middle" font-weight="700">cpa2sub2api</text>
+  <text x="450" y="356" fill="#9CA3AF" font-size="11" text-anchor="middle">读 config.yaml → 写 sub2api</text>
+
+  <path d="M330 330 L180 330 L120 110" stroke="#A78BFA" stroke-width="1.6"
+        stroke-dasharray="5 4" fill="none" marker-end="url(#arv)"/>
+  <text x="150" y="322" fill="#A78BFA" font-size="11">读配置</text>
+  <path d="M570 330 L720 330 L720 126" stroke="#A78BFA" stroke-width="1.6"
+        stroke-dasharray="5 4" fill="none" marker-end="url(#arv)"/>
+  <text x="732" y="322" fill="#A78BFA" font-size="11">写账号/分组/代理/定价</text>
+</svg>
+<figcaption>
+  <b>图 1</b>　调用链与本工具的位置。本工具<b>不在请求路径上</b> ——
+  它只在运行时把配置搬进去，搬完就退出。
+</figcaption>
+</figure>
 
 <div class="grid">
   <div class="card">
@@ -169,11 +292,11 @@
     <p>同一上游的多个 KEY 互为备份、落进同一优先级桶；只有整桶不可用才降级到下一个域名。</p>
   </div>
   <div class="card">
-    <h4>健康度重排 <span class="badge badge-new">已修</span></h4>
+    <h4>健康度重排 <span class="bd bd-new">已修</span></h4>
     <p>按 sub2api 实测的可调度率 60% + 活跃率 40% 重排优先级，桶号全局唯一。</p>
   </div>
   <div class="card">
-    <h4>模型就高原则 <span class="badge badge-fix">已修</span></h4>
+    <h4>模型就高原则 <span class="bd bd-fix">已修</span></h4>
     <p>codex 与 openai 分开处理，代际门槛从上游源码反推，不写死版本号。</p>
   </div>
   <div class="card">
@@ -182,19 +305,20 @@
   </div>
   <div class="card">
     <h4>反测活</h4>
-    <p>探活用自然语料，并给每个账号错开探活时刻，避免"全体同时探活"这一机器特征。</p>
+    <p>探活用自然语料，并给每个账号错开探活时刻，避免「全体同时探活」这一机器特征。</p>
   </div>
 </div>
 
-<div class="note">
-  <strong>关于 CPA / CPAMP / sub2api</strong>
+<div class="box note">
+  <b>关于 CPA / CPAMP / sub2api</b>
   这三个项目都是第三方作品，本工具<b>不修改它们</b>。
   所有调度与容灾的改进都落在<b>本工具写入 sub2api 的数据</b>上。
 </div>
 
-<!-- ================================================================ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s2">二、环境要求</h2>
 
+<div class="tw">
 <table>
   <thead><tr><th>项目</th><th>要求</th><th>说明</th></tr></thead>
   <tbody>
@@ -205,34 +329,87 @@
     <tr><td>Docker</td><td>20.10+</td><td>含 compose v2</td></tr>
   </tbody>
 </table>
+</div>
 
-<!-- ================================================================ -->
-<h2 id="s3">三、Docker 部署（VPS 推荐）</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="s3">三、Docker 部署</h2>
 
 <p>
   部署模型是<b>「VPS 只拉远程镜像」</b>：本机改代码 → 推 GitHub →
-  GitHub Actions 构建推 Docker Hub → VPS 拉镜像运行。
-  所以 VPS 上<b>不需要</b>源码，只需要镜像和几个配置文件。
+  GitHub Actions 构建推 Docker Hub / GHCR → VPS 拉镜像运行。
+  所以 VPS 上<b>不需要源码</b>，只需要镜像和几个配置文件。
 </p>
 
-<h3><span class="step"><span class="step-num">1</span><span class="step-title">拉取镜像</span></span></h3>
-<p>
-  镜像名由<b>你自己的</b>环境变量决定，不是写死的。先在 <code>.env</code> 里设好：
-</p>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<figure>
+<svg viewBox="0 0 900 330" role="img" aria-label="构建与部署链路">
+  <defs>
+    <marker id="ar2" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#38BDF8"/>
+    </marker>
+  </defs>
+
+  <rect x="30" y="60" width="150" height="70" rx="10" fill="url(#gB)" stroke="#A78BFA" stroke-opacity=".55"/>
+  <text x="105" y="88" fill="#E5E7EB" font-size="14" text-anchor="middle">本机</text>
+  <text x="105" y="107" fill="#9CA3AF" font-size="11" text-anchor="middle">改代码 · git commit</text>
+
+  <line x1="180" y1="95" x2="236" y2="95" stroke="#38BDF8" stroke-width="1.8" marker-end="url(#ar2)"/>
+  <text x="208" y="86" fill="#38BDF8" font-size="11" text-anchor="middle">push</text>
+
+  <rect x="240" y="60" width="150" height="70" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".55"/>
+  <text x="315" y="88" fill="#E5E7EB" font-size="14" text-anchor="middle">GitHub</text>
+  <text x="315" y="107" fill="#9CA3AF" font-size="11" text-anchor="middle">Actions 触发</text>
+
+  <line x1="390" y1="95" x2="446" y2="95" stroke="#38BDF8" stroke-width="1.8" marker-end="url(#ar2)"/>
+  <text x="418" y="86" fill="#38BDF8" font-size="11" text-anchor="middle">buildx</text>
+
+  <rect x="450" y="46" width="180" height="98" rx="10" fill="url(#gC)" stroke="#6EE7B7" stroke-opacity=".55"/>
+  <text x="540" y="72" fill="#E5E7EB" font-size="14" text-anchor="middle">镜像仓库</text>
+  <text x="540" y="92" fill="#6EE7B7" font-size="11" text-anchor="middle">amd64 + arm64</text>
+  <text x="540" y="110" fill="#9CA3AF" font-size="11" text-anchor="middle">Docker Hub / GHCR</text>
+  <text x="540" y="130" fill="#6B7280" font-size="10" text-anchor="middle">名称由仓库变量决定</text>
+
+  <line x1="630" y1="95" x2="686" y2="95" stroke="#38BDF8" stroke-width="1.8" marker-end="url(#ar2)"/>
+  <text x="658" y="86" fill="#38BDF8" font-size="11" text-anchor="middle">pull</text>
+
+  <rect x="690" y="60" width="180" height="70" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".55"/>
+  <text x="780" y="88" fill="#E5E7EB" font-size="14" text-anchor="middle">VPS</text>
+  <text x="780" y="107" fill="#9CA3AF" font-size="11" text-anchor="middle">/opt/deploy 只需配置文件</text>
+
+  <text x="450" y="196" fill="#FBBF24" font-size="12" text-anchor="middle">
+    ⚠ 工作流只在 master / main 分支和 v* tag 上触发
+  </text>
+  <text x="450" y="220" fill="#FBBF24" font-size="12" text-anchor="middle">
+    ⚠ VPS 拉取用 pull_policy: always —— 否则推了新 :latest 也拉不到
+  </text>
+  <text x="450" y="252" fill="#6B7280" font-size="11" text-anchor="middle">
+    默认策略 missing 只看本地有没有同名 tag，不比对 registry 上的 digest
+  </text>
+  <text x="450" y="274" fill="#6B7280" font-size="11" text-anchor="middle">
+    → 这正是「改了代码但 VPS 跑的还是旧镜像」的直接原因
+  </text>
+</svg>
+<figcaption>
+  <b>图 2</b>　构建与部署链路。镜像名完全由<b>仓库变量</b>决定，
+  代码里没有任何写死的账号名。
+</figcaption>
+</figure>
+
+<div class="step"><span class="sn">1</span><span class="st">拉取镜像</span></div>
+
+<p>镜像名由<b>你自己的</b>环境变量决定，不是写死的。先在 <code>.env</code> 里设好：</p>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre># .env —— 镜像来源
 DOCKERHUB_USERNAME=你的DockerHub用户名
-DOCKERHUB_IMAGE=cpa2sub2api        # 可选，留空则用仓库名</pre>
-</div>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
-<pre>docker pull $DOCKERHUB_USERNAME/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest</pre>
-</div>
-<div class="note">
-  <strong>这一组变量同时决定 CI 往哪里推</strong>
+DOCKERHUB_IMAGE=cpa2sub2api        # 可选，留空则用仓库名</pre></div>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>docker pull $DOCKERHUB_USERNAME/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest</pre></div>
+
+<div class="box note">
+  <b>这一组变量同时决定 CI 往哪里推</b>
   GitHub 仓库里 Settings → Secrets and variables → Actions 要配置：
-  <ul>
+  <ul style="margin-bottom:0">
     <li><b>Variables</b>：<code>DOCKERHUB_USERNAME</code>（与上面一致）、<code>DOCKERHUB_IMAGE</code></li>
     <li><b>Secrets</b>：<code>DOCKERHUB_TOKEN</code>（Docker Hub 的 Access Token，<b>不要填登录密码</b>）</li>
   </ul>
@@ -240,53 +417,70 @@ DOCKERHUB_IMAGE=cpa2sub2api        # 可选，留空则用仓库名</pre>
   那一处会安静跳过，只发 GHCR。
 </div>
 
-<h3><span class="step"><span class="step-num">2</span><span class="step-title">准备配置文件</span></span></h3>
-<p>在部署根目录（<code>/opt/deploy</code>）放这些文件：</p>
+<div class="step"><span class="sn">2</span><span class="st">准备配置文件</span></div>
 
+<p>在部署根目录（如 <code>/opt/deploy</code>）放这些文件：</p>
+
+<div class="tw">
 <table>
   <thead><tr><th>文件</th><th>作用</th><th>是否必需</th></tr></thead>
   <tbody>
     <tr><td><code>.env</code></td><td>连接信息与开关</td><td>必需</td></tr>
     <tr><td><code>config.yaml</code></td><td>CPA / CPAMP 的产物，导入的源数据</td><td>必需（或用 CPA_BASE_URL 在线拉）</td></tr>
     <tr><td><code>docker-compose.yml</code></td><td>服务编排</td><td>必需</td></tr>
-    <tr><td><code>nginx.conf</code></td><td>反向代理（若前置 nginx）</td><td>可选</td></tr>
-    <tr><td><code>mihomo-manager/</code></td><td>代理订阅与自举脚本</td><td>用代理时必需</td></tr>
+    <tr><td><code>nginx.conf</code></td><td>反向代理</td><td>本项目<b>不需要</b>（它不是 HTTP 服务）</td></tr>
+    <tr><td><code>mihomo/</code></td><td>代理配置（由 mihomo-init 自举生成）</td><td>用代理时必需</td></tr>
   </tbody>
 </table>
-
-<h4>2.1 <code>.env</code> 最小可用内容</h4>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
-<pre># ---- 必填：sub2api 连接 ----
-SUB2API_BASE_URL=https://sub2api.example.com
-SUB2API_ADMIN_KEY=admin-替换成你的管理员密钥
-
-# ---- 代理：容器间必须用服务名，不能写 127.0.0.1 ----
-FALLBACK_PROXY=http://mihomo:7890
-
-# ---- mihomo（用代理时填）----
-MIHOMO_SECRET=替换成随机字符串
-MIHOMO_SUBSCRIPTIONS=wog=https://你的机场订阅地址</pre>
 </div>
 
+<div class="box tip">
+  <b>本项目不占用任何端口，也不需要 nginx 反代</b>
+  它是一次性运维工具（<code>restart: "no"</code>），跑完即退，
+  不进请求路径。所以 <code>nginx.conf</code> 里<b>不需要</b>为它加 server 块。
+</div>
+
+<h4>2.1 <code>.env</code> 里本项目需要的项</h4>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># ── 必填 ──────────────────────────────────────────────
+DOCKERHUB_USERNAME=你的用户名
+DOCKERHUB_IMAGE=cpa2sub2api
+
+# sub2api 管理地址。**必须用服务名**，不能写 127.0.0.1 ——
+# 容器里的 127.0.0.1 是本容器自己，不是 sub2api。
+# 端口用 sub2api **容器内**监听的端口，不是宿主映射端口。
+SUB2API_BASE_URL=http://sub2api:8080
+SUB2API_ADMIN_KEY=你的管理员密钥
+
+# ── 可选 ──────────────────────────────────────────────
+# CPA 管理接口：本地没有 config.yaml 时用它在线拉
+CPA_BASE_URL=http://cli-proxy-api:8317
+CPA_MANAGEMENT_KEY=
+
+# 代理兜底：复用同栈已有的 mihomo
+FALLBACK_PROXY=http://mihomo:7890
+
+# 并发（三项都会被硬性钳到 8）
+IMPORT_WORKERS=4
+TEST_PLAN_WORKERS=8
+PRICING_WORKERS=8</pre></div>
+
 <div class="danger">
-  <strong>两个最容易配错的地方</strong>
-  ① <code>FALLBACK_PROXY</code> 在容器里<b>必须</b>用服务名 <code>http://mihomo:7890</code>。
-  写 <code>127.0.0.1:7890</code> 指向的是容器自己，不是代理。<br>
-  ② 容器部署下不要依赖 <code>设置.json</code>：配置走环境变量，
-  两者同时存在时<b>环境变量优先</b>。
+  <b>两个最容易配错的地方</b>
+  ① <code>SUB2API_BASE_URL</code> 与 <code>FALLBACK_PROXY</code> 在容器里
+  <b>必须</b>用服务名。写 <code>127.0.0.1</code> 指向的是容器自己。<br>
+  ② 端口要填<b>容器内</b>的。比如 sub2api 宿主映射是
+  <code>127.0.0.1:8070→8080</code>，容器间访问就该写 <code>:8080</code>，
+  写 <code>8070</code> 连不上。
 </div>
 
 <h4>2.2 <code>config.yaml</code></h4>
-<p>
-  直接把 CPA / CPAMP 生成的那份拷过来即可，本工具只读不写。
-  结构参考：
-</p>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
-<pre># 客户端 -> Cloudflare -> nginx -> sub2api -> CPA -> 各上游
 
-routing:
+<p>直接把 CPA / CPAMP 生成的那份拷过来即可，本工具只读不写。</p>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>routing:
   strategy: round-robin          # 决定 weight&lt;=0 是否等于停用
 
 max-retry-credentials: 12
@@ -318,53 +512,91 @@ openai-compatibility:
         weight: 2
     models:
       - name: gpt-6
-        alias: gpt-6</pre>
+        alias: gpt-6</pre></div>
+
+<div class="step"><span class="sn">3</span><span class="st">接入 compose</span></div>
+
+<p>
+  本项目<b>不自带 mihomo</b>。如果你的栈里已经有 mihomo（比如由
+  upstream-importer 的 <code>mihomo-init</code> 自举），就只加本项目这一个服务，
+  通过服务名复用代理：
+</p>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>  cpa2sub2api:
+    image: ${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
+    pull_policy: always          # 见下方说明，别用默认的 missing
+    container_name: cpa2sub2api
+    restart: "no"                # 运维工具，跑完即退
+
+    env_file: [.env]
+
+    environment:
+      SUB2API_BASE_URL: "${SUB2API_BASE_URL:-http://sub2api:8080}"
+      SUB2API_ADMIN_KEY: "${SUB2API_ADMIN_KEY:-}"
+      CPA_BASE_URL: "${CPA_BASE_URL:-http://cli-proxy-api:8317}"
+      CPA_MANAGEMENT_KEY: "${CPA_MANAGEMENT_KEY:-}"
+      FALLBACK_PROXY: "${FALLBACK_PROXY:-http://mihomo:7890}"
+      TZ: "Asia/Shanghai"
+
+    volumes:
+      # 单文件挂载：挂整个 /opt/deploy 等于把 .env、secrets/ 一起递给它
+      - ./config.yaml:/app/config.yaml:ro,Z
+      - cpa2sub2api-out:/app/out:Z
+
+    # 它持有 sub2api 管理员密钥且能批量建号/改号，收紧权限
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+    networks:
+      - sub2api-network    # 访问 sub2api
+      - default            # 访问 mihomo / cli-proxy-api
+
+    depends_on:
+      # 只等「起来了」，不等「健康」—— mihomo 节点全挂时会因出不去网
+      # 而报 unhealthy，用 service_healthy 会让本工具永远起不来
+      sub2api:  { condition: service_started }
+      mihomo:   { condition: service_started }</pre></div>
+
+<div class="box warn">
+  <b>为什么必须写 <code>pull_policy: always</code></b>
+  compose 的默认策略是 <code>missing</code>：只看本地有没有同名 tag，
+  <b>不比对 registry 上的 digest</b>。所以镜像推了新的 <code>:latest</code>，
+  <code>docker compose up -d</code> 也会静默继续用旧镜像 ——
+  这正是「自动更新不生效」的直接原因。
 </div>
 
-<h3><span class="step"><span class="step-num">3</span><span class="step-title">启动</span></span></h3>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
-<pre>cd /opt/deploy
+<div class="step"><span class="sn">4</span><span class="st">执行导入</span></div>
 
-# 带代理（推荐）
-docker compose --profile mihomo up -d
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># 正式导入（一键全自动）
+docker compose run --rm cpa2sub2api python 一键导入.py
 
-# 不带代理，直连
-docker compose up -d cpa2sub2api</pre>
-</div>
+# 交互菜单（分步操作、回滚、推送定价）
+docker compose run --rm cpa2sub2api python run.py
 
-<div class="note">
-  <strong>启动顺序不用你操心</strong>
-  <code>mihomo-init</code> 会先把代理配置物化到命名卷，跑完即退，
-  然后 <code>mihomo</code> 才启动，最后才是本工具。
-  首次启动多等十几秒属正常。
-</div>
+# 查看产物
+docker run --rm -v deploy_cpa2sub2api-out:/o alpine sh -c 'ls -l /o'</pre></div>
 
-<h3><span class="step"><span class="step-num">4</span><span class="step-title">执行导入</span></span></h3>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
-<pre># 空跑预览：只看计划，不写任何数据
-docker compose run --rm cpa2sub2api python run.py   # 菜单里选 2
-
-# 正式导入（一键全自动）
-docker compose run --rm cpa2sub2api python 一键导入.py</pre>
-</div>
-
-<!-- ================================================================ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s4">四、配置文件逐项说明</h2>
 
 <h3>4.1 连接配置</h3>
+<div class="tw">
 <table>
   <thead><tr><th>变量</th><th>默认</th><th>说明</th></tr></thead>
   <tbody>
-    <tr><td><code>SUB2API_BASE_URL</code></td><td>—</td><td><b>必填</b>。sub2api 地址</td></tr>
+    <tr><td><code>SUB2API_BASE_URL</code></td><td>—</td><td><b>必填</b>。容器内用服务名 + 容器端口</td></tr>
     <tr><td><code>SUB2API_ADMIN_KEY</code></td><td>—</td><td><b>必填</b>。管理员密钥</td></tr>
     <tr><td><code>CPA_BASE_URL</code></td><td>—</td><td>可选。本地无 config.yaml 时在线拉</td></tr>
     <tr><td><code>CPA_MANAGEMENT_KEY</code></td><td>—</td><td>可选。配合上一项</td></tr>
+    <tr><td><code>FALLBACK_PROXY</code></td><td>—</td><td>代理兜底。容器内用 <code>http://mihomo:7890</code></td></tr>
   </tbody>
 </table>
+</div>
 
 <h3>4.2 并发配置</h3>
+<div class="tw">
 <table>
   <thead><tr><th>变量</th><th>默认</th><th>上限</th><th>说明</th></tr></thead>
   <tbody>
@@ -375,12 +607,14 @@ docker compose run --rm cpa2sub2api python 一键导入.py</pre>
     <tr><td><code>BATCH_SIZE</code></td><td>50</td><td>—</td><td>每批写入条数</td></tr>
   </tbody>
 </table>
-<p class="subtitle">
-  三个 worker 都硬性钳到 8。调再大也不会真起更多线程——实测超过 8 只会
-  把 sub2api 和自己的连接池压垮，不会更快。
+</div>
+<p style="color:var(--fg2); font-size:.93rem">
+  三个 worker 都硬性钳到 8。实测超过 8 只会把 sub2api 和自己的连接池压垮，
+  不会更快。
 </p>
 
 <h3>4.3 策略开关</h3>
+<div class="tw">
 <table>
   <thead><tr><th>变量</th><th>默认</th><th>作用</th></tr></thead>
   <tbody>
@@ -393,113 +627,205 @@ docker compose run --rm cpa2sub2api python 一键导入.py</pre>
     <tr><td><code>DISABLE_PROXY_FALLBACK</code></td><td>false</td><td>调试时关掉代理兜底</td></tr>
   </tbody>
 </table>
+</div>
 
 <h3>4.4 HTTP 行为</h3>
+<div class="tw">
 <table>
   <thead><tr><th>变量</th><th>默认</th><th>说明</th></tr></thead>
   <tbody>
     <tr><td><code>HTTP_TIMEOUT</code></td><td>30</td><td>单次请求超时（秒）</td></tr>
-    <tr><td><code>HTTP_RETRIES</code></td><td>3</td><td>瞬时故障重试次数</td></tr>
+    <tr><td><code>HTTP_RETRIES</code></td><td>3</td><td>只重试瞬时故障：连接层错误 / 429 / 5xx。4xx 不重试</td></tr>
     <tr><td><code>USER_AGENT</code></td><td>浏览器 UA</td><td>sub2api 在 CF 后面时必需</td></tr>
   </tbody>
 </table>
+</div>
 
-<div class="warn">
-  <strong>为什么 User-Agent 要伪装成浏览器</strong>
+<div class="box warn">
+  <b>为什么 User-Agent 要伪装成浏览器</b>
   Cloudflare 的「浏览器完整性检查」会按 UA 拦掉一切不像浏览器的客户端，
   返回 <code>403</code> 加一行 <code>error code: 1010</code>。
-  注意这是 CF 边缘直接拒绝、请求根本没到源站，所以在 sub2api 日志里<b>什么都看不到</b>。
-  鉴权仍然照常校验，这只是让合法的自动化请求不被按 UA 一刀切。
+  注意这是 CF 边缘直接拒绝、请求根本没到源站，所以在 sub2api 日志里
+  <b>什么都看不到</b>。鉴权仍然照常校验，这只是让合法的自动化请求不被按 UA 一刀切。
 </div>
 
-<!-- ================================================================ -->
-<h2 id="s5">五、代理（mihomo）配置</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="s5">五、代理（mihomo）</h2>
 
 <h3>5.1 为什么需要代理</h3>
-<p>
-  部分上游按<b>出口 IP</b> 拦截（Cloudflare 人机验证、直接 403）。
-  本工具的代理策略是<b>兜底式</b>的：
-</p>
-<ul>
-  <li>直连成功 → 不走代理</li>
-  <li>直连失败（连接层错误 / 429 / 5xx）→ 自动经代理重试一次</li>
-</ul>
-<p>
-  判据是"本机出口 IP 有没有被拦"，不取决于域名是谁 ——
-  所以由你在 CPA 里为<b>哪些条目</b>配了 <code>proxy-url</code> 来决定谁需要代理。
-</p>
+
+<p>部分上游按<b>出口 IP</b> 拦截（Cloudflare 人机验证、直接 403）。本工具的代理策略是<b>兜底式</b>的：</p>
+
+<figure>
+<svg viewBox="0 0 900 300" role="img" aria-label="代理兜底流程">
+  <defs>
+    <marker id="ar3" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+    </marker>
+    <marker id="ar3g" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6EE7B7"/>
+    </marker>
+    <marker id="ar3r" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#FB7185"/>
+    </marker>
+  </defs>
+
+  <rect x="30" y="120" width="120" height="56" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
+  <text x="90" y="145" fill="#E5E7EB" font-size="13" text-anchor="middle">发起请求</text>
+  <text x="90" y="163" fill="#9CA3AF" font-size="10" text-anchor="middle">默认直连</text>
+
+  <line x1="150" y1="148" x2="206" y2="148" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar3)"/>
+
+  <rect x="210" y="120" width="130" height="56" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
+  <text x="275" y="145" fill="#E5E7EB" font-size="13" text-anchor="middle">直连成功？</text>
+  <text x="275" y="163" fill="#9CA3AF" font-size="10" text-anchor="middle">连接层 / 429 / 5xx</text>
+
+  <path d="M340 140 L420 140 L420 66 L560 66" stroke="#6EE7B7" stroke-width="1.7"
+        fill="none" marker-end="url(#ar3g)"/>
+  <text x="400" y="58" fill="#6EE7B7" font-size="11" text-anchor="middle">是 → 直接用</text>
+
+  <path d="M340 158 L420 158 L420 232 L560 232" stroke="#FB7185" stroke-width="1.7"
+        fill="none" marker-end="url(#ar3r)"/>
+  <text x="400" y="256" fill="#FB7185" font-size="11" text-anchor="middle">否 → 换出口</text>
+
+  <rect x="565" y="40" width="150" height="52" rx="10" fill="url(#gC)" stroke="#6EE7B7" stroke-opacity=".55"/>
+  <text x="640" y="62" fill="#E5E7EB" font-size="13" text-anchor="middle">返回结果</text>
+  <text x="640" y="80" fill="#9CA3AF" font-size="10" text-anchor="middle">不碰代理</text>
+
+  <rect x="565" y="206" width="150" height="52" rx="10" fill="url(#gB)" stroke="#A78BFA" stroke-opacity=".55"/>
+  <text x="640" y="228" fill="#E5E7EB" font-size="13" text-anchor="middle">经 mihomo 重试一次</text>
+  <text x="640" y="246" fill="#9CA3AF" font-size="10" text-anchor="middle">proxy-url / fallback</text>
+
+  <line x1="715" y1="232" x2="771" y2="232" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar3)"/>
+  <rect x="775" y="206" width="95" height="52" rx="10" fill="url(#gC)" stroke="#6EE7B7" stroke-opacity=".55"/>
+  <text x="822" y="228" fill="#E5E7EB" font-size="13" text-anchor="middle">返回</text>
+  <text x="822" y="246" fill="#9CA3AF" font-size="10" text-anchor="middle">或如实报错</text>
+
+  <text x="450" y="292" fill="#6B7280" font-size="11" text-anchor="middle">
+    代理也不通时，如实报「直连的那个错」—— 不拿代理的错掩盖真实原因
+  </text>
+</svg>
+<figcaption>
+  <b>图 3</b>　代理兜底流程。只有<b>连接层失败 / 429 / 5xx</b> 才会换出口；
+  4xx 是请求本身的问题，换出口也一样失败。
+</figcaption>
+</figure>
 
 <h3>5.2 配置订阅</h3>
+
 <p>在部署根的 <code>.env</code> 里填：</p>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre>MIHOMO_SECRET=自己生成的随机串
-MIHOMO_SUBSCRIPTIONS=wog=https://机场订阅地址</pre>
-</div>
-<p>或者每个订阅一个变量（两种可混用）：</p>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+MIHOMO_SUBSCRIPTIONS=wog=https://机场订阅地址</pre></div>
+
+<p>或者每个订阅一个变量（两种可混用，<code>MIHOMO_SUB_&lt;名称&gt;</code> 优先）：</p>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre>MIHOMO_SUB_WOG=https://机场订阅地址
-MIHOMO_SUB_WOGB=https://另一个订阅地址</pre>
-</div>
+MIHOMO_SUB_WOGB=https://另一个订阅地址</pre></div>
 
 <h3>5.3 验证（四步，缺一不可）</h3>
 
+<figure>
+<svg viewBox="0 0 900 360" role="img" aria-label="mihomo 四步验证">
+  <defs>
+    <marker id="ar4" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#38BDF8"/>
+    </marker>
+  </defs>
+
+  <!-- 步骤 1 -->
+  <circle cx="60" cy="52" r="16" fill="#38BDF8" fill-opacity=".18" stroke="#38BDF8"/>
+  <text x="60" y="57" fill="#38BDF8" font-size="14" text-anchor="middle" font-weight="700">1</text>
+  <text x="90" y="48" fill="#E5E7EB" font-size="13">进程与 API 是否活着</text>
+  <text x="90" y="68" fill="#9CA3AF" font-size="11" font-family="monospace">docker compose ps mihomo</text>
+  <text x="330" y="60" fill="#6EE7B7" font-size="11">→ 端口在听？</text>
+
+  <!-- 步骤 2 -->
+  <circle cx="60" cy="132" r="16" fill="#FBBF24" fill-opacity=".22" stroke="#FBBF24"/>
+  <text x="60" y="137" fill="#FBBF24" font-size="14" text-anchor="middle" font-weight="700">2</text>
+  <text x="90" y="128" fill="#E5E7EB" font-size="13">
+    AUTO 组里到底有没有节点
+  </text>
+  <text x="300" y="128" fill="#FBBF24" font-size="11">← 最容易漏，也最关键</text>
+  <text x="90" y="148" fill="#9CA3AF" font-size="11" font-family="monospace">curl .../proxies/AUTO | jq '.all|length'</text>
+  <text x="480" y="140" fill="#FB7185" font-size="11">→ 为 0 就是「代理静默失效」</text>
+
+  <!-- 步骤 3 -->
+  <circle cx="60" cy="212" r="16" fill="#A78BFA" fill-opacity=".22" stroke="#A78BFA"/>
+  <text x="60" y="217" fill="#A78BFA" font-size="14" text-anchor="middle" font-weight="700">3</text>
+  <text x="90" y="208" fill="#E5E7EB" font-size="13">宿主机能否出网</text>
+  <text x="90" y="228" fill="#9CA3AF" font-size="11" font-family="monospace">curl -x http://127.0.0.1:7890 ...</text>
+
+  <!-- 步骤 4 -->
+  <circle cx="60" cy="292" r="16" fill="#6EE7B7" fill-opacity=".22" stroke="#6EE7B7"/>
+  <text x="60" y="297" fill="#6EE7B7" font-size="14" text-anchor="middle" font-weight="700">4</text>
+  <text x="90" y="288" fill="#E5E7EB" font-size="13">
+    从本工具容器内部能否出网
+  </text>
+  <text x="360" y="288" fill="#6EE7B7" font-size="11">← 这才是工具的真实路径</text>
+  <text x="90" y="308" fill="#9CA3AF" font-size="11" font-family="monospace">docker compose exec cpa2sub2api curl -x http://mihomo:7890 ...</text>
+
+  <line x1="40" y1="88" x2="40" y2="268" stroke="#1E2636" stroke-width="2"/>
+  <line x1="40" y1="88" x2="30" y2="88" stroke="#1E2636" stroke-width="2"/>
+  <line x1="40" y1="268" x2="30" y2="268" stroke="#1E2636" stroke-width="2"/>
+
+  <text x="450" y="342" fill="#6B7280" font-size="11" text-anchor="middle">
+    容器之间走 Docker 网络直连容器 IP、用服务名 mihomo，不经过宿主机端口映射
+  </text>
+</svg>
+<figcaption>
+  <b>图 4</b>　四步验证。<b>第 4 步不能省</b> —— 宿主机 curl 通 ≠ 容器内通，
+  两者走的是完全不同的路径。
+</figcaption>
+</figure>
+
 <h4>① 进程与 API 是否活着</h4>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre>docker compose ps mihomo
 curl -fsS -H "Authorization: Bearer $MIHOMO_SECRET" \
-  http://127.0.0.1:9090/version</pre>
-</div>
+  http://127.0.0.1:9090/version</pre></div>
 
-<h4>② AUTO 组里到底有没有节点 <span class="badge badge-warn">最容易漏</span></h4>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<h4>② AUTO 组里到底有没有节点 <span class="bd bd-hot">最容易漏</span></h4>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre>curl -fsS -H "Authorization: Bearer $MIHOMO_SECRET" \
-  http://127.0.0.1:9090/proxies/AUTO | jq '{now: .now, count: (.all|length)}'</pre>
-</div>
+  http://127.0.0.1:9090/proxies/AUTO | jq '{now: .now, count: (.all|length)}'</pre></div>
+
 <div class="danger">
-  <strong><code>count: 0</code> 就是"代理静默失效"</strong>
+  <b><code>count: 0</code> 就是「代理静默失效」</b>
   订阅没拉到、或被 <code>filter: "×1倍率"</code> 全筛掉了。
   此时 mihomo 进程健康、端口在听、API 有响应 —— <b>日志里看不出任何异常</b>，
-  但任何请求都出不去。表现为上游全部超时、sub2api 的 IP 管理页显示"链接失败"。
+  但任何请求都出不去。表现为上游全部超时、sub2api 的 IP 管理页显示「链接失败」。
 </div>
 
-<h4>③ 实际能不能出网</h4>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<h4>③ 宿主机能否出网</h4>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre>curl -fsS -m 15 -x http://127.0.0.1:7890 -o /dev/null \
-  -w 'egress OK: %{http_code}\n' https://www.gstatic.com/generate_204</pre>
-</div>
+  -w 'egress OK: %{http_code}\n' https://www.gstatic.com/generate_204</pre></div>
 
-<h4>④ 从本工具容器内部再验一次（这才是真实路径）</h4>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<h4>④ 从本工具容器内部再验一次（真实路径）</h4>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre>docker compose exec cpa2sub2api \
   curl -fsS -m 15 -x http://mihomo:7890 -o /dev/null \
-  -w '%{http_code}\n' https://www.gstatic.com/generate_204</pre>
-</div>
-<p class="subtitle">
-  容器之间走 Docker 网络直连容器 IP、用服务名 <code>mihomo</code>，
-  <b>不经过宿主机端口映射</b>。所以宿主机 curl 通 ≠ 容器内通，这一步不能省。
-</p>
+  -w '%{http_code}\n' https://www.gstatic.com/generate_204</pre></div>
 
 <h3>5.4 CPA 侧怎么指定哪些站点走代理</h3>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre># 在 CPA 的 config.yaml 里，给需要代理的条目加：
-proxy-url: "http://mihomo:7890"</pre>
-</div>
+proxy-url: "http://mihomo:7890"</pre></div>
 <p>
   本工具据此为对应账号绑定代理，并让<b>同域名</b>的其它条目自动跟进
   —— 同一个站的其它 KEY 出口 IP 一样，拦不拦是同一个答案。
 </p>
 
-<!-- ================================================================ -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s6">六、执行导入</h2>
 
 <h3>6.1 两种入口</h3>
+<div class="tw">
 <table>
   <thead><tr><th>入口</th><th>命令</th><th>适用</th></tr></thead>
   <tbody>
@@ -507,138 +833,485 @@ proxy-url: "http://mihomo:7890"</pre>
     <tr><td>交互菜单</td><td><code>python run.py</code></td><td>分步操作、回滚、推送定价</td></tr>
   </tbody>
 </table>
+</div>
 
-<h3>6.2 导入流程的六个阶段</h3>
-<table>
-  <thead><tr><th>阶段</th><th>做什么</th></tr></thead>
-  <tbody>
-    <tr><td>[1/6]</td><td>建齐分组、建立降级链</td></tr>
-    <tr><td>[2/6]</td><td>建齐代理</td></tr>
-    <tr><td>[3/6]</td><td>去重、健康度重排、批量建号</td></tr>
-    <tr><td>[4/6]</td><td>给需要停用的账号补停用</td></tr>
-    <tr><td>[5/6]</td><td>挂定时探活计划</td></tr>
-    <tr><td>[6/6]</td><td>回收被关掉的调度开关、复活已证明可用的账号</td></tr>
-  </tbody>
-</table>
-<p>
-  之后还有一步<b>第二阶段重排</b>：用刚建出来的账号的真实状态再过一遍优先级。
-  这是为了解决冷启动问题——首次导入时 sub2api 里还没有任何账号，
-  健康度无从算起，只能沿用 CPA 的优先级；新建完成后立刻重排，一次到位。
-</p>
+<h3>6.2 导入流程</h3>
+
+<figure>
+<svg viewBox="0 0 900 420" role="img" aria-label="导入六阶段与第二阶段重排">
+  <defs>
+    <linearGradient id="gS" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity=".22"/>
+      <stop offset="100%" stop-color="#38BDF8" stop-opacity=".05"/>
+    </linearGradient>
+    <linearGradient id="gS2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#A78BFA" stop-opacity=".3"/>
+      <stop offset="100%" stop-color="#A78BFA" stop-opacity=".06"/>
+    </linearGradient>
+  </defs>
+
+  <text x="30" y="28" fill="#6B7280" font-size="12" font-family="monospace">[1/6]</text>
+  <rect x="90" y="14" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
+  <text x="106" y="34" fill="#E5E7EB" font-size="12.5">建齐分组、建立降级链</text>
+
+  <text x="30" y="76" fill="#6B7280" font-size="12" font-family="monospace">[2/6]</text>
+  <rect x="90" y="62" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
+  <text x="106" y="82" fill="#E5E7EB" font-size="12.5">建齐代理</text>
+
+  <text x="30" y="124" fill="#6B7280" font-size="12" font-family="monospace">[3/6]</text>
+  <rect x="90" y="110" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
+  <text x="106" y="130" fill="#E5E7EB" font-size="12.5">去重、健康度重排、批量建号</text>
+
+  <text x="30" y="172" fill="#6B7280" font-size="12" font-family="monospace">[4/6]</text>
+  <rect x="90" y="158" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
+  <text x="106" y="178" fill="#E5E7EB" font-size="12.5">给需要停用的账号补停用</text>
+
+  <text x="30" y="220" fill="#6B7280" font-size="12" font-family="monospace">[5/6]</text>
+  <rect x="90" y="206" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
+  <text x="106" y="226" fill="#E5E7EB" font-size="12.5">挂定时探活计划</text>
+
+  <text x="30" y="268" fill="#6B7280" font-size="12" font-family="monospace">[6/6]</text>
+  <rect x="90" y="254" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
+  <text x="106" y="274" fill="#E5E7EB" font-size="12.5">回收被关掉的调度开关、复活已证明可用的账号</text>
+
+  <!-- 第二阶段 -->
+  <rect x="90" y="308" width="700" height="46" rx="7" fill="url(#gS2)"
+        stroke="#A78BFA" stroke-opacity=".6" stroke-width="1.5"/>
+  <text x="106" y="330" fill="#E5E7EB" font-size="12.5" font-weight="700">
+    [第二阶段] 用新建账号的真实状态再重排一次优先级
+  </text>
+  <text x="106" y="347" fill="#A78BFA" font-size="11">
+    首次导入时 sub2api 里还没有任何账号，健康度无从算起 → 新建完成后立刻重排，一次到位
+  </text>
+
+  <path d="M790 284 L830 284 L830 331 L800 331" stroke="#A78BFA" stroke-width="1.6"
+        fill="none" stroke-dasharray="4 3"/>
+  <text x="450" y="392" fill="#6B7280" font-size="11" text-anchor="middle">
+    第二阶段只在本轮真的新建过账号时执行；没新建就说明是第二次以后的运行，跳过
+  </text>
+  <text x="450" y="410" fill="#6B7280" font-size="11" text-anchor="middle">
+    这一层解决了「必须手工跑第二遍才能应用智能优先级」的冷启动问题
+  </text>
+</svg>
+<figcaption>
+  <b>图 5</b>　导入的六个阶段<b>加上第二阶段重排</b>。
+  最后那一步是新增的，专门解决冷启动。
+</figcaption>
+</figure>
 
 <h3>6.3 产物</h3>
+<div class="tw">
 <table>
   <thead><tr><th>文件</th><th>内容</th></tr></thead>
   <tbody>
     <tr><td><code>out/import-plan.json</code></td><td>完整导入计划</td></tr>
-    <tr><td><code>out/对照表.md</code></td><td>逐条对照（原优先级 / 新优先级 / 放行模型 / 排除规则 / 状态）</td></tr>
+    <tr><td><code>out/对照表.md</code></td><td>逐条对照（原/新优先级、放行模型、排除规则、状态）</td></tr>
     <tr><td><code>out/cpa-config-snapshot.yaml</code></td><td>导入时的 config 快照</td></tr>
     <tr><td><code>out/import-record.json</code></td><td>执行结果记录</td></tr>
   </tbody>
 </table>
+</div>
 
-<div class="tip">
-  <strong>导入前先看对照表</strong>
+<div class="box tip">
+  <b>导入前先看对照表</b>
   <code>out/对照表.md</code> 里的「放行模型」就是真正会写进 sub2api 的白名单，
-  与线上生效的完全一致（已修正过口径）。抽查几条确认没有意外被砍的模型。
+  与线上生效的完全一致（口径已修正）。抽查几条确认没有意外被砍的模型。
 </div>
 
-<!-- ================================================================ -->
-<h2 id="s7">七、工作原理：优先级、分桶与容灾</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="s7">七、工作原理</h2>
 
-<h3>7.1 优先级是"桶号"，不是权重</h3>
-<p>
-  CPA 和 sub2api 都按优先级<b>严格分桶</b>：只调度优先级最优的那一桶，
-  同桶内再按负载选号。所以优先级数值不是"权重"，而是"层级"。
-</p>
-<div class="warn">
-  <strong>方向相反</strong>
-  CPA 里数值<b>大</b>者优先，sub2api 里数值<b>小</b>者优先。本工具负责转换。
-</div>
+<h3>7.1 优先级是「桶号」，不是权重</h3>
 
-<h3>7.2 按域名分桶 <span class="badge badge-fix">已修</span></h3>
-<p>归集键是 <code>(渠道, 域名)</code>，规则有三条：</p>
-<ol>
-  <li><b>同一域名下所有 KEY 必须同桶</b> —— 它们是彼此的备份。拆进不同桶，
-      sub2api 只调度最小的那个，其余全部闲置，冗余退化成单点。</li>
-  <li><b>不同域名的桶号必须全局唯一</b> —— 撞桶意味着两个域名混在一桶里轮循，
-      失去"整桶挂掉才降级"的分层容灾。</li>
-  <li><b>步长 10</b>，留出人工插桶的空间。</li>
-</ol>
+<p>CPA 和 sub2api 都按优先级<b>严格分桶</b>：只调度优先级最优的那一桶，同桶内再按负载选号。所以优先级数值不是「权重」，而是「层级」。</p>
 
-<h3>7.3 健康度重排</h3>
-<p>优先级不照搬 CPA 的静态配置，而是按 sub2api 的实测状态重算：</p>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
-<pre>健康分 = 可调度比例 × 0.6 + 活跃比例 × 0.4
-         ↓
-按健康分降序分配桶号（健康度高 → 桶号小 → 优先被调度）
-         ↓
-健康分还映射成 load_factor：≥0.9→8，≥0.7→6，≥0.5→4，否则 2</pre>
-</div>
-<p>
-  可调度权重更高（0.6），因为它更严格：sub2api 出错时会同时关掉
-  <code>status</code> 和 <code>schedulable</code>，而恢复路径只还 status、
-  不还 schedulable —— 所以 <code>schedulable=false</code> 往往意味着
-  "这个 KEY 栽过跟头且没人管过它"。
-</p>
+<figure>
+<svg viewBox="0 0 900 250" role="img" aria-label="分桶调度示意">
+  <text x="450" y="24" fill="#6B7280" font-size="12" text-anchor="middle" font-family="monospace">
+    优先级 = 桶号，不是权重
+  </text>
 
-<h3>7.4 三层容灾链路</h3>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
-<pre>某个 KEY 没钱 / 被封 / 其他原因
-    ↓
-仅该账号被标 error（其余 KEY 不受影响）
-    ↓
-桶内剩余 KEY 继续轮循承载          ← 第一层：桶内冗余
-    ↓
-整桶全挂 → 自动降级到下一个域名的桶  ← 第二层：跨域名降级
-    ↓
-上游恢复 → 探活修回 active → 回收调度开关  ← 第三层：自动恢复</pre>
-</div>
+  <!-- 桶 1 -->
+  <rect x="40" y="50" width="250" height="80" rx="10" fill="url(#gC)"
+        stroke="#6EE7B7" stroke-opacity=".6" stroke-width="1.6"/>
+  <text x="60" y="74" fill="#6EE7B7" font-size="13" font-weight="700">桶 10（优先）</text>
+  <text x="60" y="96" fill="#E5E7EB" font-size="11" font-family="monospace">a.example.com  KEY×3</text>
+  <text x="60" y="114" fill="#9CA3AF" font-size="10.5">同一域名的多个 KEY 互为备份</text>
 
-<h3>7.5 模型"就高原则" <span class="badge badge-fix">已修</span></h3>
+  <text x="310" y="95" fill="#6EE7B7" font-size="20">◀</text>
+  <text x="336" y="88" fill="#6EE7B7" font-size="11">只调度最小的</text>
+  <text x="336" y="104" fill="#6EE7B7" font-size="11">那一桶</text>
+
+  <!-- 桶 2 -->
+  <rect x="400" y="50" width="230" height="80" rx="10" fill="url(#gB)"
+        stroke="#A78BFA" stroke-opacity=".6" stroke-width="1.6"/>
+  <text x="420" y="74" fill="#A78BFA" font-size="13" font-weight="700">桶 20</text>
+  <text x="420" y="96" fill="#E5E7EB" font-size="11" font-family="monospace">b.example.com  KEY×2</text>
+  <text x="420" y="114" fill="#9CA3AF" font-size="10.5">整桶不可用才轮到它</text>
+
+  <!-- 桶 3 -->
+  <rect x="660" y="50" width="200" height="80" rx="10" fill="url(#gA)"
+        stroke="#38BDF8" stroke-opacity=".5" stroke-width="1.6"/>
+  <text x="680" y="74" fill="#38BDF8" font-size="13" font-weight="700">桶 30</text>
+  <text x="680" y="96" fill="#E5E7EB" font-size="11" font-family="monospace">c.example.com</text>
+  <text x="680" y="114" fill="#9CA3AF" font-size="10.5">最后防线</text>
+
+  <line x1="40" y1="162" x2="860" y2="162" stroke="#1E2636" stroke-width="2"/>
+  <text x="450" y="184" fill="#FB7185" font-size="11.5" text-anchor="middle">
+    ⚠ 桶号必须全局唯一。若两个域名撞进同一桶，它们会被混着轮循，
+  </text>
+  <text x="450" y="204" fill="#FB7185" font-size="11.5" text-anchor="middle">
+    「整桶挂掉才降级」的容灾特性就失效了
+  </text>
+  <text x="450" y="230" fill="#6B7280" font-size="11" text-anchor="middle">
+    方向相反：CPA 里数值大者优先，sub2api 里数值小者优先 —— 本工具负责转换
+  </text>
+</svg>
+<figcaption>
+  <b>图 6</b>　分桶调度。同域名多 KEY 同桶是<b>硬性要求</b> ——
+  拆开就等于把「多 KEY 冗余」退化成「单 KEY 单点」。
+</figcaption>
+</figure>
+
+<h3>7.2 健康度重排</h3>
+
+<figure>
+<svg viewBox="0 0 900 300" role="img" aria-label="健康分到桶号的映射">
+  <text x="450" y="22" fill="#6B7280" font-size="12" text-anchor="middle" font-family="monospace">
+    健康分 → 桶号
+  </text>
+
+  <!-- 公式 -->
+  <rect x="40" y="42" width="380" height="58" rx="10" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".4"/>
+  <text x="230" y="66" fill="#E5E7EB" font-size="12.5" text-anchor="middle">
+    健康分 = 可调度比例 × <tspan fill="#6EE7B7" font-weight="700">0.6</tspan>
+    + 活跃比例 × <tspan fill="#FBBF24" font-weight="700">0.4</tspan>
+  </text>
+  <text x="230" y="87" fill="#9CA3AF" font-size="10.5" text-anchor="middle">
+    可调度权重更高，因为它更严格（见下方说明）
+  </text>
+
+  <text x="438" y="78" fill="#6B7280" font-size="18">→</text>
+
+  <!-- 分档 -->
+  <rect x="470" y="42" width="390" height="58" rx="10" fill="url(#gB)" stroke="#A78BFA" stroke-opacity=".45"/>
+  <text x="665" y="66" fill="#E5E7EB" font-size="12.5" text-anchor="middle">
+    按健康分降序分配桶号（分高 → 桶号小 → 优先调度）
+  </text>
+  <text x="665" y="87" fill="#9CA3AF" font-size="10.5" text-anchor="middle">
+    桶号全局唯一 · 步长 10
+  </text>
+
+  <!-- load_factor -->
+  <text x="40" y="136" fill="#E5E7EB" font-size="12.5">健康分还映射成 load_factor（桶内负载分配）：</text>
+
+  <rect x="40" y="152" width="130" height="40" rx="8" fill="rgba(110,231,183,.14)" stroke="#6EE7B7" stroke-opacity=".5"/>
+  <text x="105" y="170" fill="#6EE7B7" font-size="12" text-anchor="middle">≥ 0.9</text>
+  <text x="105" y="186" fill="#E5E7EB" font-size="12" text-anchor="middle" font-family="monospace">lf = 8</text>
+
+  <rect x="185" y="152" width="130" height="40" rx="8" fill="rgba(56,189,248,.14)" stroke="#38BDF8" stroke-opacity=".5"/>
+  <text x="250" y="170" fill="#38BDF8" font-size="12" text-anchor="middle">≥ 0.7</text>
+  <text x="250" y="186" fill="#E5E7EB" font-size="12" text-anchor="middle" font-family="monospace">lf = 6</text>
+
+  <rect x="330" y="152" width="130" height="40" rx="8" fill="rgba(251,191,36,.14)" stroke="#FBBF24" stroke-opacity=".5"/>
+  <text x="395" y="170" fill="#FBBF24" font-size="12" text-anchor="middle">≥ 0.5</text>
+  <text x="395" y="186" fill="#E5E7EB" font-size="12" text-anchor="middle" font-family="monospace">lf = 4</text>
+
+  <rect x="475" y="152" width="130" height="40" rx="8" fill="rgba(239,68,68,.14)" stroke="#EF4444" stroke-opacity=".5"/>
+  <text x="540" y="170" fill="#EF4444" font-size="12" text-anchor="middle">&lt; 0.5</text>
+  <text x="540" y="186" fill="#E5E7EB" font-size="12" text-anchor="middle" font-family="monospace">lf = 2</text>
+
+  <text x="450" y="228" fill="#9CA3AF" font-size="11.5" text-anchor="middle">
+    为什么「可调度」权重更高：sub2api 出错时会同时关掉 status 和 schedulable，
+  </text>
+  <text x="450" y="248" fill="#9CA3AF" font-size="11.5" text-anchor="middle">
+    而恢复路径只还 status、不还 schedulable。
+  </text>
+  <text x="450" y="272" fill="#A78BFA" font-size="11.5" text-anchor="middle">
+    → 所以 schedulable=false 往往意味着「这个 KEY 栽过跟头且没人管过它」
+  </text>
+</svg>
+<figcaption>
+  <b>图 7</b>　健康度重排。优先级不照搬 CPA 的静态配置，
+  而是按 sub2api 的<b>实测状态</b>重算。
+</figcaption>
+</figure>
+
+<h3>7.3 三层容灾链路</h3>
+
+<figure>
+<svg viewBox="0 0 900 380" role="img" aria-label="三层容灾链路">
+  <defs>
+    <marker id="ar5" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+    </marker>
+  </defs>
+
+  <!-- 起点 -->
+  <rect x="300" y="20" width="300" height="46" rx="10" fill="rgba(239,68,68,.14)"
+        stroke="#EF4444" stroke-opacity=".6" stroke-width="1.5"/>
+  <text x="450" y="49" fill="#FB7185" font-size="13" text-anchor="middle" font-weight="700">
+    某个 KEY 没钱 / 被封 / 其他原因
+  </text>
+
+  <line x1="450" y1="66" x2="450" y2="96" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar5)"/>
+
+  <rect x="280" y="100" width="340" height="40" rx="9" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".4"/>
+  <text x="450" y="125" fill="#E5E7EB" font-size="12.5" text-anchor="middle">
+    仅该账号被标 error（桶内其余 KEY 不受影响）
+  </text>
+
+  <line x1="450" y1="140" x2="450" y2="170" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar5)"/>
+
+  <!-- 第一层 -->
+  <rect x="150" y="174" width="600" height="46" rx="9" fill="rgba(110,231,183,.13)"
+        stroke="#6EE7B7" stroke-opacity=".6" stroke-width="1.6"/>
+  <text x="180" y="203" fill="#6EE7B7" font-size="12.5" font-weight="700">第一层</text>
+  <text x="260" y="203" fill="#E5E7EB" font-size="12.5">
+    桶内剩余 KEY 继续轮循承载
+  </text>
+  <text x="720" y="203" fill="#9CA3AF" font-size="11" text-anchor="end">桶内冗余</text>
+
+  <line x1="450" y1="220" x2="450" y2="248" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar5)"/>
+
+  <!-- 第二层 -->
+  <rect x="150" y="252" width="600" height="46" rx="9" fill="rgba(167,139,250,.14)"
+        stroke="#A78BFA" stroke-opacity=".6" stroke-width="1.6"/>
+  <text x="180" y="281" fill="#A78BFA" font-size="12.5" font-weight="700">第二层</text>
+  <text x="260" y="281" fill="#E5E7EB" font-size="12.5">
+    整桶全挂 → 自动降级到下一个域名的桶
+  </text>
+  <text x="720" y="281" fill="#9CA3AF" font-size="11" text-anchor="end">跨域名降级</text>
+
+  <line x1="450" y1="298" x2="450" y2="326" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar5)"/>
+
+  <!-- 第三层 -->
+  <rect x="150" y="330" width="600" height="42" rx="9" fill="rgba(56,189,248,.13)"
+        stroke="#38BDF8" stroke-opacity=".6" stroke-width="1.6"/>
+  <text x="180" y="357" fill="#38BDF8" font-size="12.5" font-weight="700">第三层</text>
+  <text x="260" y="357" fill="#E5E7EB" font-size="12.5">
+    上游恢复 → 探活修回 active → 回收调度开关
+  </text>
+  <text x="720" y="357" fill="#9CA3AF" font-size="11" text-anchor="end">自动恢复</text>
+</svg>
+<figcaption>
+  <b>图 8</b>　三层防护。这三层缺一层，「某个 KEY 拖垮全部」就仍然可能发生。
+</figcaption>
+</figure>
+
+<h3>7.4 模型「就高原则」 <span class="bd bd-fix">已修</span></h3>
+
+<figure>
+<svg viewBox="0 0 900 330" role="img" aria-label="模型选择分流">
+  <defs>
+    <marker id="ar6" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+    </marker>
+  </defs>
+
+  <rect x="330" y="16" width="240" height="42" rx="9" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".45"/>
+  <text x="450" y="43" fill="#E5E7EB" font-size="12.5" text-anchor="middle">
+    CPA config.yaml 的某一条凭据
+  </text>
+
+  <line x1="450" y1="58" x2="450" y2="84" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar6)"/>
+  <text x="468" y="76" fill="#9CA3AF" font-size="10.5">按来源段分流</text>
+
+  <!-- 四路 -->
+  <rect x="30" y="94" width="196" height="80" rx="9" fill="rgba(110,231,183,.12)" stroke="#6EE7B7" stroke-opacity=".55"/>
+  <text x="128" y="118" fill="#6EE7B7" font-size="12.5" text-anchor="middle" font-weight="700">gemini</text>
+  <text x="128" y="139" fill="#E5E7EB" font-size="10.5" text-anchor="middle">只选带 pro 的最高编号</text>
+  <text x="128" y="157" fill="#9CA3AF" font-size="10" text-anchor="middle">同版本全部变体都留</text>
+
+  <rect x="240" y="94" width="196" height="80" rx="9" fill="rgba(56,189,248,.12)" stroke="#38BDF8" stroke-opacity=".55"/>
+  <text x="338" y="118" fill="#38BDF8" font-size="12.5" text-anchor="middle" font-weight="700">claude</text>
+  <text x="338" y="139" fill="#E5E7EB" font-size="10.5" text-anchor="middle">只选当代</text>
+  <text x="338" y="157" fill="#9CA3AF" font-size="10" text-anchor="middle">opus / sonnet / haiku 全留</text>
+
+  <rect x="450" y="94" width="196" height="80" rx="9" fill="rgba(167,139,250,.14)" stroke="#A78BFA" stroke-opacity=".6"/>
+  <text x="548" y="118" fill="#A78BFA" font-size="12.5" text-anchor="middle" font-weight="700">codex</text>
+  <text x="548" y="139" fill="#E5E7EB" font-size="10.5" text-anchor="middle">单族：当代 gpt 全部模型名</text>
+  <text x="548" y="157" fill="#9CA3AF" font-size="10" text-anchor="middle">codex-api-key 段</text>
+
+  <rect x="660" y="94" width="210" height="80" rx="9" fill="rgba(251,191,36,.13)" stroke="#FBBF24" stroke-opacity=".6"/>
+  <text x="765" y="118" fill="#FBBF24" font-size="12.5" text-anchor="middle" font-weight="700">openai</text>
+  <text x="765" y="139" fill="#E5E7EB" font-size="10.5" text-anchor="middle">多族：每族各取最高级</text>
+  <text x="765" y="157" fill="#9CA3AF" font-size="10" text-anchor="middle">openai-compatibility 段</text>
+
+  <line x1="450" y1="76" x2="128" y2="94" stroke="#6B7280" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <line x1="450" y1="76" x2="338" y2="94" stroke="#6B7280" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <line x1="450" y1="76" x2="548" y2="94" stroke="#6B7280" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <line x1="450" y1="76" x2="765" y2="94" stroke="#6B7280" stroke-width="1.2" stroke-dasharray="3 3"/>
+
+  <!-- 说明 -->
+  <rect x="30" y="198" width="840" height="52" rx="9" fill="rgba(251,191,36,.09)" stroke="#FBBF24" stroke-opacity=".4"/>
+  <text x="50" y="219" fill="#FBBF24" font-size="11.5">
+    为什么 codex 与 openai 必须分开：两者在 CPA 里是两个不同的段，但 platform 都是 openai。
+  </text>
+  <text x="50" y="238" fill="#E5E7EB" font-size="11.5">
+    以前靠「列表里有没有 gpt-6」猜 → 会把声明了 gpt-6 的 openai 上游误当 codex，砍掉它其余全部模型。
+  </text>
+
+  <rect x="30" y="262" width="840" height="52" rx="9" fill="rgba(110,231,183,.09)" stroke="#6EE7B7" stroke-opacity=".4"/>
+  <text x="50" y="283" fill="#6EE7B7" font-size="11.5">
+    代际门槛不写死：由上游源码里出现过的真实模型名反推，每次启动刷新。
+  </text>
+  <text x="50" y="302" fill="#E5E7EB" font-size="11.5">
+    上游从 6 代走到 7 代时门槛自动前移；反推失败则用「列表里观测到的最高代」，不会砍错。
+  </text>
+</svg>
+<figcaption>
+  <b>图 9</b>　模型选择按<b>来源段</b>分流，而不是靠「有没有 gpt-6」猜。
+</figcaption>
+</figure>
+
+<div class="tw">
 <table>
   <thead><tr><th>类型</th><th>规则</th></tr></thead>
   <tbody>
     <tr><td>gemini</td><td>只选带 <code>pro</code> 的最高编号，保留该版本全部变体</td></tr>
-    <tr><td>claude</td><td>只选当代（<code>claude-*-5</code>），保留全部档位（opus/sonnet/haiku）</td></tr>
+    <tr><td>claude</td><td>只选当代，保留全部档位（opus / sonnet / haiku）</td></tr>
     <tr><td>codex</td><td><b>单族</b>：只保留当代 gpt 系列<b>全部</b>模型名</td></tr>
     <tr><td>openai</td><td><b>多族</b>：每一族各取最高级，允许多族并存</td></tr>
     <tr><td>其他</td><td>原样保留（grok 等）</td></tr>
   </tbody>
 </table>
-
-<div class="note">
-  <strong>codex 与 openai 必须分开处理</strong>
-  两者在 CPA 里是两个不同的段（<code>codex-api-key</code> 与
-  <code>openai-compatibility</code>），但平台类型都是 <code>openai</code>。
-  本工具按<b>来源段</b>分流，而不是靠"模型列表里有没有 gpt-6"猜 ——
-  后者会把声明了 gpt-6 的 openai 上游误当 codex，砍掉它其余全部模型。
 </div>
 
-<div class="tip">
-  <strong>代际门槛不写死</strong>
-  "现在是第几代"由上游源码里出现过的真实模型名反推，每次启动刷新。
-  上游从 6 代走到 7 代时门槛自动前移，不会把新模型当旧代砍掉。
-  反推失败也不会出错——会退一步用"模型列表里观测到的最高代"作门槛。
-</div>
+<h3>7.5 反测活</h3>
 
-<h3>7.6 反测活</h3>
+<figure>
+<svg viewBox="0 0 900 200" role="img" aria-label="探活时刻错开">
+  <text x="30" y="26" fill="#FB7185" font-size="12.5">改造前：所有账号在同一分钟一起探活</text>
+
+  <!-- 密集对齐 -->
+  <line x1="60" y1="76" x2="860" y2="76" stroke="#1E2636" stroke-width="1"/>
+  <g fill="#FB7185" fill-opacity=".85">
+    <circle cx="200" cy="66" r="5"/><circle cx="200" cy="76" r="5"/>
+    <circle cx="200" cy="86" r="5"/><circle cx="200" cy="96" r="5"/>
+    <circle cx="200" cy="106" r="5"/><circle cx="200" cy="116" r="5"/>
+    <circle cx="200" cy="126" r="5"/>
+  </g>
+  <text x="216" y="100" fill="#FB7185" font-size="11">同时性本身就是机器特征</text>
+  <text x="216" y="118" fill="#9CA3AF" font-size="10.5">（真实用户的请求时刻是分散的）</text>
+  <text x="60" y="150" fill="#6B7280" font-size="10.5" font-family="monospace">*/30 * * * *</text>
+
+  <line x1="30" y1="164" x2="870" y2="164" stroke="#1E2636" stroke-width="2"/>
+
+  <!-- 分散 -->
+  <text x="30" y="190" fill="#6EE7B7" font-size="12.5">改造后：每个账号有稳定的分钟偏移，散开</text>
+  <line x1="60" y1="176" x2="860" y2="176" stroke="#1E2636" stroke-width="1"/>
+  <g fill="#6EE7B7" fill-opacity=".8">
+    <circle cx="120" cy="176" r="4"/><circle cx="164" cy="176" r="4"/>
+    <circle cx="205" cy="176" r="4"/><circle cx="252" cy="176" r="4"/>
+    <circle cx="300" cy="176" r="4"/><circle cx="341" cy="176" r="4"/>
+    <circle cx="392" cy="176" r="4"/><circle cx="430" cy="176" r="4"/>
+    <circle cx="478" cy="176" r="4"/><circle cx="521" cy="176" r="4"/>
+    <circle cx="566" cy="176" r="4"/><circle cx="610" cy="176" r="4"/>
+    <circle cx="655" cy="176" r="4"/><circle cx="700" cy="176" r="4"/>
+    <circle cx="744" cy="176" r="4"/><circle cx="790" cy="176" r="4"/>
+    <circle cx="830" cy="176" r="4"/>
+  </g>
+</svg>
+<figcaption>
+  <b>图 10</b>　探活时刻错开。<b>调用模式的规律性</b>（间隔方差为 0、全体同时）
+  比单条 prompt 的措辞权重更高。
+</figcaption>
+</figure>
+
 <p>两层措施：</p>
 <ul>
   <li><b>语料</b>：中英双语、覆盖多种日常话题，随机抽取。不用
-      "test"、"你好"、"你是什么模型"这类教科书特征。</li>
-  <li><b>时刻错开</b> <span class="badge badge-new">新增</span>：
-      给每个账号派生一个稳定的分钟偏移，避免所有账号在同一分钟一起探活。
-      "全体同时发问"这个<b>同时性</b>比措辞更容易被识别为机器行为 ——
-      真实用户的请求时刻是分散的。</li>
+      「test」「你好」「你是什么模型」这类教科书特征。</li>
+  <li><b>时刻错开</b> <span class="bd bd-new">新增</span>：
+      给每个账号派生一个稳定的分钟偏移（用账号名哈希，保证同一账号每次
+      得到同一偏移、不同账号之间散开）。实测 100 个账号会散到 29/30 种可能的时刻。</li>
 </ul>
 
-<!-- ================================================================ -->
-<h2 id="s8">八、常见故障排查</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="s8">八、故障排查</h2>
 
-<h3>8.1 sub2api 的 IP 管理页显示"链接失败"</h3>
+<h3>8.1 sub2api 的 IP 管理页显示「链接失败」</h3>
+
+<figure>
+<svg viewBox="0 0 900 330" role="img" aria-label="sub2api IP 管理界面示意（脱敏）">
+  <!-- 窗口 -->
+  <rect x="20" y="16" width="860" height="290" rx="10" fill="#0F131C" stroke="#1E2636"/>
+  <!-- 侧栏 -->
+  <rect x="20" y="16" width="150" height="290" rx="10" fill="#161D2B"/>
+  <rect x="20" y="16" width="150" height="42" rx="10" fill="#1E2636"/>
+  <text x="40" y="43" fill="#E5E7EB" font-size="12" font-weight="700">IP 管理</text>
+  <text x="40" y="76" fill="#6B7280" font-size="11">仪表盘</text>
+  <text x="40" y="100" fill="#38BDF8" font-size="11">IP 管理</text>
+  <text x="40" y="124" fill="#6B7280" font-size="11">渠道管理</text>
+  <text x="40" y="148" fill="#6B7280" font-size="11">账号管理</text>
+  <text x="40" y="172" fill="#6B7280" font-size="11">订阅管理</text>
+
+  <!-- 表格头 -->
+  <text x="195" y="48" fill="#6B7280" font-size="10.5">名称</text>
+  <text x="330" y="48" fill="#6B7280" font-size="10.5">协议</text>
+  <text x="410" y="48" fill="#6B7280" font-size="10.5">地址</text>
+  <text x="560" y="48" fill="#6B7280" font-size="10.5">账号数</text>
+  <text x="650" y="48" fill="#6B7280" font-size="10.5">延迟</text>
+  <text x="760" y="48" fill="#6B7280" font-size="10.5">状态</text>
+  <line x1="185" y1="58" x2="870" y2="58" stroke="#1E2636" stroke-width="1.5"/>
+
+  <!-- 数据行 -->
+  <line x1="185" y1="62" x2="870" y2="62" stroke="#1E2636" stroke-width="1"/>
+  <text x="195" y="90" fill="#E5E7EB" font-size="11.5">CPA-mihomo-7890</text>
+  <text x="330" y="90" fill="#9CA3AF" font-size="11.5">HTTP</text>
+  <text x="410" y="90" fill="#6EE7B7" font-size="11.5" font-family="monospace">mihomo:7890</text>
+  <text x="560" y="90" fill="#38BDF8" font-size="11.5">34 个账号</text>
+  <!-- 链接失败 -->
+  <rect x="645" y="76" width="70" height="20" rx="5" fill="rgba(239,68,68,.2)"/>
+  <text x="680" y="90" fill="#FB7185" font-size="10.5" text-anchor="middle">链接失败</text>
+  <rect x="755" y="76" width="44" height="20" rx="5" fill="rgba(110,231,183,.18)"/>
+  <text x="777" y="90" fill="#6EE7B7" font-size="10.5" text-anchor="middle">正常</text>
+
+  <!-- 说明 -->
+  <line x1="185" y1="106" x2="870" y2="106" stroke="#1E2636" stroke-width="1.5"/>
+  <text x="195" y="132" fill="#6B7280" font-size="10.5" font-style="italic">
+    注：这是界面示意图（已脱敏），不是真实截图
+  </text>
+
+  <text x="195" y="162" fill="#FBBF24" font-size="11.5" font-weight="700">
+    排查顺序（按可能性）：
+  </text>
+
+  <text x="195" y="186" fill="#FB7185" font-size="11">1. AUTO 组 0 节点</text>
+  <text x="330" y="186" fill="#9CA3AF" font-size="11">
+    mihomo 进程健康、端口在听，但出不去。日志里看不出异常
+  </text>
+
+  <text x="195" y="210" fill="#FB7185" font-size="11">2. allow-lan: false</text>
+  <text x="330" y="210" fill="#9CA3AF" font-size="11">
+    只接受 127.0.0.1 的连接，容器间访问被拒。bind-address 不改变这一点
+  </text>
+
+  <text x="195" y="234" fill="#FB7185" font-size="11">3. 不在同一 Docker 网络</text>
+  <text x="330" y="234" fill="#9CA3AF" font-size="11">
+    跨 compose 项目的 default 是「不同」的网络，服务名解析不到
+  </text>
+
+  <text x="195" y="266" fill="#6EE7B7" font-size="11" font-weight="700">
+    最快的判别方法：
+  </text>
+  <text x="195" y="286" fill="#D7E3F4" font-size="10.5" font-family="monospace">
+    docker compose exec cpa2sub2api sh -c 'wget -q -T 5 -O /dev/null http://mihomo:7890'
+  </text>
+  <text x="195" y="302" fill="#9CA3AF" font-size="10.5">
+    有 HTTP 响应 → 网络与准入没问题，问题在订阅/节点（第 1 条）；连不上 → 网络或准入（第 2、3 条）
+  </text>
+</svg>
+<figcaption>
+  <b>图 11</b>　sub2api IP 管理页的<b>界面示意</b>（非真实截图，已脱敏）。
+  「链接失败」有三种成因，按这条顺序排查。
+</figcaption>
+</figure>
+
+<div class="tw">
 <table>
   <thead><tr><th>可能性</th><th>怎么查</th></tr></thead>
   <tbody>
@@ -656,31 +1329,72 @@ proxy-url: "http://mihomo:7890"</pre>
     </tr>
   </tbody>
 </table>
-
-<h3>8.2 只调用高优先级上游，低优先级一次都不试</h3>
-<p>这是最典型的"看起来在轮循、实际死锁"故障。真实成因是<b>凭据级错误被当成非重试错误</b>：</p>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
-<pre>请求进来 → 选号命中某个已耗尽的账号（sticky 粘住）
-        → 上游返回 402「预算池额度耗尽」
-        → 网关判为 non-retryable，不换号
-        → 客户端侧表现为 503 / 524
-        → 低优先级站点一次都没被尝试</pre>
 </div>
 
-<p><b>本工具的对策</b>（<span class="badge badge-fix">已修</span>）：</p>
+<h3>8.2 只调用高优先级上游，低优先级一次都不试</h3>
+
+<p>这是最典型的「看起来在轮循、实际死锁」故障。真实成因是<b>凭据级错误被当成非重试错误</b>：</p>
+
+<figure>
+<svg viewBox="0 0 900 300" role="img" aria-label="402 预算池死锁链路">
+  <defs>
+    <marker id="ar7" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#FB7185"/>
+    </marker>
+  </defs>
+
+  <rect x="280" y="16" width="340" height="40" rx="9" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".4"/>
+  <text x="450" y="42" fill="#E5E7EB" font-size="12.5" text-anchor="middle">
+    请求进来 → 选号命中某个已耗尽的账号
+  </text>
+
+  <line x1="450" y1="56" x2="450" y2="82" stroke="#FB7185" stroke-width="1.7" marker-end="url(#ar7)"/>
+  <text x="466" y="74" fill="#FB7185" font-size="10.5">sticky 粘住</text>
+
+  <rect x="280" y="86" width="340" height="40" rx="9" fill="rgba(239,68,68,.14)" stroke="#EF4444" stroke-opacity=".55"/>
+  <text x="450" y="112" fill="#FB7185" font-size="12" text-anchor="middle" font-family="monospace">
+    402 Budget pool quota has been exhausted
+  </text>
+
+  <line x1="450" y1="126" x2="450" y2="152" stroke="#FB7185" stroke-width="1.7" marker-end="url(#ar7)"/>
+
+  <rect x="260" y="156" width="380" height="40" rx="9" fill="rgba(239,68,68,.14)" stroke="#EF4444" stroke-opacity=".55"/>
+  <text x="450" y="182" fill="#FB7185" font-size="12.5" text-anchor="middle">
+    网关判为 non-retryable，不换号
+  </text>
+
+  <line x1="450" y1="196" x2="450" y2="222" stroke="#FB7185" stroke-width="1.7" marker-end="url(#ar7)"/>
+
+  <rect x="240" y="226" width="420" height="40" rx="9" fill="rgba(239,68,68,.16)" stroke="#EF4444" stroke-opacity=".6" stroke-width="1.5"/>
+  <text x="450" y="252" fill="#FB7185" font-size="12.5" text-anchor="middle" font-weight="700">
+    客户端侧表现为 503 / 524，低优先级站点一次都没被尝试
+  </text>
+
+  <text x="450" y="288" fill="#6B7280" font-size="11" text-anchor="middle">
+    实测证据：15 次请求全部选中同一个账号（sticky_honored=true），上游一律返回 402
+  </text>
+</svg>
+<figcaption>
+  <b>图 12</b>　402 预算池死锁链路。日志实锤：<code>sticky_honored=true</code> 15/15，
+  上游一律 <code>402 Budget pool quota has been exhausted</code>。
+</figcaption>
+</figure>
+
+<p><b>本工具的对策</b>（<span class="bd bd-fix">已修</span>）：</p>
 <ol>
-  <li><b>域名级冷却</b>：402「预算池耗尽」是<b>整个上游</b>层面的状态，
-      不是单个 KEY 的毛病（同一站的所有 KEY 共用同一个池子）。
-      本工具给这类错误码下发更长、关键词更特异的冷却规则，
+  <li><b>域名级冷却</b>：402「预算池耗尽」是<b>整个上游</b>层面的状态
+      （同一站的所有 KEY 共用同一个池子），不是单个 KEY 的毛病。
+      本工具给这类错误码下发更长（180 分钟）、关键词更特异的冷却规则，
       避免在同一池子里逐个 KEY 空撞。</li>
-  <li><b>全局唯一桶号</b>：保证"整桶挂掉才降级"真的能降级。</li>
+  <li><b>全局唯一桶号</b>：保证「整桶挂掉才降级」真的能降级。</li>
   <li><b>桶内冗余</b>：同域名多 KEY 同桶轮循，一个被冷却后请求轮到同桶其它 KEY。</li>
 </ol>
 
 <h3>8.3 报 <code>503 No available accounts</code> 且提示分组权限</h3>
-<div class="warn">
-  这不是本工具的问题。<code>this group only allows Claude Code clients</code>
+<div class="box warn">
+  <b>这不是本工具的问题</b>
+  <code>this group only allows Claude Code clients</code>
   说明该上游站点<b>只接受 Claude Code 客户端</b>。
   需要在 CPA 侧给对应条目配好伪装请求头（user-agent / anthropic-beta / originator），
   与账号本身能否调用无关。
@@ -689,7 +1403,7 @@ proxy-url: "http://mihomo:7890"</pre>
 <h3>8.4 报 <code>400 invalid codex request</code></h3>
 <p>
   同样与账号无关：该凭据的<b>自定义模型列表</b>里可能含不存在于上游的模型名，
-  或 <code>request-responses-mode</code> 与上游协议不匹配。
+  或协议模式（responses / chat_completions）与上游不匹配。
   用菜单里的「测试」确认连通性，再看 <code>out/对照表.md</code> 的放行模型是否合理。
 </p>
 
@@ -700,60 +1414,55 @@ proxy-url: "http://mihomo:7890"</pre>
   一旦超时 CF 直接返回 524，此时源站其实还在正常重试。
   对策是<b>压缩单次请求的上游尝试预算</b>：
 </p>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre># CPA 的 config.yaml（全局段）
 max-retry-credentials: 4     # 12 → 4
 max-retry-interval: 2        # 8 → 2
 
 # 最坏耗时 ≈ 4 ×（连接+首字节）+ 3 × 2 秒  ≈ 30 秒以内
-# 对 120 秒窗口留足余量</pre>
-</div>
+# 对 120 秒窗口留足余量</pre></div>
 
 <h3>8.6 报 <code>empty or malformed response (HTTP 200)</code> 且 0 个 SSE 事件</h3>
 <p>
   流式引导没缓冲的话，网关在还没确认上游会吐 token 时就先提交了
   <code>200 OK</code> + <code>text/event-stream</code> 响应头。
   此后若上游失败，网关已经<b>没有退路</b>——响应头发出去了，不能改 5xx、
-  也不能换凭据。唯一结果就是"语法合法但一个事件都没有"的 200。
+  也不能换凭据。唯一结果就是「语法合法但一个事件都没有」的 200。
 </p>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre># CPA 的 config.yaml
 codex:
   stream-bootstrap-buffering: true   # false → true
 streaming:
-  bootstrap-retries: 3               # 1 → 3</pre>
-</div>
+  bootstrap-retries: 3               # 1 → 3</pre></div>
 
 <h3>8.7 报 <code>403 error code: 1010</code></h3>
 <p>Cloudflare 浏览器完整性检查拦截，请求没到源站。设置浏览器 UA：</p>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre># .env
-USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-  (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36</pre>
-</div>
+USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36</pre></div>
 
 <h3>8.8 查看日志</h3>
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
 <pre>docker compose logs -f cpa2sub2api
 docker compose logs -f mihomo
-docker compose exec mihomo python3 /root/.config/mihomo/healthcheck.py</pre>
-</div>
+docker compose exec mihomo sh -c 'wget -q --spider \
+  --header="Authorization: Bearer $MIHOMO_SECRET" http://127.0.0.1:9090/version'</pre></div>
 
-<!-- ================================================================ -->
-<h2 id="s9">九、附录：完整环境变量表</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="s9">九、附录：环境变量表</h2>
 
-<div class="code-wrap">
-<button class="copy-btn" onclick="copyCode(this)">复制</button>
-<pre># ============ 必填 ============
-SUB2API_BASE_URL=
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># ============ 镜像来源 ============
+DOCKERHUB_USERNAME=
+DOCKERHUB_IMAGE=cpa2sub2api
+
+# ============ sub2api（必填）============
+SUB2API_BASE_URL=http://sub2api:8080
 SUB2API_ADMIN_KEY=
 
 # ============ CPA（可选）============
-CPA_BASE_URL=
+CPA_BASE_URL=http://cli-proxy-api:8317
 CPA_MANAGEMENT_KEY=
 SUB2API_SRC=
 CPA_SRC=
@@ -793,20 +1502,19 @@ USER_AGENT=
 
 # ============ 其他 ============
 GROUP_PREFIX=CPA
-TZ=Asia/Shanghai</pre>
-</div>
+TZ=Asia/Shanghai</pre></div>
 
-<div class="note">
-  <strong>优先级顺序</strong>
+<div class="box note">
+  <b>优先级顺序</b>
   环境变量 &gt; <code>设置.json</code> &gt; 内置默认值。
-  容器部署请只用环境变量，不要混用 <code>设置.json</code>——
+  容器部署请只用环境变量，不要混用 <code>设置.json</code> ——
   两份配置同时存在时排查会非常混乱。
 </div>
 
 <footer>
   <p>
     本教程对应工具版本 3.0。所有示例域名均为占位符，
-    实际使用请替换成你自己的地址。
+    界面插图均为<b>脱敏的自绘示意图</b>，不含任何真实数据。
   </p>
   <p>
     安全提醒：<code>mihomo-subscriptions.conf</code> 含订阅 token、
@@ -817,41 +1525,33 @@ TZ=Asia/Shanghai</pre>
 </div>
 
 <script>
-  function copyCode(button) {
-    const block = button.nextElementSibling;
+  function cp(btn){
+    const block = btn.nextElementSibling;
     const text = block.textContent;
-    const done = (ok) => {
-      const old = button.textContent;
-      button.textContent = ok ? '✓ 已复制' : '✗ 失败';
-      button.style.background = ok ? 'var(--accent-emerald)' : 'var(--accent-red)';
+    const done = ok => {
+      const old = btn.textContent;
+      btn.textContent = ok ? '✓ 已复制' : '✗ 失败';
+      btn.style.background = ok ? 'var(--emerald)' : 'var(--red)';
       setTimeout(() => {
-        button.textContent = old;
-        button.style.background = 'var(--accent-cyan)';
+        btn.textContent = old;
+        btn.style.background = 'var(--cyan)';
       }, 1800);
     };
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(() => done(true)).catch(() => {
-        fallbackCopy(text) ? done(true) : done(false);
-      });
+    const fallback = t => {
+      try{
+        const ta = document.createElement('textarea');
+        ta.value = t; ta.style.position='fixed'; ta.style.opacity='0';
+        document.body.appendChild(ta); ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      }catch(e){ return false; }
+    };
+    if(navigator.clipboard && window.isSecureContext){
+      navigator.clipboard.writeText(text).then(()=>done(true))
+        .catch(()=>done(fallback(text)));
     } else {
-      fallbackCopy(text) ? done(true) : done(false);
-    }
-  }
-
-  // file:// 打开时 navigator.clipboard 不可用，退回 execCommand
-  function fallbackCopy(text) {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(ta);
-      return ok;
-    } catch (e) {
-      return false;
+      done(fallback(text));
     }
   }
 </script>
