@@ -564,6 +564,61 @@ check("L8 清空模式在取 config 之前就返回",
 
 print()
 print("=" * 70)
+print("M. 跨文件调用签名一致性（防漏改）")
+print("=" * 70)
+
+import ast as _ast  # noqa: E402
+
+_tool_src = open(os.path.join(ROOT, "tool.py"), encoding="utf-8").read()
+_sigs = {}
+for _n in _ast.walk(_ast.parse(_tool_src)):
+    if isinstance(_n, _ast.FunctionDef):
+        _args = _n.args.args
+        _req = len(_args) - len(_n.args.defaults)
+        _sigs[_n.name] = {
+            "params": [a.arg for a in _args],
+            "req": _req,
+            "kwonly": [a.arg for a in _n.args.kwonlyargs],
+            "line": _n.lineno,
+        }
+
+# 这些文件 import 了 tool.py 的函数，改动签名时最容易漏改它们
+_callers = ["一键导入.py", "run.py"]
+_problems = []
+_checked = 0
+for _f in _callers:
+    _fp = os.path.join(ROOT, _f)
+    if not os.path.exists(_fp):
+        continue
+    for _n in _ast.walk(_ast.parse(open(_fp, encoding="utf-8").read())):
+        if not (isinstance(_n, _ast.Call) and isinstance(_n.func, _ast.Name)):
+            continue
+        _name = _n.func.id
+        if _name not in _sigs:
+            continue
+        _s = _sigs[_name]
+        _checked += 1
+        _npos = len(_n.args)
+        _given = {k.arg for k in _n.keywords if k.arg}
+        _covered = set(_s["params"][:_npos]) | _given
+        _missing = [p for p in _s["params"][:_s["req"]] if p not in _covered]
+        _unknown = _given - set(_s["params"]) - set(_s["kwonly"])
+        _extra = _npos - len(_s["params"])
+        if _missing or _unknown or _extra > 0:
+            _problems.append(
+                "%s:%d %s() 缺=%r 未知kw=%r 多余位置=%d"
+                % (_f, _n.lineno, _name, _missing, sorted(_unknown), max(0, _extra)))
+
+check("M1 跨文件调用签名全部匹配（共检查 %d 处）" % _checked,
+      not _problems, "; ".join(_problems[:4]))
+
+# 已经有对应的静态检查了，再显式盯住 to_account 这个踩过坑的函数
+_to_acc_params = _sigs.get("to_account", {}).get("params") or []
+check("M2 to_account 仍是 5 参数（改签名时别忘了 一键导入.py）",
+      len(_to_acc_params) == 5, "%r" % _to_acc_params)
+
+print()
+print("=" * 70)
 print("G. 汇总")
 print("=" * 70)
 print("PASS %d / FAIL %d" % (len(PASS), len(FAIL)))
