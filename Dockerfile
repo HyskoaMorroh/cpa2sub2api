@@ -86,11 +86,11 @@ CMD ["python", "tool.py"]
 # ====================================
 #
 # 构建命令：
-#   docker build -t hyskaamorroh/cpa2sub2api:latest .
+#   docker build -t your-dockerhub-user/cpa2sub2api:latest .
 #
 # 多架构构建：
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -t hyskaamorroh/cpa2sub2api:latest --push .
+#     -t your-dockerhub-user/cpa2sub2api:latest --push .
 #
 # 本地测试：
 #   docker run -it --rm \
@@ -98,6 +98,6 @@ CMD ["python", "tool.py"]
 #     -v $(pwd)/out:/app/out \
 #     -e SUB2API_BASE_URL=https://api.example.com \
 #     -e SUB2API_ADMIN_KEY=admin-xxx \
-#     hyskaamorroh/cpa2sub2api:latest
+#     your-dockerhub-user/cpa2sub2api:latest
 #
 # ====================================

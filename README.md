@@ -37,6 +37,8 @@
 
 ```bash
 # .env（部署根目录）
+DOCKERHUB_USERNAME=你的DockerHub用户名   # 决定拉哪个镜像
+DOCKERHUB_IMAGE=cpa2sub2api              # 可选，留空用仓库名
 SUB2API_BASE_URL=https://sub2api.example.com
 SUB2API_ADMIN_KEY=admin-替换成你的密钥
 FALLBACK_PROXY=http://mihomo:7890
@@ -47,6 +49,9 @@ docker compose --profile mihomo up -d
 # 执行导入
 docker compose run --rm cpa2sub2api python 一键导入.py
 ```
+
+镜像名与 CI 的推送目标由**同一组仓库变量**决定，不存在写死的账号名。
+GitHub 侧的配置见 [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml) 顶部注释。
 
 ### 3. 本机直接运行
 

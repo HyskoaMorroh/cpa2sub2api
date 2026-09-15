@@ -216,9 +216,28 @@
 </p>
 
 <h3><span class="step"><span class="step-num">1</span><span class="step-title">拉取镜像</span></span></h3>
+<p>
+  镜像名由<b>你自己的</b>环境变量决定，不是写死的。先在 <code>.env</code> 里设好：
+</p>
 <div class="code-wrap">
 <button class="copy-btn" onclick="copyCode(this)">复制</button>
-<pre>docker pull hyskaamorroh/cpa2sub2api:latest</pre>
+<pre># .env —— 镜像来源
+DOCKERHUB_USERNAME=你的DockerHub用户名
+DOCKERHUB_IMAGE=cpa2sub2api        # 可选，留空则用仓库名</pre>
+</div>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>docker pull $DOCKERHUB_USERNAME/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest</pre>
+</div>
+<div class="note">
+  <strong>这一组变量同时决定 CI 往哪里推</strong>
+  GitHub 仓库里 Settings → Secrets and variables → Actions 要配置：
+  <ul>
+    <li><b>Variables</b>：<code>DOCKERHUB_USERNAME</code>（与上面一致）、<code>DOCKERHUB_IMAGE</code></li>
+    <li><b>Secrets</b>：<code>DOCKERHUB_TOKEN</code>（Docker Hub 的 Access Token，<b>不要填登录密码</b>）</li>
+  </ul>
+  只配 <code>DOCKERHUB_USERNAME</code> 不配 token 也不会让构建失败 ——
+  那一处会安静跳过，只发 GHCR。
 </div>
 
 <h3><span class="step"><span class="step-num">2</span><span class="step-title">准备配置文件</span></span></h3>

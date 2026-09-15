@@ -1,21 +1,48 @@
-# CPA2SUB2API - Sub2API连接配置
 {
+  "_说明": [
+    "这是 设置.json 的模板。JSON 不支持注释，所以说明都放在这个 _说明 字段里。",
+    "用法：复制本文件为 设置.json，然后填写下面各项。",
+    "",
+    "注意：不需要删掉 _说明 字段 —— 工具只读取它认识的键，",
+    "      这个字段没有任何代码消费，留着无害。",
+    "",
+    "优先级：环境变量 > 设置.json > 内置默认值。",
+    "容器部署请**只用环境变量**，不要混用本文件：两份配置同时存在时，",
+    "排查『改了却没生效』会非常困难。",
+    "",
+    "首次运行会由工具自动生成 设置.json（若不存在）。"
+  ],
+
   "sub2api_base_url": "",
   "sub2api_admin_key": "",
   "cpa_base_url": "",
   "cpa_management_key": "",
+  "sub2api_src": "",
+  "cpa_src": "",
+
   "import_workers": 4,
   "test_plan_workers": 8,
   "pricing_workers": 8,
   "default_concurrency": 3,
   "batch_size": 50,
+
   "fallback_proxy": "",
+  "disable_proxy_fallback": false,
+
   "health_rerank_enabled": true,
-  "auto_recover_enabled": true,
-  "auto_recover_cron": "*/30 * * * *",
+  "sync_existing_accounts": true,
   "respect_weight_zero": true,
   "weight_zero_policy": "deprioritize",
   "zero_model_policy": "inactive",
-  "sync_existing_accounts": true,
+  "pool_mode_enabled": true,
+
+  "auto_recover_enabled": true,
+  "auto_recover_cron": "*/30 * * * *",
+  "auto_pause_on_expired": false,
+
+  "http_timeout": 30,
+  "http_retries": 3,
+
+  "group_prefix": "CPA",
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 }

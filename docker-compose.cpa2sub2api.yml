@@ -18,9 +18,9 @@
 
 services:
   cpa2sub2api:
-    # 镜像名必须与 .github/workflows/docker-publish.yml 里构建推送的一致，
-    # 否则 VPS 拉的是另一个仓库（或不存在的 tag）。
-    image: hyskaamorroh/cpa2sub2api:latest
+    # 镜像名由环境变量决定，与 docker-publish.yml 用同一组名字，
+    # 避免"CI 推到 A、VPS 拉 B"这种静默不一致。
+    image: ${DOCKERHUB_USERNAME:?请在 .env 里设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
     container_name: cpa2sub2api
     restart: "no"  # 按需启动的运维工具，不是常驻服务
 
