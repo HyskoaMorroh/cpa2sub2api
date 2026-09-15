@@ -62,8 +62,16 @@ htmlcov/
 # ====================================
 # 文档和说明
 # ====================================
+# 排除所有 markdown，但放行这几份**给使用者看的**部署文档：
+#   README.md           总览（容器里 `cat` 一下就知道这镜像是干什么的）
+#   DOCKER_DEPLOY.md    部署详解
+#   mihomo-README.md    代理配置
+#   tutorial.html       完整教程（下面单独放行，*.html 没被排除）
+# 其余 md 是一次性的排障记录与需求跟踪，不需要随镜像分发。
 *.md
+!README.md
 !DOCKER_DEPLOY.md
+!mihomo-README.md
 LICENSE
 .editorconfig
 
