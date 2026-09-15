@@ -470,6 +470,40 @@ check("J5 重跑得到完全相同的 (名称 -> 桶号) 映射", snapshot == sn
 
 print()
 print("=" * 70)
+print("K. 无人值守开关 ASSUME_YES")
+print("=" * 70)
+
+ONE_CLICK = os.path.join(ROOT, "一键导入.py")
+
+src = open(ONE_CLICK, encoding="utf-8").read()
+check("K1 一键导入.py 里存在 _assume_yes_env 判定", "_assume_yes_env" in src)
+check("K2 只在导入那一处应用 ASSUME_YES（不放进 ask_yes）",
+      src.count("_assume_yes_env()") == 2,
+      "出现 %d 次" % src.count("_assume_yes_env()"))
+check("K3 删除类操作未被 ASSUME_YES 放宽",
+      "def ask_yes(prompt):" in src and
+      "ASSUME_YES 不在这里生效" in src)
+
+# entrypoint.sh 必须设 ASSUME_YES，否则容器里导入会被静默取消
+ep = open(os.path.join(ROOT, "entrypoint.sh"), encoding="utf-8").read()
+check("K4 entrypoint.sh 设置了 ASSUME_YES", "ASSUME_YES=1" in ep)
+check("K5 entrypoint.sh 默认跑一次（RUN_INTERVAL_SECONDS 缺省为 0）",
+      'INTERVAL="${RUN_INTERVAL_SECONDS:-0}"' in ep)
+check("K6 entrypoint.sh 会校验必填环境变量",
+      "SUB2API_BASE_URL" in ep and "SUB2API_ADMIN_KEY" in ep)
+check("K7 entrypoint.sh 按脚本位置推导目录（不硬编码 /app）",
+      'dirname "$0"' in ep)
+
+# Dockerfile 的默认命令必须是非交互入口
+dk = open(os.path.join(ROOT, "Dockerfile"), encoding="utf-8").read()
+check("K8 Dockerfile 的 CMD 指向 entrypoint.sh（不是交互菜单）",
+      'CMD ["/app/entrypoint.sh"]' in dk,
+      "实际: %r" % [l for l in dk.split("\n") if l.startswith("CMD")])
+check("K9 Dockerfile 给 entrypoint.sh 加了执行位",
+      "chmod +x /app/entrypoint.sh" in dk)
+
+print()
+print("=" * 70)
 print("G. 汇总")
 print("=" * 70)
 print("PASS %d / FAIL %d" % (len(PASS), len(FAIL)))
