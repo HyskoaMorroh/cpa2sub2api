@@ -1526,6 +1526,289 @@ docker compose logs -f mihomo
 docker compose exec mihomo sh -c 'wget -q --spider \
   --header="Authorization: Bearer $MIHOMO_SECRET" http://127.0.0.1:9090/version'</pre></div>
 
+<h3>8.9 CPA 与 CPAMP 的五个密钥，别再搞混</h3>
+
+<p>
+  这一节来自一次真实排障：改了密钥之后 CPAMP 登不进去，反复试了很久才定位。
+  根因是<b>几个不同的密钥被当成了同一个</b> —— 改了半天，改的都不是要用的那个。
+</p>
+
+<figure>
+<svg viewBox="0 0 900 400" role="img" aria-label="几个密钥的归属与用途">
+  <defs>
+    <marker id="k1" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+    </marker>
+  </defs>
+
+  <rect x="30" y="16" width="250" height="368" rx="12" fill="rgba(56,189,248,.07)"
+        stroke="#38BDF8" stroke-opacity=".4"/>
+  <text x="155" y="42" fill="#38BDF8" font-size="14" text-anchor="middle" font-weight="700">CPA（cli-proxy-api）</text>
+
+  <rect x="50" y="60" width="210" height="106" rx="9" fill="rgba(251,191,36,.12)"
+        stroke="#FBBF24" stroke-opacity=".55"/>
+  <text x="155" y="82" fill="#FBBF24" font-size="12.5" text-anchor="middle" font-weight="700">① 管理密钥</text>
+  <text x="62" y="102" fill="#E5E7EB" font-size="10.5">config.yaml 的</text>
+  <text x="62" y="118" fill="#D7E3F4" font-size="10" font-family="monospace">remote-management.secret-key</text>
+  <text x="62" y="137" fill="#FB7185" font-size="10.5">格式：bcrypt 哈希（$2a$ 开头）</text>
+  <text x="62" y="155" fill="#9CA3AF" font-size="10.5">外部工具拿明文去认证它</text>
+
+  <rect x="50" y="176" width="210" height="86" rx="9" fill="rgba(56,189,248,.1)"
+        stroke="#38BDF8" stroke-opacity=".5"/>
+  <text x="155" y="198" fill="#38BDF8" font-size="12.5" text-anchor="middle" font-weight="700">② 下游 api-keys</text>
+  <text x="62" y="218" fill="#E5E7EB" font-size="10.5">config.yaml 的 api-keys 列表</text>
+  <text x="62" y="236" fill="#9CA3AF" font-size="10.5">客户端（Claude Code）调用用</text>
+  <text x="62" y="254" fill="#6EE7B7" font-size="10.5">与管理登录无关</text>
+
+  <rect x="50" y="272" width="210" height="96" rx="9" fill="rgba(167,139,250,.12)"
+        stroke="#A78BFA" stroke-opacity=".5"/>
+  <text x="155" y="294" fill="#A78BFA" font-size="12.5" text-anchor="middle" font-weight="700">③ 环境变量明文</text>
+  <text x="62" y="314" fill="#D7E3F4" font-size="10" font-family="monospace">MANAGEMENT_PASSWORD</text>
+  <text x="62" y="333" fill="#6EE7B7" font-size="10.5">设了就优先于 ①，不走 bcrypt</text>
+  <text x="62" y="352" fill="#9CA3AF" font-size="10.5">改哈希失败时的退路</text>
+
+  <rect x="620" y="16" width="250" height="368" rx="12" fill="rgba(110,231,183,.07)"
+        stroke="#6EE7B7" stroke-opacity=".4"/>
+  <text x="745" y="42" fill="#6EE7B7" font-size="14" text-anchor="middle" font-weight="700">CPAMP（cpa-manager-plus）</text>
+
+  <rect x="640" y="60" width="210" height="146" rx="9" fill="rgba(251,191,36,.12)"
+        stroke="#FBBF24" stroke-opacity=".55"/>
+  <text x="745" y="82" fill="#FBBF24" font-size="12.5" text-anchor="middle" font-weight="700">④ 面板登录密钥</text>
+  <text x="652" y="104" fill="#E5E7EB" font-size="10.5">首次启动时写入 SQLite</text>
+  <text x="652" y="122" fill="#D7E3F4" font-size="10" font-family="monospace">/data/usage.sqlite</text>
+  <text x="652" y="144" fill="#FB7185" font-size="10.5">之后改任何文件都无效</text>
+  <text x="652" y="164" fill="#9CA3AF" font-size="10.5">只能 reset-admin-key 重置</text>
+  <text x="652" y="188" fill="#6EE7B7" font-size="10.5">← 登不上面板就是它</text>
+
+  <rect x="640" y="216" width="210" height="152" rx="9" fill="rgba(56,189,248,.1)"
+        stroke="#38BDF8" stroke-opacity=".5"/>
+  <text x="745" y="238" fill="#38BDF8" font-size="12.5" text-anchor="middle" font-weight="700">⑤ 连 CPA 用的密钥</text>
+  <text x="652" y="258" fill="#D7E3F4" font-size="10" font-family="monospace">secrets/cpa_management_key</text>
+  <text x="652" y="278" fill="#E5E7EB" font-size="10.5">必须是 ① 对应的那把明文</text>
+  <text x="652" y="298" fill="#FB7185" font-size="10.5">不一致 → CPAMP 连不上 CPA</text>
+  <text x="652" y="318" fill="#9CA3AF" font-size="10.5">表现为面板能开、数据全空</text>
+  <text x="652" y="340" fill="#6EE7B7" font-size="10.5">在 CPAMP 设置页可改</text>
+
+  <path d="M640 120 L290 120" stroke="#6B7280" stroke-width="1.6"
+        stroke-dasharray="4 3" marker-end="url(#k1)"/>
+  <text x="465" y="110" fill="#9CA3AF" font-size="11" text-anchor="middle">面板登录 ≠ 连 CPA</text>
+  <path d="M640 292 L290 292" stroke="#6B7280" stroke-width="1.6"
+        stroke-dasharray="4 3" marker-end="url(#k1)"/>
+  <text x="465" y="282" fill="#9CA3AF" font-size="11" text-anchor="middle">⑤ 必须匹配 ①</text>
+</svg>
+<figcaption>
+  <b>图 13</b>　几个密钥的归属。<b>最常见的错误是拿 ① 或 ⑤ 去登 ④</b> ——
+  它们完全无关，改多少次都不会有效果。
+</figcaption>
+</figure>
+
+<div class="danger">
+  <strong>排查第一句话：我要登的是哪一个？</strong>
+  <ul style="margin:.4rem 0 0 1.2rem">
+    <li>进 <code>cpas.域名/management.html</code> 面板 → 用 <b>④</b></li>
+    <li>让 CPAMP 读到 CPA 的账号数据 → 用 <b>⑤</b>（且要与 ① 匹配）</li>
+    <li>Claude Code / Codex 客户端连 CPA → 用 <b>②</b> 里某个 <code>sk-</code></li>
+    <li>用 curl 调 <code>/v0/management/*</code> → 用 <b>①</b> 对应的明文，或 <b>③</b></li>
+  </ul>
+</div>
+
+<h3>8.10 面板登不上：重置密钥（唯一有效的方法）</h3>
+
+<p>源码里写得明确（<code>bootstrap/service.go</code>）：</p>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>// 数据库里已有凭据就直接返回 —— 不再读 secrets 文件
+if _, ok, err := st.LoadAdminCredential(ctx); err != nil || ok {
+    return false, "", err
+}
+adminKey := cfg.AdminKey   // 只有首次启动才读文件</pre></div>
+
+<p>
+  即：<b>面板密钥只在第一次启动时确定，之后改文件一律无效</b>。
+  想换只能用 <code>reset-admin-key</code>（它直接改写 SQLite）。
+</p>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>cd /opt/deploy
+
+# ① 先停 CPAMP，避免 SQLite 被占用
+docker compose stop cpa-manager-plus
+
+# ② 重置（不加 --admin-key 则自动生成随机密钥并打印）
+docker compose run --rm --entrypoint cpa-manager-plus cpa-manager-plus \
+  reset-admin-key --db-path /data/usage.sqlite
+
+# 输出形如：
+#   CPA Manager Plus admin key reset.
+#   New admin key: xxxxxxxx...
+#   Save this value now. It will not be shown again.
+
+# ③ 启动，用它登录面板
+docker compose start cpa-manager-plus</pre></div>
+
+<div class="box note">
+  <b>参数说明（源码 <code>adminreset/command.go</code>）</b>
+  <ul style="margin:.4rem 0 0 1.2rem">
+    <li><code>--admin-key VALUE</code>　指定新密钥</li>
+    <li><code>--admin-key-file PATH</code>　从文件读（<b>不能与上面同用</b>）</li>
+    <li><code>--db-path PATH</code>　SQLite 路径；不传则读配置</li>
+    <li>都不传 → 自动生成并打印，<b>只显示一次</b></li>
+  </ul>
+</div>
+
+<h3>8.11 被自己的 IP 封禁：<code>403</code> 而不是 <code>401</code></h3>
+
+<p>改密钥时很容易触发。CPA 源码里有两个常量：</p>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>const maxFailures = 5
+const banDuration = 30 * time.Minute</pre></div>
+
+<p>认证失败累计 5 次 → <b>该 IP 封禁 30 分钟</b> → 之后所有请求返回 403，<b>包括用对密钥的</b>。</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>状态码</th><th>CPA 源码里的含义</th></tr></thead>
+  <tbody>
+    <tr><td><code>401</code></td><td><code>missing management key</code> / <code>invalid management key</code> —— 密钥不对</td></tr>
+    <tr><td><code>403</code></td><td><code>IP banned ...</code> / <code>remote management disabled</code> / <code>key not set</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><b>只看状态码分不出 403 的具体原因，必须看响应体：</b></p>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>curl -s -i -H "Authorization: Bearer $KEY" \
+  http://127.0.0.1:8317/v0/management/get-auth-status | head -20
+
+# 看到这个就是被封了：
+#   {"error":"IP banned due to too many failed attempts. Try again in 26m10s"}</pre></div>
+
+<p><b>解除方法</b>（失败计数在内存里，重启即清空）：</p>
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>cd /opt/deploy
+
+# 关键顺序：先停 CPAMP，否则它会持续重试、不断延长封禁
+docker compose stop cpa-manager-plus
+docker compose restart cli-proxy-api
+sleep 8
+
+# 确认已解封（应返回 401，而不是 403）
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $(cat secrets/cpa_management_key)" \
+  http://127.0.0.1:8317/v0/management/get-auth-status
+
+docker compose start cpa-manager-plus</pre></div>
+
+<div class="box warn">
+  <b>为什么必须"先停 CPAMP"</b>
+  CPAMP 在后台不断重试连接 CPA。CPA 重启的那十几秒里这些重试全部失败 ——
+  攒够 5 次立刻又把你封 30 分钟。顺序不能反。
+</div>
+
+<h3>8.12 <code>secret-key</code> 要的是哈希，不是明文</h3>
+
+<p>
+  <code>config.yaml</code> 的 <code>remote-management.secret-key</code>
+  期望 <b>bcrypt 哈希</b>（<code>$2a$10$</code> 开头，60 字符）。
+  写明文进去 → 认证彻底失效；哈希不可逆，<b>只能从备份还原</b>。
+</p>
+
+<figure>
+<svg viewBox="0 0 900 240" role="img" aria-label="两条可行的换密钥路径">
+  <rect x="30" y="16" width="380" height="208" rx="10" fill="rgba(110,231,183,.08)"
+        stroke="#6EE7B7" stroke-opacity=".45"/>
+  <text x="220" y="44" fill="#6EE7B7" font-size="13.5" text-anchor="middle" font-weight="700">
+    路径 A（推荐）：用环境变量，不碰哈希
+  </text>
+  <text x="50" y="72" fill="#E5E7EB" font-size="11.5">1. compose 给 cli-proxy-api 加：</text>
+  <text x="64" y="92" fill="#D7E3F4" font-size="10.5" font-family="monospace">- MANAGEMENT_PASSWORD=${CPA_MANAGEMENT_PASSWORD}</text>
+  <text x="50" y="116" fill="#E5E7EB" font-size="11.5">2. .env 里写明文</text>
+  <text x="50" y="140" fill="#E5E7EB" font-size="11.5">3. 重启 cli-proxy-api</text>
+  <text x="50" y="168" fill="#6EE7B7" font-size="11">优点：不需要 bcrypt，删掉变量即可回退</text>
+  <text x="50" y="192" fill="#9CA3AF" font-size="10.5">源码依据：命中 envSecret 就 return，</text>
+  <text x="50" y="210" fill="#9CA3AF" font-size="10.5">不查哈希（handler.go:382）</text>
+
+  <rect x="490" y="16" width="380" height="208" rx="10" fill="rgba(251,191,36,.08)"
+        stroke="#FBBF24" stroke-opacity=".45"/>
+  <text x="680" y="44" fill="#FBBF24" font-size="13.5" text-anchor="middle" font-weight="700">
+    路径 B：生成新哈希写进 config.yaml
+  </text>
+  <text x="510" y="72" fill="#E5E7EB" font-size="11.5">1. 生成哈希（需能跑 bcrypt 的环境）</text>
+  <text x="524" y="92" fill="#D7E3F4" font-size="10.5" font-family="monospace">bcrypt.hashpw(key, gensalt(10))</text>
+  <text x="510" y="116" fill="#E5E7EB" font-size="11.5">2. 替换 secret-key（先备份）</text>
+  <text x="510" y="140" fill="#E5E7EB" font-size="11.5">3. 同步 secrets 文件 + 重启</text>
+  <text x="510" y="168" fill="#FB7185" font-size="11">坑：容器里常没有 python3/bcrypt</text>
+  <text x="510" y="192" fill="#9CA3AF" font-size="10.5">失败时 HASH 会是空串或错误信息，</text>
+  <text x="510" y="210" fill="#9CA3AF" font-size="10.5">写进 config.yaml 就彻底登不进去</text>
+</svg>
+<figcaption>
+  <b>图 14</b>　两条路径。路径 A 更适合容器部署 ——
+  不需要 bcrypt，删掉环境变量就能回退。
+</figcaption>
+</figure>
+
+<div class="box danger">
+  <b>写哈希前必须校验</b>
+  这个坑实际踩过：<code>HASH=$(docker compose exec ... python3 ...)</code>
+  在容器缺 bcrypt 时<b>不会报错</b>，而是把
+  <code>OCI runtime exec failed...</code> 赋给 <code>HASH</code>。
+  写进 <code>config.yaml</code> 后认证即失效。
+</div>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># 生成后立刻校验，不合格就别往下走
+echo "HASH 长度: ${#HASH}"
+case "$HASH" in
+  \$2*) [ ${#HASH} -ge 59 ] && echo "OK" || echo "长度异常，中止" ;;
+  *)    echo "不是 bcrypt 哈希，中止" ;;
+esac</pre></div>
+
+<h3>8.13 密钥轮换的正确顺序</h3>
+
+<p>顺序错了会把自己锁在外面（或触发封禁）。按这个来：</p>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># ① 生成新密钥，直接落文件、不回显（避免进入终端历史）
+cd /opt/deploy
+openssl rand -hex 24 > secrets/cpa_management_key
+
+# ② 让 CPA 接受它（二选一）
+#    A. 环境变量方式（推荐）
+echo "CPA_MANAGEMENT_PASSWORD=$(cat secrets/cpa_management_key)" >> .env
+#    B. 或在 config.yaml 里换 bcrypt 哈希（记得先校验，见 8.12）
+
+# ③ 先停 CPAMP，避免重试触发封禁
+docker compose stop cpa-manager-plus
+
+# ④ 重建 CPA
+docker compose up -d --force-recreate cli-proxy-api
+sleep 8
+
+# ⑤ 验证：必须 200
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $(cat secrets/cpa_management_key)" \
+  http://127.0.0.1:8317/v0/management/get-auth-status
+
+# ⑥ 回面板把「CPA Management Key」填成同一个值，再启动 CPAMP
+docker compose start cpa-manager-plus</pre></div>
+
+<div class="box warn">
+  <b>「面板登不上」和「CPAMP 连不上 CPA」是两件事</b>
+  <ul style="margin:.4rem 0 0 1.2rem">
+    <li>打不开 <code>management.html</code> / 提示"管理员密钥无效" → 是 <b>④</b>，用
+        <code>reset-admin-key</code></li>
+    <li>能进面板但账号/用量全空 → 是 <b>⑤</b>，按上面 1-6 步换 CPA 管理密钥</li>
+  </ul>
+</div>
+
+<div class="box note">
+  <b>密钥不要抄成明文文件</b>
+  排障时发现，密钥一旦散落在某个 <code>pwnote.txt</code> 里，
+  很容易出现<b>多个副本互不一致</b>（其中一个还是转义写坏的），
+  照着它操作会被引向完全错误的方向。建议用密码管理器，
+  文件里只记「值在哪」而不是值本身。
+</div>
+
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s9">九、附录：环境变量表</h2>
 
