@@ -566,17 +566,94 @@ openai-compatibility:
   这正是「自动更新不生效」的直接原因。
 </div>
 
-<div class="step"><span class="sn">4</span><span class="st">执行导入</span></div>
+<div class="step"><span class="sn">4</span><span class="st">启动并自动同步</span></div>
+
+<p>
+  容器起来就会<b>自动</b>把 <code>config.yaml</code> 同步进 sub2api，跑完即退。
+  你原来那条命令链加一步即可，<b>不需要额外手动执行任何 py 命令</b>：
+</p>
 
 <div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 正式导入（一键全自动）
-docker compose run --rm cpa2sub2api python 一键导入.py
+<pre>docker-compose down && docker-compose pull && docker-compose up -d && docker-compose logs --tail=180</pre></div>
 
-# 交互菜单（分步操作、回滚、推送定价）
+<div class="box tip">
+  <b>它是怎么自动跑的</b>
+  镜像的默认命令是 <code>entrypoint.sh</code>，它执行
+  <code>一键导入.py</code>（<b>非交互</b>入口）。所以
+  <code>up -d</code> 启动本容器 = 执行一次同步；配合
+  <code>restart: "no"</code>，同步完就退出，不会常驻。
+  <br><br>
+  以前默认命令是 <code>python tool.py</code>（交互式菜单），
+  容器里没有 TTY 就立刻 EOF 退出、什么都不做 —— 看起来 <code>up -d</code> 成功、
+  实际一次都没同步，必须人工 <code>docker compose run</code> 才有效果。现已改正。
+</div>
+
+<h4>同步是幂等的</h4>
+<p>
+  重复执行不会重复建号：账号名含内容指纹（<code>sha1(api_key|base_url)</code> 前 8 位），
+  已存在的走<b>差异同步</b>，只更新真正变化的字段。所以每次 <code>up -d</code>
+  都可以放心让它跑一遍。
+</p>
+
+<h4>想要定时重复同步</h4>
+<p>两种方式，按你的部署习惯选：</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>方式</th><th>做法</th><th>适用</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>容器内循环</b></td>
+      <td>在 <code>.env</code> 里设 <code>RUN_INTERVAL_SECONDS=3600</code>，
+          并把 compose 的 <code>restart</code> 改成 <code>unless-stopped</code></td>
+      <td>希望配置全在 compose 里，不碰宿主机</td>
+    </tr>
+    <tr>
+      <td><b>宿主 cron</b></td>
+      <td>加一条 crontab，定时执行
+          <code>docker-compose run --rm cpa2sub2api</code></td>
+      <td>想和宿主上其它定时任务统一管理</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># 方式一：容器内循环（.env）
+RUN_INTERVAL_SECONDS=3600
+# 同时把 compose 里 cpa2sub2api 的 restart 改成 unless-stopped
+
+# 方式二：宿主 cron（crontab -e）
+0 3 * * * cd /opt/deploy && docker-compose run --rm cpa2sub2api >> /var/log/cpa2sub2api.log 2>&1</pre></div>
+
+<div class="box warn">
+  <b>自动化的一个副作用，决定前请先权衡</b>
+  每次导入都会按 sub2api 的<b>实测健康度</b>重算优先级
+  （可调度率 ×0.6 + 活跃率 ×0.4），并覆盖线上值。
+  <br><br>
+  也就是说：<b>你在 sub2api 后台手工调整过的优先级会被算法值覆盖</b>。
+  <ul style="margin-bottom:0">
+    <li>不手工干预 → 定时同步很合适，坏站会被自动降级</li>
+    <li>会手工干预 → 建议保持「每次 up -d 同步一次」，不要叠定时任务</li>
+  </ul>
+</div>
+
+<h4>临时/手动执行（可选）</h4>
+<p>不想重新起整个栈时，也可以单独跑一次：</p>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># 只跑一次同步（不碰其它服务）
+docker compose run --rm cpa2sub2api
+
+# 交互菜单：分步操作、回滚、推送定价
 docker compose run --rm cpa2sub2api python run.py
 
-# 查看产物
-docker run --rm -v deploy_cpa2sub2api-out:/o alpine sh -c 'ls -l /o'</pre></div>
+# 空跑预览：只生成对照表，不写 sub2api
+docker compose run --rm cpa2sub2api python 一键导入.py --dry-run
+
+# 查看产物（卷名前缀 = compose 项目名，通常是部署根目录名）
+docker volume ls | grep cpa2sub2api-out
+docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre></div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s4">四、配置文件逐项说明</h2>

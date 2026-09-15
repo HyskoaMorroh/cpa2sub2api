@@ -38,10 +38,21 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "pyyaml"])
 
 
+def _assume_yes_env():
+    """ASSUME_YES 是否被显式开启。"""
+    return str(os.environ.get("ASSUME_YES") or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def ask_yes(prompt):
     """询问确认。非交互环境（管道、计划任务）读到 EOF 时一律当作"否"。
 
     破坏性操作在拿不到人的确认时必须默认不做，而不是崩掉或默认做。
+
+    **ASSUME_YES 不在这里生效**：这个函数被多处复用，其中包含
+    `wipe_all`（删光本工具建的账号、分组、代理）。若在这里统一放行，
+    一个环境变量就同时授权了"写入"和"删除"，后者删掉的密钥是拿不回来的。
+    所以自动确认只在**导入**那处单独判断，见下方 main() 里的 use_env。
     """
     try:
         return input(prompt).strip().lower() == "y"
@@ -332,7 +343,12 @@ def main():
     print("  将向 %s 写入：" % s["sub2api_base_url"])
     print("    分组 %d 个、代理 %d 个、账号 %d 条"
           % (len(plan["groups"]), len(plan["proxies"]), len(recs)))
-    if not ask_yes("  输入 y 回车开始导入，其他键取消："):
+    # 无人值守（容器 entrypoint、宿主 cron）走这条：ASSUME_YES=1 时自动继续。
+    # 只在这里判断，不放宽 ask_yes 本身 —— 那个函数还被 wipe_all 用着，
+    # 统一放行等于让一个环境变量顺带授权了「删光账号」。
+    if _assume_yes_env():
+        print("  ASSUME_YES 已设置，跳过确认直接导入。")
+    elif not ask_yes("  输入 y 回车开始导入，其他键取消："):
         print("  已取消，什么都没写。")
         return 0
 

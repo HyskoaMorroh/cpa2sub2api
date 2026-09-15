@@ -45,15 +45,40 @@ SUB2API_BASE_URL=https://sub2api.example.com
 SUB2API_ADMIN_KEY=admin-替换成你的密钥
 FALLBACK_PROXY=http://mihomo:7890
 
-# 启动（带代理）
+# 启动（带代理）—— 容器起来就自动同步一次，跑完即退
 docker compose --profile mihomo up -d
 
-# 执行导入
-docker compose run --rm cpa2sub2api python 一键导入.py
+# 看到「同步完成」就是跑完了
+docker compose logs cpa2sub2api
 ```
 
 镜像名与 CI 的推送目标由**同一组仓库变量**决定，不存在写死的账号名。
 GitHub 侧的配置见 [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml) 顶部注释。
+
+**容器起来就自动同步，跑完即退** —— 镜像默认命令是 `entrypoint.sh`，
+它执行非交互的一键导入。所以 `up -d` 之后**不需要**额外手动执行 py 命令。
+同步是幂等的：账号名含内容指纹，重复执行不会重复建号，已存在的走差异同步。
+
+想要定时重复同步，二选一（详见教程 6.2 节）：
+
+```bash
+# ① 容器内循环：.env 里设间隔，并把 compose 的 restart 改成 unless-stopped
+RUN_INTERVAL_SECONDS=3600
+
+# ② 宿主 cron
+0 3 * * * cd /opt/deploy && docker-compose run --rm cpa2sub2api >> /var/log/cpa2sub2api.log 2>&1
+```
+
+> ⚠ 每次导入都会按 sub2api 的实测健康度重算优先级并**覆盖线上值**。
+> 如果你会在 sub2api 后台手工调整优先级，别叠定时任务 —— 算法会把你的调整算回去。
+
+手动执行（临时用，不重新起整个栈）：
+
+```bash
+docker compose run --rm cpa2sub2api                    # 只跑一次同步
+docker compose run --rm cpa2sub2api python run.py      # 交互菜单
+docker compose run --rm cpa2sub2api python 一键导入.py --dry-run   # 空跑预览
+```
 
 ### 3. 本机直接运行
 

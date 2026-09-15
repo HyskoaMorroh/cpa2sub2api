@@ -2087,6 +2087,20 @@ def build_plan(s):
             # 现在直接按域名单元取桶号。
             for r in recs:
                 r["new_priority"] = bucket_of.get(_host_key(r), 500)
+            # rank 必须一起补上：对照表按它排序（write_plan_files 里
+            # `sorted(arr, key=lambda x: x["rank"])`）。这条智能路径不走
+            # remap_priority，而 rank 只在那边被赋值，漏了就 KeyError 'rank'，
+            # 而且是在**写对照表**的时候才炸 —— 前面的优先级计算全部白做。
+            # 语义：同一渠道内按新桶号（小者优先）排名，与对照表的呈现一致。
+            _by_group = defaultdict(list)
+            for r in recs:
+                _by_group[r["group"]].append(r)
+            for _arr in _by_group.values():
+                _arr.sort(key=lambda r: (r.get("new_priority") or 0,
+                                         host_of(r["base_url"]),
+                                         account_fingerprint(r)))
+                for _rank, r in enumerate(_arr, 1):
+                    r["rank"] = _rank
             print("[智能优先级] 应用完成")
         except Exception as e:
             print(f"[智能优先级] 失败，回退到传统映射: {e}")
@@ -2776,11 +2790,13 @@ def do_import(api, plan, ask=None):
     # 状态，只能沿用 CPA 的优先级。但账号刚建出来就已经有 status/schedulable
     # 了，所以这里立刻拿新数据再排一次，并把新的 priority 推给已存在的账号。
     #
-    # 只在这一种情形下做：本阶段**刚新建过账号**（success > 0）。
+    # 只在这一种情形下做：本阶段**刚新建过账号**。
+    # 注意 success 是**名字列表**不是计数（见 do_import 开头的初始化），
+    # 所以判空用 `if success:`，跟 0 比大小会 TypeError。
     # 没有新建就说明这是第二次及以后的运行，第一阶段已经拿到完整数据、
     # 上面这次重排是多余的，白跑一轮网络请求。
     stage2 = {"ran": False, "ranked": 0, "updated": 0, "msg": ""}
-    if success > 0 and cfg.get("health_rerank_enabled", True):
+    if success and cfg.get("health_rerank_enabled", True):
         print("\n [第二阶段] 用新建账号的实测状态重排优先级...")
         have2, hm2_err = existing_accounts_by_name(api)
         if hm2_err:

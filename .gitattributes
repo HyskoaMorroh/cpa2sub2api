@@ -1,0 +1,29 @@
+# 统一换行符。
+#
+# 为什么必须管这件事：这些 shell 脚本要进 Linux 容器执行，而本仓库在
+# Windows 上开发。Git 默认的 core.autocrlf 会把 .sh 也转成 CRLF，
+# 那样子在容器里执行会报：
+#     /bin/sh^M: bad interpreter: No such file or directory
+# 报错信息里的 ^M 就是回车符，很容易被当成"文件不存在"而查错方向。
+#
+# 这里显式锁死：shell 脚本一律 LF，且不做任何转换。
+
+* text=auto eol=lf
+
+*.sh        text eol=lf
+*.py        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.md        text eol=lf
+*.html      text eol=lf
+
+# Windows 批处理必须是 CRLF，否则 cmd.exe 解析会出问题
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# 二进制文件不做任何换行转换
+*.png       binary
+*.jpg       binary
+*.pdf       binary
+*.docx      binary
