@@ -355,12 +355,16 @@ def main():
     print("[5/5] 执行导入...")
     if dry_run:
         print("  [空跑] 只校验不写入。")
-        from tool import to_account
+        from tool import to_account, build_proxy_need_map
         gm = {g: -1 for g in plan["groups"]}
         pm = {u: -1 for u in plan["proxies"]}
+        # 代理需求映射必须真实算出来，不能传空字典 ——
+        # to_account 靠它决定"同域名有代理需求但代理还没建好"时记什么备注。
+        # 传空的话空跑校验的就不是真实请求体，预览等于白跑。
+        pn = build_proxy_need_map(recs)
         bad = []
         for r in recs:
-            a = to_account(r, cfg, gm, pm)
+            a = to_account(r, cfg, gm, pm, pn)
             if "status" in a:
                 bad.append((a["name"], "含非法 status 字段"))
             if a.get("concurrency", 0) <= 0:
