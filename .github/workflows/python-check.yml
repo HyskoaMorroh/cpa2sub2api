@@ -1,0 +1,54 @@
+name: Python Code Quality
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8
+
+      - name: Lint with flake8
+        run: |
+          # 语法错误与未定义名称必须让构建失败
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          # 其余仅警告
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Check imports
+        run: |
+          python -c "import tool; import pricing; import model_selection; import new_remap_priority"
+
+      - name: Syntax check all Python files
+        run: |
+          python -m py_compile tool.py
+          python -m py_compile 一键导入.py
+          python -m py_compile run.py
+          python -m py_compile extract.py
+          python -m py_compile pricing.py
+          python -m py_compile model_selection.py
+          python -m py_compile new_remap_priority.py
+
+      - name: Run regression tests
+        run: |
+          python tests/test_fixes.py

@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CPA2SUB2API 部署与使用教程</title>
+<style>
+  :root {
+    --bg-primary:#0A0D12; --bg-secondary:#0F131C; --bg-tertiary:#161D2B;
+    --bg-elevated:#1E2636;
+    --text-primary:#E5E7EB; --text-secondary:#9CA3AF; --text-muted:#6B7280;
+    --accent-cyan:#38BDF8; --accent-emerald:#6EE7B7; --accent-amber:#FBBF24;
+    --accent-violet:#A78BFA; --accent-rose:#FB7185; --accent-red:#EF4444;
+    --border-color:rgba(255,255,255,.1);
+    --shadow:0 4px 6px -1px rgba(0,0,0,.3);
+    --radius:12px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;
+    background:linear-gradient(135deg,var(--bg-primary) 0%,var(--bg-secondary) 100%);
+    color:var(--text-primary); line-height:1.75; padding:clamp(1rem,3vw,3rem);
+  }
+  .container{
+    max-width:1080px; margin:0 auto; background:var(--bg-secondary);
+    border-radius:16px; padding:clamp(1.5rem,4vw,3rem); box-shadow:var(--shadow);
+    border:1px solid var(--border-color);
+  }
+  h1{
+    font-size:clamp(1.8rem,4.5vw,2.6rem); color:var(--accent-cyan);
+    margin-bottom:.5rem; letter-spacing:-.02em; line-height:1.25;
+  }
+  .subtitle{color:var(--text-secondary); font-size:1rem; margin-bottom:2rem}
+  h2{
+    font-size:clamp(1.35rem,3vw,1.75rem); color:var(--accent-emerald);
+    margin-top:3rem; margin-bottom:1.2rem; padding-bottom:.5rem;
+    border-bottom:2px solid var(--border-color);
+  }
+  h3{
+    font-size:clamp(1.1rem,2.2vw,1.3rem); color:var(--accent-violet);
+    margin-top:2rem; margin-bottom:.8rem;
+  }
+  h4{
+    font-size:1.02rem; color:var(--accent-amber);
+    margin-top:1.4rem; margin-bottom:.6rem;
+  }
+  p{margin-bottom:1rem; color:var(--text-primary)}
+  ul,ol{margin:0 0 1rem 1.4rem}
+  li{margin-bottom:.45rem}
+  a{color:var(--accent-cyan); text-decoration:none; border-bottom:1px dotted}
+  a:hover{border-bottom-style:solid}
+  code{
+    background:var(--bg-elevated); padding:.12em .45em; border-radius:5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:.9em; color:var(--accent-amber);
+  }
+  .code-wrap{position:relative; margin:1rem 0}
+  .copy-btn{
+    position:absolute; top:.55rem; right:.55rem; z-index:2;
+    background:var(--accent-cyan); color:#06131c; border:none;
+    padding:.28rem .75rem; border-radius:6px; font-size:.78rem;
+    font-weight:700; cursor:pointer; opacity:.85; transition:all .18s;
+  }
+  .copy-btn:hover{opacity:1; transform:translateY(-1px)}
+  pre{
+    background:var(--bg-primary); border:1px solid var(--border-color);
+    border-left:3px solid var(--accent-cyan); border-radius:var(--radius);
+    padding:1.1rem 1.2rem; overflow-x:auto; font-size:.85rem; line-height:1.6;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    color:#D7E3F4; white-space:pre;
+  }
+  pre.no-copy{padding-top:1.1rem}
+  .note,.warn,.danger,.tip{
+    border-radius:var(--radius); padding:.9rem 1.1rem; margin:1rem 0;
+    border-left:4px solid; font-size:.94rem;
+  }
+  .note{background:rgba(56,189,248,.08); border-color:var(--accent-cyan)}
+  .tip{background:rgba(110,231,183,.08); border-color:var(--accent-emerald)}
+  .warn{background:rgba(251,191,36,.09); border-color:var(--accent-amber)}
+  .danger{background:rgba(239,68,68,.1); border-color:var(--accent-red)}
+  .note strong,.tip strong,.warn strong,.danger strong{display:block; margin-bottom:.25rem}
+  .grid{
+    display:grid; gap:1rem; margin:1.2rem 0;
+    grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+  }
+  .card{
+    background:var(--bg-tertiary); border:1px solid var(--border-color);
+    border-radius:var(--radius); padding:1rem 1.1rem;
+  }
+  .card h4{margin-top:0; color:var(--accent-cyan)}
+  .card p{margin-bottom:0; font-size:.9rem; color:var(--text-secondary)}
+  table{
+    width:100%; border-collapse:collapse; margin:1.2rem 0; font-size:.9rem;
+    display:block; overflow-x:auto; white-space:nowrap;
+  }
+  th,td{
+    padding:.6rem .8rem; text-align:left;
+    border-bottom:1px solid var(--border-color);
+  }
+  th{background:var(--bg-elevated); color:var(--accent-emerald); font-weight:700}
+  tr:hover td{background:rgba(255,255,255,.02)}
+  .step{
+    display:flex; align-items:center; gap:.7rem; margin-bottom:.9rem;
+  }
+  .step-num{
+    flex:0 0 auto; width:28px; height:28px; border-radius:50%;
+    background:var(--accent-cyan); color:#06131c; font-weight:800;
+    display:flex; align-items:center; justify-content:center; font-size:.9rem;
+  }
+  .step-title{font-size:1.15rem; font-weight:700; color:var(--accent-violet)}
+  .toc{
+    background:var(--bg-tertiary); border:1px solid var(--border-color);
+    border-radius:var(--radius); padding:1.1rem 1.3rem; margin-bottom:2rem;
+  }
+  .toc ol{margin-bottom:0}
+  .badge{
+    display:inline-block; padding:.15rem .5rem; border-radius:999px;
+    font-size:.75rem; font-weight:700; vertical-align:middle;
+  }
+  .badge-fix{background:rgba(110,231,183,.18); color:var(--accent-emerald)}
+  .badge-new{background:rgba(167,139,250,.2); color:var(--accent-violet)}
+  .badge-warn{background:rgba(251,191,36,.2); color:var(--accent-amber)}
+  footer{
+    margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--border-color);
+    color:var(--text-muted); font-size:.85rem;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>CPA2SUB2API 部署与使用教程</h1>
+<p class="subtitle">
+  把 CPA / CPAMP 生成的 <code>config.yaml</code> 批量灌进 sub2api。
+  支持按域名分桶的优先级调度、智能健康度重排、模型"就高原则"、并发导入与定时探活。
+</p>
+
+<div class="toc">
+  <strong>目录</strong>
+  <ol>
+    <li><a href="#s1">它做什么，解决什么问题</a></li>
+    <li><a href="#s2">环境要求</a></li>
+    <li><a href="#s3">Docker 部署（VPS 推荐）</a></li>
+    <li><a href="#s4">配置文件逐项说明</a></li>
+    <li><a href="#s5">代理（mihomo）配置</a></li>
+    <li><a href="#s6">执行导入</a></li>
+    <li><a href="#s7">工作原理：优先级、分桶与容灾</a></li>
+    <li><a href="#s8">常见故障排查</a></li>
+    <li><a href="#s9">附录：完整环境变量表</a></li>
+  </ol>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="s1">一、它做什么，解决什么问题</h2>
+
+<p>
+  CPA（CLIProxyAPI）用一份 <code>config.yaml</code> 管理几十到几百个上游凭据；
+  sub2api 是网关，负责真正的调度与计费。两者的账号模型不通用，
+  手工搬运几百条凭据不现实，本工具就是这条搬运流水线。
+</p>
+
+<div class="grid">
+  <div class="card">
+    <h4>14 项参数全覆盖</h4>
+    <p>credentials、priority、concurrency、auto_pause_on_expired、proxy_id、请求头、冷却规则、Websockets、模型白名单等一次性迁移。</p>
+  </div>
+  <div class="card">
+    <h4>按域名分桶</h4>
+    <p>同一上游的多个 KEY 互为备份、落进同一优先级桶；只有整桶不可用才降级到下一个域名。</p>
+  </div>
+  <div class="card">
+    <h4>健康度重排 <span class="badge badge-new">已修</span></h4>
+    <p>按 sub2api 实测的可调度率 60% + 活跃率 40% 重排优先级，桶号全局唯一。</p>
+  </div>
+  <div class="card">
+    <h4>模型就高原则 <span class="badge badge-fix">已修</span></h4>
+    <p>codex 与 openai 分开处理，代际门槛从上游源码反推，不写死版本号。</p>
+  </div>
+  <div class="card">
+    <h4>并发导入</h4>
+    <p>建号 / 探活 / 定价三条链路都走线程池，worker 数可配且自动钳上限。</p>
+  </div>
+  <div class="card">
+    <h4>反测活</h4>
+    <p>探活用自然语料，并给每个账号错开探活时刻，避免"全体同时探活"这一机器特征。</p>
+  </div>
+</div>
+
+<div class="note">
+  <strong>关于 CPA / CPAMP / sub2api</strong>
+  这三个项目都是第三方作品，本工具<b>不修改它们</b>。
+  所有调度与容灾的改进都落在<b>本工具写入 sub2api 的数据</b>上。
+</div>
+
+<!-- ================================================================ -->
+<h2 id="s2">二、环境要求</h2>
+
+<table>
+  <thead><tr><th>项目</th><th>要求</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>Python</td><td>3.8+</td><td>Docker 镜像用 3.11</td></tr>
+    <tr><td>依赖</td><td>PyYAML 6.0+</td><td>唯一的第三方依赖</td></tr>
+    <tr><td>sub2api</td><td>可访问 + 管理员密钥</td><td>必填</td></tr>
+    <tr><td>CPA / CPAMP</td><td>可选</td><td>本地没有 <code>config.yaml</code> 时用它在线拉取</td></tr>
+    <tr><td>Docker</td><td>20.10+</td><td>含 compose v2</td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="s3">三、Docker 部署（VPS 推荐）</h2>
+
+<p>
+  部署模型是<b>「VPS 只拉远程镜像」</b>：本机改代码 → 推 GitHub →
+  GitHub Actions 构建推 Docker Hub → VPS 拉镜像运行。
+  所以 VPS 上<b>不需要</b>源码，只需要镜像和几个配置文件。
+</p>
+
+<h3><span class="step"><span class="step-num">1</span><span class="step-title">拉取镜像</span></span></h3>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>docker pull hyskaamorroh/cpa2sub2api:latest</pre>
+</div>
+
+<h3><span class="step"><span class="step-num">2</span><span class="step-title">准备配置文件</span></span></h3>
+<p>在部署根目录（<code>/opt/deploy</code>）放这些文件：</p>
+
+<table>
+  <thead><tr><th>文件</th><th>作用</th><th>是否必需</th></tr></thead>
+  <tbody>
+    <tr><td><code>.env</code></td><td>连接信息与开关</td><td>必需</td></tr>
+    <tr><td><code>config.yaml</code></td><td>CPA / CPAMP 的产物，导入的源数据</td><td>必需（或用 CPA_BASE_URL 在线拉）</td></tr>
+    <tr><td><code>docker-compose.yml</code></td><td>服务编排</td><td>必需</td></tr>
+    <tr><td><code>nginx.conf</code></td><td>反向代理（若前置 nginx）</td><td>可选</td></tr>
+    <tr><td><code>mihomo-manager/</code></td><td>代理订阅与自举脚本</td><td>用代理时必需</td></tr>
+  </tbody>
+</table>
+
+<h4>2.1 <code>.env</code> 最小可用内容</h4>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre># ---- 必填：sub2api 连接 ----
+SUB2API_BASE_URL=https://sub2api.example.com
+SUB2API_ADMIN_KEY=admin-替换成你的管理员密钥
+
+# ---- 代理：容器间必须用服务名，不能写 127.0.0.1 ----
+FALLBACK_PROXY=http://mihomo:7890
+
+# ---- mihomo（用代理时填）----
+MIHOMO_SECRET=替换成随机字符串
+MIHOMO_SUBSCRIPTIONS=wog=https://你的机场订阅地址</pre>
+</div>
+
+<div class="danger">
+  <strong>两个最容易配错的地方</strong>
+  ① <code>FALLBACK_PROXY</code> 在容器里<b>必须</b>用服务名 <code>http://mihomo:7890</code>。
+  写 <code>127.0.0.1:7890</code> 指向的是容器自己，不是代理。<br>
+  ② 容器部署下不要依赖 <code>设置.json</code>：配置走环境变量，
+  两者同时存在时<b>环境变量优先</b>。
+</div>
+
+<h4>2.2 <code>config.yaml</code></h4>
+<p>
+  直接把 CPA / CPAMP 生成的那份拷过来即可，本工具只读不写。
+  结构参考：
+</p>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre># 客户端 -> Cloudflare -> nginx -> sub2api -> CPA -> 各上游
+
+routing:
+  strategy: round-robin          # 决定 weight&lt;=0 是否等于停用
+
+max-retry-credentials: 12
+max-retry-interval: 2            # 建议压到 2，别超出 CF 的 120 秒窗口
+
+claude-api-key:
+  - api-key: sk-ant-xxxxxxxx
+    base-url: https://your-upstream.example.com
+    priority: 1000
+    weight: 5
+    models:
+      - name: claude-opus-5
+        alias: claude-opus-5
+    proxy-url: "http://mihomo:7890"   # 需要代理的上游才写
+
+codex-api-key:
+  - api-key: sk-xxxxxxxx
+    base-url: https://your-codex-upstream.example.com
+    priority: 1000
+    models:
+      - name: gpt-6
+        alias: gpt-6
+
+openai-compatibility:
+  - name: your-provider
+    base-url: https://your-openai-upstream.example.com
+    api-key-entries:
+      - api-key: sk-yyyyyyyy
+        weight: 2
+    models:
+      - name: gpt-6
+        alias: gpt-6</pre>
+</div>
+
+<h3><span class="step"><span class="step-num">3</span><span class="step-title">启动</span></span></h3>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>cd /opt/deploy
+
+# 带代理（推荐）
+docker compose --profile mihomo up -d
+
+# 不带代理，直连
+docker compose up -d cpa2sub2api</pre>
+</div>
+
+<div class="note">
+  <strong>启动顺序不用你操心</strong>
+  <code>mihomo-init</code> 会先把代理配置物化到命名卷，跑完即退，
+  然后 <code>mihomo</code> 才启动，最后才是本工具。
+  首次启动多等十几秒属正常。
+</div>
+
+<h3><span class="step"><span class="step-num">4</span><span class="step-title">执行导入</span></span></h3>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre># 空跑预览：只看计划，不写任何数据
+docker compose run --rm cpa2sub2api python run.py   # 菜单里选 2
+
+# 正式导入（一键全自动）
+docker compose run --rm cpa2sub2api python 一键导入.py</pre>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="s4">四、配置文件逐项说明</h2>
+
+<h3>4.1 连接配置</h3>
+<table>
+  <thead><tr><th>变量</th><th>默认</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>SUB2API_BASE_URL</code></td><td>—</td><td><b>必填</b>。sub2api 地址</td></tr>
+    <tr><td><code>SUB2API_ADMIN_KEY</code></td><td>—</td><td><b>必填</b>。管理员密钥</td></tr>
+    <tr><td><code>CPA_BASE_URL</code></td><td>—</td><td>可选。本地无 config.yaml 时在线拉</td></tr>
+    <tr><td><code>CPA_MANAGEMENT_KEY</code></td><td>—</td><td>可选。配合上一项</td></tr>
+  </tbody>
+</table>
+
+<h3>4.2 并发配置</h3>
+<table>
+  <thead><tr><th>变量</th><th>默认</th><th>上限</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>IMPORT_WORKERS</code></td><td>4</td><td>8</td><td>批量建号并发</td></tr>
+    <tr><td><code>TEST_PLAN_WORKERS</code></td><td>8</td><td>8</td><td>探活计划并发</td></tr>
+    <tr><td><code>PRICING_WORKERS</code></td><td>8</td><td>8</td><td>定价推送并发</td></tr>
+    <tr><td><code>DEFAULT_CONCURRENCY</code></td><td>3</td><td>—</td><td>每个账号的并发请求数</td></tr>
+    <tr><td><code>BATCH_SIZE</code></td><td>50</td><td>—</td><td>每批写入条数</td></tr>
+  </tbody>
+</table>
+<p class="subtitle">
+  三个 worker 都硬性钳到 8。调再大也不会真起更多线程——实测超过 8 只会
+  把 sub2api 和自己的连接池压垮，不会更快。
+</p>
+
+<h3>4.3 策略开关</h3>
+<table>
+  <thead><tr><th>变量</th><th>默认</th><th>作用</th></tr></thead>
+  <tbody>
+    <tr><td><code>HEALTH_RERANK_ENABLED</code></td><td>true</td><td>按实测健康度重排优先级</td></tr>
+    <tr><td><code>SYNC_EXISTING_ACCOUNTS</code></td><td>true</td><td>已存在的账号也同步最新参数</td></tr>
+    <tr><td><code>RESPECT_WEIGHT_ZERO</code></td><td>true</td><td>weight=0 降级而非停用</td></tr>
+    <tr><td><code>POOL_MODE_ENABLED</code></td><td>true</td><td>同账号重试瞬时抖动</td></tr>
+    <tr><td><code>AUTO_RECOVER_ENABLED</code></td><td>true</td><td>定时探活并自动恢复</td></tr>
+    <tr><td><code>AUTO_RECOVER_CRON</code></td><td>*/30 * * * *</td><td>探活频率</td></tr>
+    <tr><td><code>DISABLE_PROXY_FALLBACK</code></td><td>false</td><td>调试时关掉代理兜底</td></tr>
+  </tbody>
+</table>
+
+<h3>4.4 HTTP 行为</h3>
+<table>
+  <thead><tr><th>变量</th><th>默认</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>HTTP_TIMEOUT</code></td><td>30</td><td>单次请求超时（秒）</td></tr>
+    <tr><td><code>HTTP_RETRIES</code></td><td>3</td><td>瞬时故障重试次数</td></tr>
+    <tr><td><code>USER_AGENT</code></td><td>浏览器 UA</td><td>sub2api 在 CF 后面时必需</td></tr>
+  </tbody>
+</table>
+
+<div class="warn">
+  <strong>为什么 User-Agent 要伪装成浏览器</strong>
+  Cloudflare 的「浏览器完整性检查」会按 UA 拦掉一切不像浏览器的客户端，
+  返回 <code>403</code> 加一行 <code>error code: 1010</code>。
+  注意这是 CF 边缘直接拒绝、请求根本没到源站，所以在 sub2api 日志里<b>什么都看不到</b>。
+  鉴权仍然照常校验，这只是让合法的自动化请求不被按 UA 一刀切。
+</div>
+
+<!-- ================================================================ -->
+<h2 id="s5">五、代理（mihomo）配置</h2>
+
+<h3>5.1 为什么需要代理</h3>
+<p>
+  部分上游按<b>出口 IP</b> 拦截（Cloudflare 人机验证、直接 403）。
+  本工具的代理策略是<b>兜底式</b>的：
+</p>
+<ul>
+  <li>直连成功 → 不走代理</li>
+  <li>直连失败（连接层错误 / 429 / 5xx）→ 自动经代理重试一次</li>
+</ul>
+<p>
+  判据是"本机出口 IP 有没有被拦"，不取决于域名是谁 ——
+  所以由你在 CPA 里为<b>哪些条目</b>配了 <code>proxy-url</code> 来决定谁需要代理。
+</p>
+
+<h3>5.2 配置订阅</h3>
+<p>在部署根的 <code>.env</code> 里填：</p>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>MIHOMO_SECRET=自己生成的随机串
+MIHOMO_SUBSCRIPTIONS=wog=https://机场订阅地址</pre>
+</div>
+<p>或者每个订阅一个变量（两种可混用）：</p>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>MIHOMO_SUB_WOG=https://机场订阅地址
+MIHOMO_SUB_WOGB=https://另一个订阅地址</pre>
+</div>
+
+<h3>5.3 验证（四步，缺一不可）</h3>
+
+<h4>① 进程与 API 是否活着</h4>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>docker compose ps mihomo
+curl -fsS -H "Authorization: Bearer $MIHOMO_SECRET" \
+  http://127.0.0.1:9090/version</pre>
+</div>
+
+<h4>② AUTO 组里到底有没有节点 <span class="badge badge-warn">最容易漏</span></h4>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>curl -fsS -H "Authorization: Bearer $MIHOMO_SECRET" \
+  http://127.0.0.1:9090/proxies/AUTO | jq '{now: .now, count: (.all|length)}'</pre>
+</div>
+<div class="danger">
+  <strong><code>count: 0</code> 就是"代理静默失效"</strong>
+  订阅没拉到、或被 <code>filter: "×1倍率"</code> 全筛掉了。
+  此时 mihomo 进程健康、端口在听、API 有响应 —— <b>日志里看不出任何异常</b>，
+  但任何请求都出不去。表现为上游全部超时、sub2api 的 IP 管理页显示"链接失败"。
+</div>
+
+<h4>③ 实际能不能出网</h4>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>curl -fsS -m 15 -x http://127.0.0.1:7890 -o /dev/null \
+  -w 'egress OK: %{http_code}\n' https://www.gstatic.com/generate_204</pre>
+</div>
+
+<h4>④ 从本工具容器内部再验一次（这才是真实路径）</h4>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>docker compose exec cpa2sub2api \
+  curl -fsS -m 15 -x http://mihomo:7890 -o /dev/null \
+  -w '%{http_code}\n' https://www.gstatic.com/generate_204</pre>
+</div>
+<p class="subtitle">
+  容器之间走 Docker 网络直连容器 IP、用服务名 <code>mihomo</code>，
+  <b>不经过宿主机端口映射</b>。所以宿主机 curl 通 ≠ 容器内通，这一步不能省。
+</p>
+
+<h3>5.4 CPA 侧怎么指定哪些站点走代理</h3>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre># 在 CPA 的 config.yaml 里，给需要代理的条目加：
+proxy-url: "http://mihomo:7890"</pre>
+</div>
+<p>
+  本工具据此为对应账号绑定代理，并让<b>同域名</b>的其它条目自动跟进
+  —— 同一个站的其它 KEY 出口 IP 一样，拦不拦是同一个答案。
+</p>
+
+<!-- ================================================================ -->
+<h2 id="s6">六、执行导入</h2>
+
+<h3>6.1 两种入口</h3>
+<table>
+  <thead><tr><th>入口</th><th>命令</th><th>适用</th></tr></thead>
+  <tbody>
+    <tr><td>一键全自动</td><td><code>python 一键导入.py</code></td><td>日常使用</td></tr>
+    <tr><td>交互菜单</td><td><code>python run.py</code></td><td>分步操作、回滚、推送定价</td></tr>
+  </tbody>
+</table>
+
+<h3>6.2 导入流程的六个阶段</h3>
+<table>
+  <thead><tr><th>阶段</th><th>做什么</th></tr></thead>
+  <tbody>
+    <tr><td>[1/6]</td><td>建齐分组、建立降级链</td></tr>
+    <tr><td>[2/6]</td><td>建齐代理</td></tr>
+    <tr><td>[3/6]</td><td>去重、健康度重排、批量建号</td></tr>
+    <tr><td>[4/6]</td><td>给需要停用的账号补停用</td></tr>
+    <tr><td>[5/6]</td><td>挂定时探活计划</td></tr>
+    <tr><td>[6/6]</td><td>回收被关掉的调度开关、复活已证明可用的账号</td></tr>
+  </tbody>
+</table>
+<p>
+  之后还有一步<b>第二阶段重排</b>：用刚建出来的账号的真实状态再过一遍优先级。
+  这是为了解决冷启动问题——首次导入时 sub2api 里还没有任何账号，
+  健康度无从算起，只能沿用 CPA 的优先级；新建完成后立刻重排，一次到位。
+</p>
+
+<h3>6.3 产物</h3>
+<table>
+  <thead><tr><th>文件</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>out/import-plan.json</code></td><td>完整导入计划</td></tr>
+    <tr><td><code>out/对照表.md</code></td><td>逐条对照（原优先级 / 新优先级 / 放行模型 / 排除规则 / 状态）</td></tr>
+    <tr><td><code>out/cpa-config-snapshot.yaml</code></td><td>导入时的 config 快照</td></tr>
+    <tr><td><code>out/import-record.json</code></td><td>执行结果记录</td></tr>
+  </tbody>
+</table>
+
+<div class="tip">
+  <strong>导入前先看对照表</strong>
+  <code>out/对照表.md</code> 里的「放行模型」就是真正会写进 sub2api 的白名单，
+  与线上生效的完全一致（已修正过口径）。抽查几条确认没有意外被砍的模型。
+</div>
+
+<!-- ================================================================ -->
+<h2 id="s7">七、工作原理：优先级、分桶与容灾</h2>
+
+<h3>7.1 优先级是"桶号"，不是权重</h3>
+<p>
+  CPA 和 sub2api 都按优先级<b>严格分桶</b>：只调度优先级最优的那一桶，
+  同桶内再按负载选号。所以优先级数值不是"权重"，而是"层级"。
+</p>
+<div class="warn">
+  <strong>方向相反</strong>
+  CPA 里数值<b>大</b>者优先，sub2api 里数值<b>小</b>者优先。本工具负责转换。
+</div>
+
+<h3>7.2 按域名分桶 <span class="badge badge-fix">已修</span></h3>
+<p>归集键是 <code>(渠道, 域名)</code>，规则有三条：</p>
+<ol>
+  <li><b>同一域名下所有 KEY 必须同桶</b> —— 它们是彼此的备份。拆进不同桶，
+      sub2api 只调度最小的那个，其余全部闲置，冗余退化成单点。</li>
+  <li><b>不同域名的桶号必须全局唯一</b> —— 撞桶意味着两个域名混在一桶里轮循，
+      失去"整桶挂掉才降级"的分层容灾。</li>
+  <li><b>步长 10</b>，留出人工插桶的空间。</li>
+</ol>
+
+<h3>7.3 健康度重排</h3>
+<p>优先级不照搬 CPA 的静态配置，而是按 sub2api 的实测状态重算：</p>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>健康分 = 可调度比例 × 0.6 + 活跃比例 × 0.4
+         ↓
+按健康分降序分配桶号（健康度高 → 桶号小 → 优先被调度）
+         ↓
+健康分还映射成 load_factor：≥0.9→8，≥0.7→6，≥0.5→4，否则 2</pre>
+</div>
+<p>
+  可调度权重更高（0.6），因为它更严格：sub2api 出错时会同时关掉
+  <code>status</code> 和 <code>schedulable</code>，而恢复路径只还 status、
+  不还 schedulable —— 所以 <code>schedulable=false</code> 往往意味着
+  "这个 KEY 栽过跟头且没人管过它"。
+</p>
+
+<h3>7.4 三层容灾链路</h3>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>某个 KEY 没钱 / 被封 / 其他原因
+    ↓
+仅该账号被标 error（其余 KEY 不受影响）
+    ↓
+桶内剩余 KEY 继续轮循承载          ← 第一层：桶内冗余
+    ↓
+整桶全挂 → 自动降级到下一个域名的桶  ← 第二层：跨域名降级
+    ↓
+上游恢复 → 探活修回 active → 回收调度开关  ← 第三层：自动恢复</pre>
+</div>
+
+<h3>7.5 模型"就高原则" <span class="badge badge-fix">已修</span></h3>
+<table>
+  <thead><tr><th>类型</th><th>规则</th></tr></thead>
+  <tbody>
+    <tr><td>gemini</td><td>只选带 <code>pro</code> 的最高编号，保留该版本全部变体</td></tr>
+    <tr><td>claude</td><td>只选当代（<code>claude-*-5</code>），保留全部档位（opus/sonnet/haiku）</td></tr>
+    <tr><td>codex</td><td><b>单族</b>：只保留当代 gpt 系列<b>全部</b>模型名</td></tr>
+    <tr><td>openai</td><td><b>多族</b>：每一族各取最高级，允许多族并存</td></tr>
+    <tr><td>其他</td><td>原样保留（grok 等）</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <strong>codex 与 openai 必须分开处理</strong>
+  两者在 CPA 里是两个不同的段（<code>codex-api-key</code> 与
+  <code>openai-compatibility</code>），但平台类型都是 <code>openai</code>。
+  本工具按<b>来源段</b>分流，而不是靠"模型列表里有没有 gpt-6"猜 ——
+  后者会把声明了 gpt-6 的 openai 上游误当 codex，砍掉它其余全部模型。
+</div>
+
+<div class="tip">
+  <strong>代际门槛不写死</strong>
+  "现在是第几代"由上游源码里出现过的真实模型名反推，每次启动刷新。
+  上游从 6 代走到 7 代时门槛自动前移，不会把新模型当旧代砍掉。
+  反推失败也不会出错——会退一步用"模型列表里观测到的最高代"作门槛。
+</div>
+
+<h3>7.6 反测活</h3>
+<p>两层措施：</p>
+<ul>
+  <li><b>语料</b>：中英双语、覆盖多种日常话题，随机抽取。不用
+      "test"、"你好"、"你是什么模型"这类教科书特征。</li>
+  <li><b>时刻错开</b> <span class="badge badge-new">新增</span>：
+      给每个账号派生一个稳定的分钟偏移，避免所有账号在同一分钟一起探活。
+      "全体同时发问"这个<b>同时性</b>比措辞更容易被识别为机器行为 ——
+      真实用户的请求时刻是分散的。</li>
+</ul>
+
+<!-- ================================================================ -->
+<h2 id="s8">八、常见故障排查</h2>
+
+<h3>8.1 sub2api 的 IP 管理页显示"链接失败"</h3>
+<table>
+  <thead><tr><th>可能性</th><th>怎么查</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>AUTO 组 0 节点</td>
+      <td><code>curl .../proxies/AUTO | jq '.all|length'</code> 为 0。查订阅是否拉到、<code>filter</code> 是否把节点全筛掉</td>
+    </tr>
+    <tr>
+      <td><code>allow-lan: false</code></td>
+      <td>mihomo 只接受来自 127.0.0.1 的连接，容器间访问会被拒。<code>bind-address</code> 不改变这一点</td>
+    </tr>
+    <tr>
+      <td>不在同一 Docker 网络</td>
+      <td><code>http://mihomo:7890</code> 解析不到。跨 compose 项目的 <code>default</code> 是<b>不同</b>的网络</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>8.2 只调用高优先级上游，低优先级一次都不试</h3>
+<p>这是最典型的"看起来在轮循、实际死锁"故障。真实成因是<b>凭据级错误被当成非重试错误</b>：</p>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>请求进来 → 选号命中某个已耗尽的账号（sticky 粘住）
+        → 上游返回 402「预算池额度耗尽」
+        → 网关判为 non-retryable，不换号
+        → 客户端侧表现为 503 / 524
+        → 低优先级站点一次都没被尝试</pre>
+</div>
+
+<p><b>本工具的对策</b>（<span class="badge badge-fix">已修</span>）：</p>
+<ol>
+  <li><b>域名级冷却</b>：402「预算池耗尽」是<b>整个上游</b>层面的状态，
+      不是单个 KEY 的毛病（同一站的所有 KEY 共用同一个池子）。
+      本工具给这类错误码下发更长、关键词更特异的冷却规则，
+      避免在同一池子里逐个 KEY 空撞。</li>
+  <li><b>全局唯一桶号</b>：保证"整桶挂掉才降级"真的能降级。</li>
+  <li><b>桶内冗余</b>：同域名多 KEY 同桶轮循，一个被冷却后请求轮到同桶其它 KEY。</li>
+</ol>
+
+<h3>8.3 报 <code>503 No available accounts</code> 且提示分组权限</h3>
+<div class="warn">
+  这不是本工具的问题。<code>this group only allows Claude Code clients</code>
+  说明该上游站点<b>只接受 Claude Code 客户端</b>。
+  需要在 CPA 侧给对应条目配好伪装请求头（user-agent / anthropic-beta / originator），
+  与账号本身能否调用无关。
+</div>
+
+<h3>8.4 报 <code>400 invalid codex request</code></h3>
+<p>
+  同样与账号无关：该凭据的<b>自定义模型列表</b>里可能含不存在于上游的模型名，
+  或 <code>request-responses-mode</code> 与上游协议不匹配。
+  用菜单里的「测试」确认连通性，再看 <code>out/对照表.md</code> 的放行模型是否合理。
+</p>
+
+<h3>8.5 报 <code>524 origin_response_timeout</code></h3>
+<p>
+  Cloudflare 的回源超时是 <b>120 秒且无法从源站侧延长</b>
+  （nginx 的 <code>proxy_read_timeout</code> 对它无效）。
+  一旦超时 CF 直接返回 524，此时源站其实还在正常重试。
+  对策是<b>压缩单次请求的上游尝试预算</b>：
+</p>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre># CPA 的 config.yaml（全局段）
+max-retry-credentials: 4     # 12 → 4
+max-retry-interval: 2        # 8 → 2
+
+# 最坏耗时 ≈ 4 ×（连接+首字节）+ 3 × 2 秒  ≈ 30 秒以内
+# 对 120 秒窗口留足余量</pre>
+</div>
+
+<h3>8.6 报 <code>empty or malformed response (HTTP 200)</code> 且 0 个 SSE 事件</h3>
+<p>
+  流式引导没缓冲的话，网关在还没确认上游会吐 token 时就先提交了
+  <code>200 OK</code> + <code>text/event-stream</code> 响应头。
+  此后若上游失败，网关已经<b>没有退路</b>——响应头发出去了，不能改 5xx、
+  也不能换凭据。唯一结果就是"语法合法但一个事件都没有"的 200。
+</p>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre># CPA 的 config.yaml
+codex:
+  stream-bootstrap-buffering: true   # false → true
+streaming:
+  bootstrap-retries: 3               # 1 → 3</pre>
+</div>
+
+<h3>8.7 报 <code>403 error code: 1010</code></h3>
+<p>Cloudflare 浏览器完整性检查拦截，请求没到源站。设置浏览器 UA：</p>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre># .env
+USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+  (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36</pre>
+</div>
+
+<h3>8.8 查看日志</h3>
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre>docker compose logs -f cpa2sub2api
+docker compose logs -f mihomo
+docker compose exec mihomo python3 /root/.config/mihomo/healthcheck.py</pre>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="s9">九、附录：完整环境变量表</h2>
+
+<div class="code-wrap">
+<button class="copy-btn" onclick="copyCode(this)">复制</button>
+<pre># ============ 必填 ============
+SUB2API_BASE_URL=
+SUB2API_ADMIN_KEY=
+
+# ============ CPA（可选）============
+CPA_BASE_URL=
+CPA_MANAGEMENT_KEY=
+SUB2API_SRC=
+CPA_SRC=
+
+# ============ 代理 ============
+FALLBACK_PROXY=http://mihomo:7890
+DISABLE_PROXY_FALLBACK=false
+
+# ============ mihomo ============
+MIHOMO_SECRET=
+MIHOMO_SUBSCRIPTIONS=wog=https://你的订阅
+# MIHOMO_SUB_WOG=
+# MIHOMO_SUB_WOGB=
+
+# ============ 并发 ============
+IMPORT_WORKERS=4
+TEST_PLAN_WORKERS=8
+PRICING_WORKERS=8
+DEFAULT_CONCURRENCY=3
+BATCH_SIZE=50
+
+# ============ 策略开关 ============
+HEALTH_RERANK_ENABLED=true
+SYNC_EXISTING_ACCOUNTS=true
+RESPECT_WEIGHT_ZERO=true
+WEIGHT_ZERO_POLICY=deprioritize
+ZERO_MODEL_POLICY=inactive
+POOL_MODE_ENABLED=true
+AUTO_RECOVER_ENABLED=true
+AUTO_RECOVER_CRON=*/30 * * * *
+AUTO_PAUSE_ON_EXPIRED=false
+
+# ============ HTTP ============
+HTTP_TIMEOUT=30
+HTTP_RETRIES=3
+USER_AGENT=
+
+# ============ 其他 ============
+GROUP_PREFIX=CPA
+TZ=Asia/Shanghai</pre>
+</div>
+
+<div class="note">
+  <strong>优先级顺序</strong>
+  环境变量 &gt; <code>设置.json</code> &gt; 内置默认值。
+  容器部署请只用环境变量，不要混用 <code>设置.json</code>——
+  两份配置同时存在时排查会非常混乱。
+</div>
+
+<footer>
+  <p>
+    本教程对应工具版本 3.0。所有示例域名均为占位符，
+    实际使用请替换成你自己的地址。
+  </p>
+  <p>
+    安全提醒：<code>mihomo-subscriptions.conf</code> 含订阅 token、
+    <code>.env</code> 含管理密钥与连接信息，都不要提交到版本库。
+  </p>
+</footer>
+
+</div>
+
+<script>
+  function copyCode(button) {
+    const block = button.nextElementSibling;
+    const text = block.textContent;
+    const done = (ok) => {
+      const old = button.textContent;
+      button.textContent = ok ? '✓ 已复制' : '✗ 失败';
+      button.style.background = ok ? 'var(--accent-emerald)' : 'var(--accent-red)';
+      setTimeout(() => {
+        button.textContent = old;
+        button.style.background = 'var(--accent-cyan)';
+      }, 1800);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(() => done(true)).catch(() => {
+        fallbackCopy(text) ? done(true) : done(false);
+      });
+    } else {
+      fallbackCopy(text) ? done(true) : done(false);
+    }
+  }
+
+  // file:// 打开时 navigator.clipboard 不可用，退回 execCommand
+  function fallbackCopy(text) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+</script>
+</body>
+</html>

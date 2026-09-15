@@ -1,0 +1,162 @@
+# ====================================
+# Docker Compose 配置
+# CPA2SUB2API + Mihomo 代理
+# ====================================
+#
+# 部署方式是"VPS 只拉镜像，宿主不预置任何文件"，所以本文件里**不应出现**
+# 对宿主预置文件的 bind mount（例如 ./mihomo/config.yaml）。mihomo 的配置
+# 由 mihomo-init 容器从镜像内的模板物化到命名卷，mihomo 容器挂同一个卷读它。
+#
+# 启动：
+#   docker compose --profile mihomo up -d      # 带代理
+#   docker compose up -d cpa2sub2api           # 不带代理（直连）
+#
+# ====================================
+
+services:
+  # ====================================
+  # CPA2SUB2API 服务
+  # ====================================
+  cpa2sub2api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hyskaamorroh/cpa2sub2api:latest
+    container_name: cpa2sub2api
+
+    env_file:
+      - .env
+
+    environment:
+      # 代理兜底。注意：这个值必须能被 tool.py 读到 —— 它的读取路径是
+      # load_settings() 的环境变量映射（FALLBACK_PROXY -> fallback_proxy），
+      # 不是 设置.json。容器里没有 设置.json，全靠这个环境变量。
+      - FALLBACK_PROXY=${FALLBACK_PROXY:-http://mihomo:7890}
+
+    volumes:
+      # CPA 配置文件（只读）。宿主没有这个文件时 Docker 会建一个**空目录**，
+      # 于是工具读不到配置。容器部署请用 CPA_BASE_URL 走管理接口拉配置，
+      # 或把这个挂载改成实际存在的文件。
+      - ./config.yaml:/app/config.yaml:ro
+
+      # 输出目录（读写）
+      - ./out:/app/out
+
+      # 设置文件（可选）。不存在时不挂即可，环境变量优先。
+      # - ./设置.json:/app/设置.json:ro
+
+    networks:
+      - cpa2sub2api-network
+
+    depends_on:
+      # 只等"起来了"，不等"健康"。原因见 mihomo 服务的健康检查注释：
+      # 节点全挂时 mihomo 进程本身是健康的（端口在听、API 有响应），
+      # 而 healthcheck 因为无法出网会报 unhealthy —— 用 service_healthy
+      # 会让本容器永远不启动，把"代理不好用"放大成"整个工具跑不起来"。
+      mihomo:
+        condition: service_started
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+
+  # ====================================
+  # Mihomo 配置自举（init 容器，跑完即退）
+  # ====================================
+  mihomo-init:
+    image: hyskaamorroh/cpa2sub2api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cpa2sub2api-mihomo-init
+    profiles: ["mihomo"]
+
+    # 用本镜像当 init 容器：mihomo 官方镜像是 scratch，没有 shell/curl/python，
+    # 它自己没法把模板展开成 config.yaml。本镜像有 python3 和 sh。
+    entrypoint: ["/app/mihomo-manager/bootstrap-mihomo.sh"]
+    user: "0:0"
+    restart: "no"
+
+    environment:
+      - MIHOMO_TARGET_DIR=/mihomo-config
+      - MIHOMO_SECRET=${MIHOMO_SECRET:-}
+      - MIHOMO_SUBSCRIPTIONS=${MIHOMO_SUBSCRIPTIONS:-}
+      - MIHOMO_SUB_WOG=${MIHOMO_SUB_WOG:-}
+      - MIHOMO_SUB_WOGB=${MIHOMO_SUB_WOGB:-}
+      - MIHOMO_FORCE_REBUILD=${MIHOMO_FORCE_REBUILD:-}
+
+    volumes:
+      - mihomo-config:/mihomo-config
+
+    networks:
+      - cpa2sub2api-network
+
+  # ====================================
+  # Mihomo 代理服务
+  # ====================================
+  mihomo:
+    image: metacubex/mihomo:latest
+    container_name: mihomo
+    profiles: ["mihomo"]
+
+    ports:
+      # 只绑回环，仅用于宿主机 curl 验证。
+      # 容器之间走 Docker 网络直连容器 IP（服务名 mihomo），不经过这里。
+      - "127.0.0.1:7890:7890"
+      - "127.0.0.1:9090:9090"
+
+    volumes:
+      # 命名卷，不是 bind mount：宿主不需要预置任何文件，配置由
+      # mihomo-init 从镜像内的模板物化进来。
+      - mihomo-config:/root/.config/mihomo
+
+    networks:
+      - cpa2sub2api-network
+
+    depends_on:
+      mihomo-init:
+        condition: service_completed_successfully
+
+    # 健康检查用 python3 + urllib，**不用 curl**：
+    # metacubex/mihomo 是 busybox 基础镜像，里面没有 curl（有 wget）。
+    # 以前写成 `curl -f http://localhost:9090/`，该检查恒定失败，
+    # 而 cpa2sub2api 又 depends_on service_healthy —— 两个容器互相锁死，
+    # 表现为"mihomo 一直 unhealthy，本工具永远起不来"。
+    healthcheck:
+      test: ["CMD", "python3", "/root/.config/mihomo/healthcheck.py"]
+      interval: 60s
+      timeout: 20s
+      retries: 2
+      start_period: 30s
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+    restart: unless-stopped
+
+networks:
+  cpa2sub2api-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  # mihomo 的配置与节点缓存。用命名卷而不是宿主目录，
+  # 是为了让部署保持"VPS 只拉镜像"这一条不变。
+  mihomo-config:

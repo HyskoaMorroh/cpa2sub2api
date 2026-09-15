@@ -1,0 +1,107 @@
+# ====================================
+# Git 忽略文件
+# ====================================
+
+# 敏感配置文件（包含密钥）
+设置.json
+config.yaml
+.env
+.env.local
+.env.*.local
+
+# Mihomo 配置（可能包含代理信息）
+mihomo/config.yaml
+mihomo/cache/
+# 自举产物（运行时生成，含订阅地址与节点）
+mihomo-manager/mihomo/config.yaml
+mihomo-manager/providers/
+# 订阅清单含**机场订阅 token**，绝对不进版本库。
+# 格式示例见 mihomo-manager/mihomo-subscriptions.conf.example。
+mihomo-manager/mihomo-subscriptions.conf
+
+# 输出目录
+out/
+output/
+*.json
+!package.json
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志文件
+*.log
+logs/
+
+# 备份文件
+*.bak
+*.backup
+*.old
+*.tmp
+*~
+
+# 临时文件
+*.swp
+*.swo
+*.swn
+.DS_Store
+Thumbs.db
+
+# 测试输出
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 上游缓存
+upstream-cache/
+
+# graphify 代码图谱（本机分析产物，含全量路径与符号表，不进版本库）
+graphify-out/
+
+# 需求文档抽取出的临时图片
+repo_docx_check/
+
+# 文档临时文件
+~$*.docx
+~$*.xlsx
+
+# 需求/说明类文档：含真实上游域名与**明文 API Key 的界面截图**，
+# 是二进制文件、无法靠文本 grep 审出来，一律不进版本库。
+# （2026-09-15 实测：修改要求.docx 内的 image2.png 含 live key 与真实域名）
+*.docx
+*.pdf
+mhtml-snapshot/
+*.mhtml
+docx_temp/

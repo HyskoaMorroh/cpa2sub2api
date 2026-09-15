@@ -1,0 +1,17 @@
+# mihomo 订阅配置文件
+#
+# 格式：每行一个订阅，格式为 "名称=URL"
+#   · 等号分隔。只按**第一个**等号切分，所以 URL 里带 ?token=xxx 无妨。
+#   · 名称用于生成 provider 键名与落盘文件名，只能用字母数字下划线短横。
+#   · # 开头的行与空行忽略。
+#
+# 改完这个文件后跑：
+#     bash update-mihomo-subscriptions.sh
+# 脚本会自动改 config.yaml 的 proxy-providers、两个组的 use、rules 的
+# DIRECT 规则，并重启容器、实测一次出网。
+#
+# ⚠️ 本文件含订阅 token，属于私密值，不要提交到版本库。
+#    （.gitignore 已排除）
+
+wog=https://vpn.example.com
+wogb=https://www.example.net/api/v1/client/subscribe?token=REPLACE_ME

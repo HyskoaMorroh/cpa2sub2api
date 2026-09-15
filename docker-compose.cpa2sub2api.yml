@@ -1,0 +1,104 @@
+# ========================================
+# 叠加片段：把 cpa2sub2api 接入**已有**的部署栈
+# ========================================
+#
+# 用法（与部署根目录的 docker-compose.yml 叠加）：
+#
+#   docker compose -f docker-compose.yml \
+#                  -f cpa2sub2api/docker-compose.cpa2sub2api.yml up -d
+#
+# 或者直接把它加进部署根 compose 的 `include:`。
+#
+# 注意本文件**只**定义自己这个服务。不要在这里重复声明 mihomo / sub2api /
+# cli-proxy-api 等服务，也不要用 `# ... 已有配置 ...` 之类占位 ——
+# compose 会把那些空服务当成真实定义，直接报 "service has neither an image
+# nor a build context specified"。要引用的服务由被叠加的那个文件提供。
+#
+# 本项目独立部署请用同目录的 docker-compose.yml（它自带 mihomo）。
+
+services:
+  cpa2sub2api:
+    # 镜像名必须与 .github/workflows/docker-publish.yml 里构建推送的一致，
+    # 否则 VPS 拉的是另一个仓库（或不存在的 tag）。
+    image: hyskaamorroh/cpa2sub2api:latest
+    container_name: cpa2sub2api
+    restart: "no"  # 按需启动的运维工具，不是常驻服务
+
+    # 与 config.yaml 属主一致，避免写出 root 属主的产物文件
+    user: "${IMPORTER_UID:-0}:${IMPORTER_GID:-0}"
+
+    environment:
+      # sub2api 连接配置
+      - SUB2API_BASE_URL=${SUB2API_BASE_URL:-http://sub2api:8080}
+      - SUB2API_ADMIN_KEY=${SUB2API_ADMIN_KEY}
+
+      # CPA 连接配置（可选，本地无 config.yaml 时用于在线抓取）
+      - CPA_BASE_URL=${CPA_BASE_URL:-http://cli-proxy-api:8317}
+      - CPA_MANAGEMENT_KEY=${CPA_MANAGEMENT_KEY:-}
+
+      # 并发控制
+      - IMPORT_WORKERS=${CPA2SUB2API_IMPORT_WORKERS:-4}
+      - TEST_PLAN_WORKERS=${CPA2SUB2API_TEST_PLAN_WORKERS:-8}
+      - PRICING_WORKERS=${CPA2SUB2API_PRICING_WORKERS:-8}
+
+      # 代理兜底（复用同一网络里的 mihomo）。必须用服务名，
+      # 容器内的 127.0.0.1 是本容器自己。
+      - FALLBACK_PROXY=${FALLBACK_PROXY:-http://mihomo:7890}
+
+      - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
+
+    volumes:
+      # 源数据（只读）
+      - ./config.yaml:/app/config.yaml:ro,Z
+      # 产物目录
+      - ./cpa2sub2api-out:/app/out:Z
+      # 连接信息（可写）
+      - ./cpa2sub2api-设置.json:/app/设置.json:Z
+
+    networks:
+      - sub2api-network  # 访问 sub2api
+      - default          # 访问 mihomo / cli-proxy-api
+
+    depends_on:
+      # 都只等"起来了"，不等"健康"。
+      # sub2api 的健康检查在负载高时容易抖动，而 mihomo 在节点全挂时
+      # 会因为出不去网而报 unhealthy —— 用 service_healthy 会让本工具
+      # 永远不启动，把"上游不好用"放大成"工具跑不起来"。
+      sub2api:
+        condition: service_started
+      mihomo:
+        condition: service_started
+      cli-proxy-api:
+        condition: service_started
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import tool, yaml"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  sub2api-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+          gateway: 172.25.0.1
+
+  default:
+    driver: bridge
