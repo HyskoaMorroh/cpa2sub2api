@@ -23,6 +23,22 @@ try:
 except ImportError:
     from urlparse import urlparse
 
+# 并发执行器。**必须在这里全局导入**，不能只在某个函数内部 import ——
+# 这个文件里有三处用到线程池：
+#   · 批量建号（import_batch）
+#   · 探活计划创建（ensure_test_plans）
+#   · 探活结果读取（revive_proven_inactive）
+# 原先只有第一处在函数内部 import，后两处直接用了这两个名字，
+# 一旦走到并发分支就会 NameError。这个错误 py_compile 查不出来
+# （语法合法），只在运行且并发分支被命中时炸——由 CI 的 flake8 F821 抓到。
+try:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    CONCURRENT_AVAILABLE = True
+except ImportError:
+    # 理论上 CPython 3.2+ 都有；保留降级路径是为了不让"缺了这个模块"
+    # 直接变成启动失败，而是退化成串行（各调用点都判这个标志）。
+    CONCURRENT_AVAILABLE = False
+
 # 导入智能优先级模块
 try:
     from new_remap_priority import remap_priority_smart
@@ -2538,13 +2554,13 @@ def do_import(api, plan, ask=None):
     # 同域名下任意一条配了代理，说明这个域名从本机需要代理，新条目应跟进。
     proxy_need = build_proxy_need_map(recs)
 
-    # 2026-09-13: 并发批次导入（P1优化 - 多线程加速）
-    try:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        CONCURRENT_AVAILABLE = True
-    except ImportError:
-        CONCURRENT_AVAILABLE = False
-
+    # 并发批次导入（P1优化 - 多线程加速）。
+    # ThreadPoolExecutor / as_completed / CONCURRENT_AVAILABLE 都在模块顶部
+    # 全局导入 —— 原先这里又 import 了一次并把 CONCURRENT_AVAILABLE 赋成
+    # **函数局部变量**，于是模块顶层的那个同名标志没被更新，而本函数里
+    # 后面的判断读的是局部值，行为上凑巧正确，但另外两处用了这两个名字的
+    # 并发路径（ensure_test_plans / revive_proven_inactive）拿不到它们，
+    # 走到并发分支就 NameError。
     workers = max(1, min(int(cfg.get("import_workers", 4) or 4), 8))
 
     def import_one_batch(start_idx, batch_recs):
