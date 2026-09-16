@@ -1369,6 +1369,114 @@ proxy-url: "http://mihomo:7890"</pre></div>
 </table>
 </div>
 
+<div class="note note-warn">
+  <b>低档模型一律不勾选</b>
+  <p>名字里带 <code>mini</code> / <code>flash</code> / <code>fast</code> 的排除，
+  四条路径（gemini / claude / codex / openai）统一执行。过滤后一个不剩时保留原列表并出声
+  —— 白名单为空等于该账号退出调度，比留几个低档模型更糟。</p>
+  <p>注意 claude 的 <code>haiku</code> <b>不算低档</b>：它与 opus / sonnet 是同代不同档位，
+  按「同等级系列全部勾选」应当保留。低档判据只认那三个词。</p>
+</div>
+
+<h4>连通性探测：最新代打不通时的兜底</h4>
+
+<p>上游声明了 <code>gpt-6</code> 不等于真的能调。模型目录是站方自己填的，
+常有「列了但调不通」的情况。开启探测后按<b>代际</b>实发请求验证，据结果分三种处理。</p>
+
+<figure>
+<svg viewBox="0 0 900 340" role="img" aria-label="连通性探测的三种分支">
+  <text x="450" y="20" fill="#6B7280" font-size="12" text-anchor="middle" font-family="monospace">
+    按代际探一次 &#8594; 三种处理
+  </text>
+
+  <rect x="330" y="36" width="240" height="40" rx="9" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".45"/>
+  <text x="450" y="61" fill="#E5E7EB" font-size="12.5" text-anchor="middle">
+    探最新代（如 <tspan font-family="monospace" fill="#93C5FD">gpt-6</tspan>）
+  </text>
+
+  <path d="M450,76 L450,96" stroke="#4B5563" stroke-width="1.4"/>
+  <path d="M170,96 L730,96" stroke="#4B5563" stroke-width="1.4"/>
+  <path d="M170,96 L170,116" stroke="#4B5563" stroke-width="1.4"/>
+  <path d="M450,96 L450,116" stroke="#4B5563" stroke-width="1.4"/>
+  <path d="M730,96 L730,116" stroke="#4B5563" stroke-width="1.4"/>
+
+  <rect x="45" y="116" width="250" height="150" rx="10"
+        fill="rgba(16,185,129,.13)" stroke="#10B981" stroke-opacity=".5"/>
+  <text x="170" y="140" fill="#6EE7B7" font-size="12.5" text-anchor="middle" font-weight="700">最新代通</text>
+  <text x="170" y="166" fill="#9CA3AF" font-size="11.5" text-anchor="middle">正常路径</text>
+  <text x="170" y="196" fill="#E5E7EB" font-size="12" text-anchor="middle" font-family="monospace">只留 gpt-6 全族</text>
+  <text x="170" y="222" fill="#9CA3AF" font-size="11" text-anchor="middle">gpt-6 / gpt-6-sol /</text>
+  <text x="170" y="240" fill="#9CA3AF" font-size="11" text-anchor="middle">gpt-6-astra &#8230;</text>
+
+  <rect x="325" y="116" width="250" height="150" rx="10"
+        fill="rgba(251,191,36,.13)" stroke="#FBBF24" stroke-opacity=".5"/>
+  <text x="450" y="140" fill="#FBBF24" font-size="12.5" text-anchor="middle" font-weight="700">最新不通、次最新通</text>
+  <text x="450" y="166" fill="#9CA3AF" font-size="11.5" text-anchor="middle">需求④的核心分支</text>
+  <text x="450" y="196" fill="#E5E7EB" font-size="12" text-anchor="middle" font-family="monospace">两代都留</text>
+  <text x="450" y="222" fill="#FCD34D" font-size="11" text-anchor="middle">gpt-6 按目录保留占位</text>
+  <text x="450" y="240" fill="#FCD34D" font-size="11" text-anchor="middle">+ 补入实测可用的 gpt-5.6</text>
+
+  <rect x="605" y="116" width="250" height="150" rx="10"
+        fill="rgba(239,68,68,.13)" stroke="#EF4444" stroke-opacity=".5"/>
+  <text x="730" y="140" fill="#F87171" font-size="12.5" text-anchor="middle" font-weight="700">两代都不通</text>
+  <text x="730" y="166" fill="#9CA3AF" font-size="11.5" text-anchor="middle">上游自身的问题</text>
+  <text x="730" y="196" fill="#E5E7EB" font-size="12" text-anchor="middle" font-family="monospace">按目录最高级填充</text>
+  <text x="730" y="222" fill="#9CA3AF" font-size="11" text-anchor="middle">并出声告警，说明原因</text>
+  <text x="730" y="240" fill="#9CA3AF" font-size="11" text-anchor="middle">（503 / 超时 / SSL 等）</text>
+
+  <text x="450" y="296" fill="#A78BFA" font-size="11.5" text-anchor="middle">
+    「次最新」的粒度是（主版本, 次版本）：gpt-5.6 与 gpt-5 不是同一代
+  </text>
+  <text x="450" y="318" fill="#9CA3AF" font-size="11.5" text-anchor="middle">
+    所以 gpt-6 打不通时补的是 gpt-5.6 全族，不会把更旧的 gpt-5 拉进来
+  </text>
+</svg>
+<figcaption>
+  <b>图 11</b>&#12288;连通性探测的三种分支。中间那支是关键：
+  <b>不是二选一，而是最新代与次最新代同时保留</b>。
+</figcaption>
+</figure>
+
+<div class="note">
+  <b>成本：231 个账号 &#8594; 49 个探测单元 &#8594; 约 30 秒</b>
+  <p>不逐模型探测，那样会打上千个请求。按 <code>(段, 域名)</code> 去重，
+  每个单元最多 2 个请求（最新代 + 次最新代）。同一站的多个 KEY 共享判定结果 ——
+  它们打的是同一个上游，模型可用性一致。</p>
+  <p>结果缓存 6 小时，重跑命中缓存 <b>0 秒</b>。关闭探测时零开销，行为与不带该功能完全一致。</p>
+</div>
+
+<pre><code class="lang-bash">MODEL_PROBE_ENABLED=true       # 默认开启，设 false 完全跳过
+MODEL_PROBE_WORKERS=8          # 并发
+MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数（6 小时）</code></pre>
+
+<div class="note note-warn">
+  <b>端点拼接必须与 CPA 源码一致</b>
+  <p>探测用的 URL 按 CPA 自己的拼法构造：<code>baseURL</code> <b>原样</b>
+  加各平台端点后缀，<b>不剥离尾部 <code>/v1</code></b>。CPA 的 base-url 是声明式配置，
+  末尾的 <code>/v1</code> 是配置的一部分。</p>
+  <table>
+    <thead><tr><th>段</th><th>CPA 源码的拼法</th></tr></thead>
+    <tbody>
+      <tr><td>claude-api-key</td><td><code>baseURL + "/v1/messages"</code></td></tr>
+      <tr><td>codex-api-key</td><td><code>TrimSuffix(baseURL,"/") + "/responses"</code></td></tr>
+      <tr><td>openai-compatibility</td><td><code>TrimSuffix(baseURL,"/") + "/chat/completions"</code></td></tr>
+      <tr><td>gemini-api-key</td><td><code>baseURL + "/v1beta/models/&#123;model&#125;:generateContent"</code></td></tr>
+    </tbody>
+  </table>
+  <p>自行剥离 <code>/v1</code> 会拼出 <code>.../v1/v1/messages</code>，
+  拿到 nginx 的 404 HTML 页，把「端点拼错」误判成「上游不通」。</p>
+</div>
+
+<div class="note note-warn">
+  <b>判「通」不能只看 200</b>
+  <p>很多中转站有 catch-all 路由：错误的端点也返回 <code>200</code>，但响应体是
+  HTML 前端页而不是 LLM 响应。必须校验响应体形态
+  （<code>id</code>/<code>choices</code>/<code>content</code> 等字段），否则会得到大量假阳性。</p>
+  <p><code>400</code> / <code>422</code> 也算通：请求到了模型、只是参数被挑刺，
+  说明这个模型确实存在且可路由。<code>404 model_not_found</code>、
+  <code>503 No available channel</code> 才是真不通。</p>
+</div>
+
 <h3>7.5 反测活</h3>
 
 <figure>
@@ -1405,7 +1513,7 @@ proxy-url: "http://mihomo:7890"</pre></div>
   </g>
 </svg>
 <figcaption>
-  <b>图 11</b>　探活时刻错开。<b>调用模式的规律性</b>（间隔方差为 0、全体同时）
+  <b>图 12</b>　探活时刻错开。<b>调用模式的规律性</b>（间隔方差为 0、全体同时）
   比单条 prompt 的措辞权重更高。
 </figcaption>
 </figure>
@@ -1495,7 +1603,7 @@ proxy-url: "http://mihomo:7890"</pre></div>
   </text>
 </svg>
 <figcaption>
-  <b>图 12</b>　sub2api IP 管理页的<b>界面示意</b>（非真实截图，已脱敏）。
+  <b>图 13</b>　sub2api IP 管理页的<b>界面示意</b>（非真实截图，已脱敏）。
   「链接失败」有三种成因，按这条顺序排查。
 </figcaption>
 </figure>
@@ -1565,7 +1673,7 @@ proxy-url: "http://mihomo:7890"</pre></div>
   </text>
 </svg>
 <figcaption>
-  <b>图 13</b>　402 预算池死锁链路。日志实锤：<code>sticky_honored=true</code> 15/15，
+  <b>图 14</b>　402 预算池死锁链路。日志实锤：<code>sticky_honored=true</code> 15/15，
   上游一律 <code>402 Budget pool quota has been exhausted</code>。
 </figcaption>
 </figure>
@@ -1710,7 +1818,7 @@ docker compose exec mihomo sh -c 'wget -q --spider \
   <text x="465" y="282" fill="#9CA3AF" font-size="11" text-anchor="middle">⑤ 必须匹配 ①</text>
 </svg>
 <figcaption>
-  <b>图 14</b>　几个密钥的归属。<b>最常见的错误是拿 ① 或 ⑤ 去登 ④</b> ——
+  <b>图 15</b>　几个密钥的归属。<b>最常见的错误是拿 ① 或 ⑤ 去登 ④</b> ——
   它们完全无关，改多少次都不会有效果。
 </figcaption>
 </figure>
@@ -1854,7 +1962,7 @@ docker compose start cpa-manager-plus</pre></div>
   <text x="510" y="210" fill="#9CA3AF" font-size="10.5">写进 config.yaml 就彻底登不进去</text>
 </svg>
 <figcaption>
-  <b>图 15</b>　两条路径。路径 A 更适合容器部署 ——
+  <b>图 16</b>　两条路径。路径 A 更适合容器部署 ——
   不需要 bcrypt，删掉环境变量就能回退。
 </figcaption>
 </figure>
