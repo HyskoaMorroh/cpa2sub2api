@@ -256,13 +256,15 @@ check("D9 gpt-60 不被当成第 6 代", "gpt-60" not in names(out), "%r" % name
 # openai（多族）
 # gpt-6.0 与 gpt-6.0-preview 同族同版本 -> 都要留（"同等级系列全部勾选"）
 # gpt-5.6 属 gpt-5 族 -> 该族最高，留
-# o3-mini / o3-max 属 o3 族同版本 -> 都留
+# o3-max 留；o3-mini 被需求①砍掉（"所有带 mini、flash、fast 的模型都不勾选"）
 out = model_selection.select_highest_models(
     D("gpt-6.0", "gpt-6.0-preview", "gpt-5.6", "o3-mini", "o3-max"),
     "openai", source_section="openai-compatibility", series={"openai": 6})
-check("D10 openai 多族并存、同族同版本全留",
-      set(names(out)) == {"gpt-6.0", "gpt-6.0-preview", "gpt-5.6", "o3-mini", "o3-max"},
+check("D10 openai 多族并存、同族同版本全留（mini 除外）",
+      set(names(out)) == {"gpt-6.0", "gpt-6.0-preview", "gpt-5.6", "o3-max"},
       "%r" % names(out))
+# 需求①：低档词过滤在分族之前做，所以 o3-mini 不会经 o3 族漏出来
+check("D10c o3-mini 被需求①砍掉", "o3-mini" not in names(out), "%r" % names(out))
 # gpt-5 族内低版本必须被砍（gpt-5.5 < gpt-5.6）
 out = model_selection.select_highest_models(
     D("gpt-6.0", "gpt-5.6", "gpt-5.5", "gpt-5.5-mini"), "openai",
@@ -282,7 +284,9 @@ check("D12 同族同版本全留（不漏 gpt-5.6-sol）",
       len(names(out)) == 3, "%r" % names(out))
 
 # codex 与 openai 分流：同一份模型列表，两种策略结果必须不同
-mixed = D("gpt-6", "gpt-6-astra", "o3-mini", "gpt-5.6")
+# o3 族用 o3-max 而不是 o3-mini —— 后者会被需求①的低档过滤砍掉，
+# 那样 o3 族整个消失，就测不出"多族并存"这件事了。
+mixed = D("gpt-6", "gpt-6-astra", "o3-max", "gpt-5.6")
 cx = model_selection.select_highest_models(mixed, "openai",
                                            source_section="codex-api-key",
                                            series={"openai": 6})
@@ -291,8 +295,8 @@ oa = model_selection.select_highest_models(mixed, "openai",
                                            series={"openai": 6})
 check("D13 codex 与 openai 策略确实分流", names(cx) != names(oa),
       "codex=%r openai=%r" % (names(cx), names(oa)))
-check("D14 codex 结果不含 o3（单族）", "o3-mini" not in names(cx), "%r" % names(cx))
-check("D15 openai 结果保留 o3（多族）", "o3-mini" in names(oa), "%r" % names(oa))
+check("D14 codex 结果不含 o3（单族）", "o3-max" not in names(cx), "%r" % names(cx))
+check("D15 openai 结果保留 o3（多族）", "o3-max" in names(oa), "%r" % names(oa))
 
 # 其他平台原样
 out = model_selection.select_highest_models(D("grok-4", "grok-3"), "grok")
@@ -324,11 +328,12 @@ print("=" * 70)
 print("F. build_model_mapping —— 按来源段分流")
 print("=" * 70)
 
-models = D("gpt-6", "gpt-6-astra", "o3-mini", "gpt-5.6")
+# o3 族用 o3-max：o3-mini 会被需求①的低档过滤砍掉，测不出分流差异
+models = D("gpt-6", "gpt-6-astra", "o3-max", "gpt-5.6")
 m_cx = tool.build_model_mapping(models, None, "openai", source_section="codex-api-key")
 m_oa = tool.build_model_mapping(models, None, "openai", source_section="openai-compatibility")
-check("F1 codex 映射不含 o3", "o3-mini" not in m_cx, "%r" % sorted(m_cx))
-check("F2 openai 映射含 o3", "o3-mini" in m_oa, "%r" % sorted(m_oa))
+check("F1 codex 映射不含 o3", "o3-max" not in m_cx, "%r" % sorted(m_cx))
+check("F2 openai 映射含 o3", "o3-max" in m_oa, "%r" % sorted(m_oa))
 check("F3 分流后结果确实不同", sorted(m_cx) != sorted(m_oa))
 
 print()

@@ -60,11 +60,31 @@ if _HERE_DIR not in sys.path:
     sys.path.insert(0, _HERE_DIR)
 
 try:
+    import model_selection
     from model_selection import select_highest_models
     MODEL_SELECTION_AVAILABLE = True
 except ImportError:
     MODEL_SELECTION_AVAILABLE = False
     print("警告: model_selection.py 未找到，跳过模型就高原则过滤")
+
+# 模型代际连通性探测（需求第 2 条⑵④）。缺这个文件时整条链路静默降级为
+# "不探测"，就高逻辑照常工作，只是拿不到"最新代其实不通"这个信息。
+try:
+    import model_probe
+    MODEL_PROBE_AVAILABLE = True
+except ImportError:
+    MODEL_PROBE_AVAILABLE = False
+
+
+def _truthy(v):
+    """把配置里的真值写法统一成 bool。
+
+    环境变量下发的一律是字符串，"false" 在 Python 里是真值 ——
+    直接 bool(v) 会让所有开关永远为开。
+    """
+    if isinstance(v, bool):
+        return v
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on")
 
 TOOL_VERSION = "3.0"
 
@@ -166,6 +186,15 @@ DEFAULTS = {
     # 请求 UA。留空用 DEFAULT_USER_AGENT（浏览器 UA，避免被 Cloudflare
     # 的浏览器完整性检查按 UA 拦成 403 error 1010）。
     "user_agent": "",
+
+    # ---- 模型代际连通性探测（需求第 2 条⑵④）----
+    # 探"最新代 / 次最新代能不能真的调用"，用于实现
+    # "最新代不通但次最新代连通时，两代都保留"。
+    # 按 (段, 域名) 去重后每单元最多 2 个请求，8 并发，结果缓存 6 小时。
+    # 关掉则完全按静态的就高逻辑走（与加这个功能之前一致）。
+    "model_probe_enabled": True,
+    "model_probe_workers": 8,
+    "model_probe_cache_ttl": 21600,
 }
 
 # 浮点差分阈值。价格经 JSON 往返会有末位误差，用 == 比会永远认为有变化、
@@ -229,6 +258,11 @@ def load_settings():
         "HTTP_TIMEOUT": "http_timeout",
         "HTTP_RETRIES": "http_retries",
         "DISABLE_PROXY_FALLBACK": "disable_proxy_fallback",
+
+        # 模型代际连通性探测
+        "MODEL_PROBE_ENABLED": "model_probe_enabled",
+        "MODEL_PROBE_WORKERS": "model_probe_workers",
+        "MODEL_PROBE_CACHE_TTL": "model_probe_cache_ttl",
     }
 
     for env_key, setting_key in env_mappings.items():
@@ -236,7 +270,8 @@ def load_settings():
         if val:
             # 数值字段转换
             if setting_key in ("import_workers", "test_plan_workers", "pricing_workers",
-                              "default_concurrency", "batch_size", "pool_mode_retry_count"):
+                              "default_concurrency", "batch_size", "pool_mode_retry_count",
+                              "model_probe_workers", "model_probe_cache_ttl"):
                 try:
                     s[setting_key] = int(val)
                 except ValueError:
@@ -244,7 +279,8 @@ def load_settings():
             # 布尔字段转换
             elif setting_key in ("auto_recover_enabled", "health_rerank_enabled",
                                 "sync_existing_accounts", "respect_weight_zero",
-                                "fetch_upstream_src", "pool_mode_enabled", "auto_pause_on_expired"):
+                                "fetch_upstream_src", "pool_mode_enabled", "auto_pause_on_expired",
+                                "model_probe_enabled"):
                 s[setting_key] = val.lower() in ("true", "1", "yes", "on")
             # 字符串字段
             else:
@@ -996,7 +1032,8 @@ def _match_excluded(name, patterns):
 # 代际门槛真正跟随上游前移。见 build_model_mapping。
 
 
-def build_model_mapping(models, excluded=None, platform=None, source_section=None):
+def build_model_mapping(models, excluded=None, platform=None, source_section=None,
+                        probe=None):
     """CPA models[] -> sub2api credentials.model_mapping。
 
     关键语义：model_mapping 非空即**白名单**（account.go:841-861）。不在表里的
@@ -1015,13 +1052,17 @@ def build_model_mapping(models, excluded=None, platform=None, source_section=Non
         source_section: CPA 里的来源段名。openai 平台靠它区分
             codex（单族）与 openai-compatibility（多族）。两者 platform
             都是 "openai"，只传 platform 无法区分。
+        probe: 该 (段, 域名) 的连通性探测结果 {"latest":bool,"prev":bool}，
+            由 model_probe 产出。需求④：最新代探测不通、次最新代连通时，
+            两代都保留。**传 None 时行为与不带探测完全一致**。
     """
     # Step 1: 应用就高原则过滤
     if platform and MODEL_SELECTION_AVAILABLE and models:
         # select_highest_models 期望 list[dict]，直接传入
         models = select_highest_models(models, platform,
                                        source_section=source_section,
-                                       series=MODEL_SERIES)
+                                       series=MODEL_SERIES,
+                                       probe=probe)
 
     # Step 2: 应用 excluded-models 黑名单
     out = {}
@@ -1067,13 +1108,16 @@ def serves_nothing(r):
     （service_models.go:108-115），且 matchWildcard("*", 任意) 恒为真，
     所以 excluded-models: ["*"] 会让这条凭据注册零个模型、完全不参与调度。
     """
+    _pb = r.get("_probe")
     all_m = build_model_mapping(r.get("models_raw"), platform=r.get("platform"),
-                                source_section=r.get("source_section") or r.get("section"))
+                                source_section=r.get("source_section") or r.get("section"),
+                                probe=_pb)
     if not all_m:
         return False  # 本来就没配模型，属于"不限制"，不是"全禁"
     return not build_model_mapping(r.get("models_raw"), r.get("excluded"),
                                    r.get("platform"),
-                                   source_section=r.get("source_section") or r.get("section"))
+                                   source_section=r.get("source_section") or r.get("section"),
+                                   probe=_pb)
 
 
 def build_header_overrides(headers, platform):
@@ -1739,8 +1783,11 @@ def to_account(r, cfg, group_id_map, proxy_id_map, proxy_need_map):
     if r["base_url"]:
         creds["base_url"] = r["base_url"]
     # excluded-models 通过从白名单里减掉来实现：sub2api 没有模型黑名单字段
+    # probe：需求 2⑵④ 的连通性探测结果，由 build_plan 写进记录。
+    # 没有它时 build_model_mapping 退回纯静态的就高逻辑。
     mm = build_model_mapping(r["models_raw"], r.get("excluded"), r.get("platform"),
-                             source_section=r.get("source_section") or r.get("section"))
+                             source_section=r.get("source_section") or r.get("section"),
+                             probe=r.get("_probe"))
     if mm:
         creds["model_mapping"] = mm
     elif serves_nothing(r):
@@ -2068,6 +2115,107 @@ def act_test(s):
         print("\n 两边都就绪，可以选 [3] 生成导入数据。")
 
 
+def run_model_probe(recs, s):
+    """需求第 2 条⑵④：探测各上游的最新代/次最新代模型能否真的调用。
+
+    返回 ({(段, 域名): {"latest":bool,"prev":bool,"detail":str}}, 告警列表)。
+    探测关闭或不可用时返回 ({}, [])，调用方据此走原有行为。
+
+    ## 为什么按 (段, 域名) 而不是按 KEY
+
+    同一个站的 N 个 KEY 卖的是同一批模型。真实配置里 231 个 KEY
+    去重后只剩 54 个 (段, 域名) 单元 —— 探测量直接降到 1/4。
+    每个单元最多 2 个请求（最新代 + 次最新代），且最新代通了就不发第二个，
+    8 并发下整体 40 秒内跑完，命中缓存时 0 请求。
+
+    ## 为什么挑"名字最短"的模型当代表
+
+    变体后缀（-preview / -thinking / -customtools）常有额外的请求体要求，
+    拿它去探容易探出假阴性 —— 明明这一代能用，却因为我们的极简探测体
+    不合它口味而被判死。裸名最稳。
+    """
+    if not MODEL_PROBE_AVAILABLE:
+        return {}, []
+    if not _truthy(s.get("model_probe_enabled", True)):
+        return {}, []
+
+    # ---- 按 (段, 域名) 归集，每个单元挑一个 KEY 当代表 ----
+    units_by_key = {}
+    for r in recs:
+        if r.get("disabled"):
+            continue
+        base = r.get("base_url") or ""
+        api_key = r.get("api_key") or ""
+        if not base or not api_key:
+            continue
+        sec = r.get("source_section") or r.get("section")
+        key = (sec, host_of(base))
+        if key in units_by_key:
+            continue
+        units_by_key[key] = r
+
+    if not units_by_key:
+        return {}, []
+
+    kind_of = {"gemini": "gemini", "anthropic": "anthropic"}
+    units = []
+    for (sec, host), r in units_by_key.items():
+        models = r.get("models_raw") or []
+        if not models:
+            continue
+        platform = r.get("platform") or "openai"
+        kind = kind_of.get(platform, "openai")
+
+        gens = set()
+        for m in models:
+            n = m.get("name", "") if isinstance(m, dict) else str(m)
+            if not n or model_selection.is_low_tier(n):
+                continue
+            g = model_probe._model_gen(n, kind)
+            if g is not None:
+                gens.add(g)
+        if not gens:
+            continue
+        ordered = sorted(gens, reverse=True)
+        latest = ordered[0]
+        prev = ordered[1] if len(ordered) > 1 else None
+
+        units.append({
+            "section": sec, "host": host, "platform": platform,
+            "base_url": r.get("base_url"), "api_key": r.get("api_key"),
+            "headers": r.get("headers") or {},
+            "latest_gen": latest, "prev_gen": prev,
+            "latest_model": model_probe.representative_model(models, latest, kind),
+            "prev_model": (model_probe.representative_model(models, prev, kind)
+                           if prev is not None else None),
+        })
+
+    if not units:
+        return {}, []
+
+    try:
+        res = model_probe.probe_all(
+            units, _http, out_dir=OUT_DIR,
+            workers=s.get("model_probe_workers", 8),
+            fallback_proxy=_fallback_proxy(s),
+            ttl=int(s.get("model_probe_cache_ttl")
+                    or model_probe.DEFAULT_CACHE_TTL),
+            log=print)
+    except Exception as ex:
+        return {}, ["模型连通性探测失败（不影响导入，按原有就高逻辑处理）：%s"
+                    % str(ex)[:120]]
+
+    warn = []
+    for (sec, host), v in sorted(res.items()):
+        if not v.get("latest") and v.get("prev"):
+            warn.append("%s / %s：最新代探测不通、次最新代连通，已同时保留两代"
+                        "（需求 2⑵④）。%s" % (sec, host, v.get("detail", "")[:90]))
+        elif not v.get("latest") and not v.get("prev"):
+            warn.append("%s / %s：最新代与次最新代均探测不通，按目录最高级填充。%s"
+                        % (sec, host, v.get("detail", "")[:90]))
+    return res, warn
+
+
 def build_plan(s):
     """读 CPA 配置 -> 生成导入计划。菜单和一键导入共用。
 
@@ -2173,6 +2321,18 @@ def build_plan(s):
     proxies, proxy_warn = distinct_proxies(recs)
     fps = distinct_fingerprints(recs)
 
+    # 需求第 2 条⑵④：探测每个 (段, 域名) 的最新代/次最新代是否真的能调用。
+    # 结果写进每条记录的 _probe 字段，供 build_model_mapping 消费。
+    probe_map, probe_warn = run_model_probe(recs, s)
+    if probe_map:
+        for r in recs:
+            key = (r.get("source_section") or r.get("section"),
+                   host_of(r.get("base_url") or ""))
+            pr = probe_map.get(key)
+            if pr:
+                r["_probe"] = {"latest": pr.get("latest"),
+                               "prev": pr.get("prev")}
+
     plan = {
         "groups": groups,
         "proxies": proxies,
@@ -2188,7 +2348,7 @@ def build_plan(s):
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         },
     }
-    return plan, text, src, dropped + proxy_warn
+    return plan, text, src, dropped + proxy_warn + probe_warn
 
 
 def write_plan_files(plan, text, s):
@@ -2238,10 +2398,13 @@ def write_plan_files(plan, text, s):
                 # sub2api 的是过滤后的白名单。用户导入前抽查对照表，
                 # 会看到一个与线上实际生效不同的模型集合。
                 _sec = r.get("source_section") or r.get("section")
+                _pb = r.get("_probe")
                 mm = build_model_mapping(r["models_raw"], r.get("excluded"),
-                                         r.get("platform"), source_section=_sec)
+                                         r.get("platform"), source_section=_sec,
+                                         probe=_pb)
                 all_m = build_model_mapping(r["models_raw"], None,
-                                            r.get("platform"), source_section=_sec)
+                                            r.get("platform"), source_section=_sec,
+                                            probe=_pb)
                 rules, _lost = build_temp_unschedulable(r["rse"])
                 st = "停用" if needs_inactive(r, cfg) else "启用"
                 # 把 excluded-models 的原文直接打出来。只写个数字的话，
