@@ -1114,6 +1114,118 @@ proxy-url: "http://mihomo:7890"</pre></div>
 </figcaption>
 </figure>
 
+<h4>比例的分母：只算「已导入的 KEY」，不算「KEY 总数」</h4>
+
+<p>
+  这一条决定了<b>扩容时老域名会不会被无故降级</b>，是实际会踩到的点。
+</p>
+
+<figure>
+<svg viewBox="0 0 900 330" role="img" aria-label="两种分母口径对扩容的影响">
+  <defs>
+    <marker id="d1" markerWidth="9" markerHeight="9" refX="7" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+    </marker>
+  </defs>
+
+  <text x="450" y="22" fill="#6B7280" font-size="12" text-anchor="middle" font-family="monospace">
+    同一域名 5 个 KEY：3 个已导入（2 可调度 / 2 活跃）＋ 2 个本次新增
+  </text>
+
+  <!-- 五个 KEY 方块 -->
+  <text x="60" y="62" fill="#9CA3AF" font-size="11">KEY：</text>
+  <rect x="108" y="46" width="86" height="34" rx="7" fill="rgba(110,231,183,.16)" stroke="#6EE7B7" stroke-opacity=".6"/>
+  <text x="151" y="62" fill="#6EE7B7" font-size="10.5" text-anchor="middle">已导入</text>
+  <text x="151" y="74" fill="#9CA3AF" font-size="9.5" text-anchor="middle">可调度·活跃</text>
+
+  <rect x="200" y="46" width="86" height="34" rx="7" fill="rgba(110,231,183,.16)" stroke="#6EE7B7" stroke-opacity=".6"/>
+  <text x="243" y="62" fill="#6EE7B7" font-size="10.5" text-anchor="middle">已导入</text>
+  <text x="243" y="74" fill="#9CA3AF" font-size="9.5" text-anchor="middle">可调度·活跃</text>
+
+  <rect x="292" y="46" width="86" height="34" rx="7" fill="rgba(239,68,68,.14)" stroke="#EF4444" stroke-opacity=".55"/>
+  <text x="335" y="62" fill="#FB7185" font-size="10.5" text-anchor="middle">已导入</text>
+  <text x="335" y="74" fill="#9CA3AF" font-size="9.5" text-anchor="middle">已停·error</text>
+
+  <rect x="392" y="46" width="86" height="34" rx="7" fill="rgba(107,114,128,.14)" stroke="#6B7280" stroke-opacity=".6" stroke-dasharray="4 3"/>
+  <text x="435" y="67" fill="#9CA3AF" font-size="10.5" text-anchor="middle">新增</text>
+
+  <rect x="484" y="46" width="86" height="34" rx="7" fill="rgba(107,114,128,.14)" stroke="#6B7280" stroke-opacity=".6" stroke-dasharray="4 3"/>
+  <text x="527" y="67" fill="#9CA3AF" font-size="10.5" text-anchor="middle">新增</text>
+
+  <text x="600" y="67" fill="#6B7280" font-size="10.5">← 新增的还没有任何实测数据</text>
+
+  <!-- 左：已导入数 -->
+  <rect x="40" y="106" width="390" height="196" rx="11" fill="rgba(110,231,183,.07)"
+        stroke="#6EE7B7" stroke-opacity=".45"/>
+  <text x="235" y="132" fill="#6EE7B7" font-size="13" text-anchor="middle" font-weight="700">
+    分母＝已导入数（本项目采用）
+  </text>
+  <text x="235" y="160" fill="#D7E3F4" font-size="11.5" text-anchor="middle" font-family="monospace">
+    2/3 × 0.6 ＋ 2/3 × 0.4
+  </text>
+  <text x="235" y="190" fill="#6EE7B7" font-size="20" text-anchor="middle" font-weight="700">
+    健康分 0.667
+  </text>
+  <text x="235" y="216" fill="#E5E7EB" font-size="12" text-anchor="middle">
+    load_factor = <tspan fill="#6EE7B7" font-weight="700">4</tspan>
+  </text>
+  <text x="235" y="248" fill="#9CA3AF" font-size="10.5" text-anchor="middle">
+    只用有实测数据的那 3 个算分，
+  </text>
+  <text x="235" y="266" fill="#9CA3AF" font-size="10.5" text-anchor="middle">
+    新增的 2 个既不进分子也不进分母
+  </text>
+  <text x="235" y="290" fill="#6EE7B7" font-size="11" text-anchor="middle">
+    扩容不影响老域名的评分
+  </text>
+
+  <path d="M440 204 L470 204" stroke="#6B7280" stroke-width="1.6" marker-end="url(#d1)"/>
+
+  <!-- 右：KEY 总数 -->
+  <rect x="480" y="106" width="380" height="196" rx="11" fill="rgba(239,68,68,.06)"
+        stroke="#EF4444" stroke-opacity=".4"/>
+  <text x="670" y="132" fill="#FB7185" font-size="13" text-anchor="middle" font-weight="700">
+    分母＝KEY 总数（未采用）
+  </text>
+  <text x="670" y="160" fill="#D7E3F4" font-size="11.5" text-anchor="middle" font-family="monospace">
+    2/5 × 0.6 ＋ 2/5 × 0.4
+  </text>
+  <text x="670" y="190" fill="#FB7185" font-size="20" text-anchor="middle" font-weight="700">
+    健康分 0.400
+  </text>
+  <text x="670" y="216" fill="#E5E7EB" font-size="12" text-anchor="middle">
+    load_factor = <tspan fill="#FB7185" font-weight="700">2</tspan>
+  </text>
+  <text x="670" y="248" fill="#FB7185" font-size="10.5" text-anchor="middle">
+    新增的 2 个把分母撑大、分子不变
+  </text>
+  <text x="670" y="266" fill="#FB7185" font-size="10.5" text-anchor="middle">
+    → 老域名流量份额被腰斩
+  </text>
+  <text x="670" y="290" fill="#9CA3AF" font-size="11" text-anchor="middle">
+    而它的实际表现一点没变
+  </text>
+</svg>
+<figcaption>
+  <b>图 8</b>　两种分母口径。用「KEY 总数」会让<b>每次扩容都稀释老域名的健康分</b> ——
+  加两个新 KEY 就把 <code>load_factor</code> 从 4 打到 2，这不是我们要的行为。
+</figcaption>
+</figure>
+
+<div class="box note">
+  <b>需求文档没有定义分母</b>
+  原文只写「可调度比例×60% ＋ 活跃比例×40%」。两种取法都符合字面要求，
+  但只有「已导入数」满足另一条约束：<b>原有的 KEY 和上游不能因为扩容而被降级</b>。
+</div>
+
+<div class="box warn">
+  <b>整个域名都是新增时给中位分 0.5</b>
+  一条都没导入过的域名没有任何实测数据。给 0.5 而不是 0：
+  既不因「查无记录」被打到队尾（新站可能很好），
+  也不凭空排到已验证的健康站前面。对应 <code>load_factor = 4</code>。
+</div>
+
 <h3>7.3 三层容灾链路</h3>
 
 <figure>
@@ -1173,7 +1285,7 @@ proxy-url: "http://mihomo:7890"</pre></div>
   <text x="720" y="357" fill="#9CA3AF" font-size="11" text-anchor="end">自动恢复</text>
 </svg>
 <figcaption>
-  <b>图 8</b>　三层防护。这三层缺一层，「某个 KEY 拖垮全部」就仍然可能发生。
+  <b>图 9</b>　三层防护。这三层缺一层，「某个 KEY 拖垮全部」就仍然可能发生。
 </figcaption>
 </figure>
 
@@ -1240,7 +1352,7 @@ proxy-url: "http://mihomo:7890"</pre></div>
   </text>
 </svg>
 <figcaption>
-  <b>图 9</b>　模型选择按<b>来源段</b>分流，而不是靠「有没有 gpt-6」猜。
+  <b>图 10</b>　模型选择按<b>来源段</b>分流，而不是靠「有没有 gpt-6」猜。
 </figcaption>
 </figure>
 
@@ -1293,7 +1405,7 @@ proxy-url: "http://mihomo:7890"</pre></div>
   </g>
 </svg>
 <figcaption>
-  <b>图 10</b>　探活时刻错开。<b>调用模式的规律性</b>（间隔方差为 0、全体同时）
+  <b>图 11</b>　探活时刻错开。<b>调用模式的规律性</b>（间隔方差为 0、全体同时）
   比单条 prompt 的措辞权重更高。
 </figcaption>
 </figure>
@@ -1383,7 +1495,7 @@ proxy-url: "http://mihomo:7890"</pre></div>
   </text>
 </svg>
 <figcaption>
-  <b>图 11</b>　sub2api IP 管理页的<b>界面示意</b>（非真实截图，已脱敏）。
+  <b>图 12</b>　sub2api IP 管理页的<b>界面示意</b>（非真实截图，已脱敏）。
   「链接失败」有三种成因，按这条顺序排查。
 </figcaption>
 </figure>
@@ -1453,7 +1565,7 @@ proxy-url: "http://mihomo:7890"</pre></div>
   </text>
 </svg>
 <figcaption>
-  <b>图 12</b>　402 预算池死锁链路。日志实锤：<code>sticky_honored=true</code> 15/15，
+  <b>图 13</b>　402 预算池死锁链路。日志实锤：<code>sticky_honored=true</code> 15/15，
   上游一律 <code>402 Budget pool quota has been exhausted</code>。
 </figcaption>
 </figure>
@@ -1598,7 +1710,7 @@ docker compose exec mihomo sh -c 'wget -q --spider \
   <text x="465" y="282" fill="#9CA3AF" font-size="11" text-anchor="middle">⑤ 必须匹配 ①</text>
 </svg>
 <figcaption>
-  <b>图 13</b>　几个密钥的归属。<b>最常见的错误是拿 ① 或 ⑤ 去登 ④</b> ——
+  <b>图 14</b>　几个密钥的归属。<b>最常见的错误是拿 ① 或 ⑤ 去登 ④</b> ——
   它们完全无关，改多少次都不会有效果。
 </figcaption>
 </figure>
@@ -1742,7 +1854,7 @@ docker compose start cpa-manager-plus</pre></div>
   <text x="510" y="210" fill="#9CA3AF" font-size="10.5">写进 config.yaml 就彻底登不进去</text>
 </svg>
 <figcaption>
-  <b>图 14</b>　两条路径。路径 A 更适合容器部署 ——
+  <b>图 15</b>　两条路径。路径 A 更适合容器部署 ——
   不需要 bcrypt，删掉环境变量就能回退。
 </figcaption>
 </figure>
