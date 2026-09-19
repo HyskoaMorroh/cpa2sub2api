@@ -67,6 +67,15 @@ docker compose --profile mihomo up -d
 
 # 看到「同步完成」就是跑完了
 docker compose logs cpa2sub2api
+
+# ── 日志排查（两个项目都支持，v1.0.0 起默认 DEBUG + 落盘）──
+# 实时跟踪
+docker compose logs -f cpa2sub2api
+docker compose logs -f upstream-importer
+
+# 取出落盘日志文件（事后排查）
+docker compose cp cpa2sub2api:/app/out/logs ./logs-cpa/
+docker compose cp upstream-importer:/app/logs ./logs-importer/
 ```
 
 镜像名与 CI 的推送目标由**同一组仓库变量**决定，不存在写死的账号名。
