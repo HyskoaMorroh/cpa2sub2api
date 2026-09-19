@@ -7,6 +7,7 @@
 """
 
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -14,6 +15,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 import model_selection  # noqa: E402
+import model_probe  # noqa: E402
 import new_remap_priority  # noqa: E402
 import tool  # noqa: E402
 
@@ -88,10 +90,15 @@ except Exception as e:
 
 print()
 print("=" * 70)
-print("B. health_rerank_priority —— 全局 dense rank（跨渠道不撞桶）")
+print("B. health_rerank_priority —— 分组内 dense rank（组内不撞桶）")
 print("=" * 70)
 
 # 构造：两个渠道，各有 2 个域名，CPA priority 完全相同（最容易撞桶的情形）
+#
+# 口径（2026-09-19 改）：桶号的唯一性范围是**分组内**，不是全局。
+# sub2api 选号按 group_id 取候选（SelectAccountWithGroup → account_groups），
+# 实测每条账号只属于一个分组，所以跨分组的桶号之间不存在比较关系。
+# 本用例因此断言：同组内两个域名必须互不相同；跨组的两个**允许**相同。
 recs = [
     rec("c1", "Claude", "https://same.example.com", 1000, api_key="k1"),
     rec("c2", "Claude", "https://other.example.com", 1000, api_key="k2"),
@@ -112,10 +119,23 @@ buckets = {}
 for r in recs:
     buckets.setdefault(r["new_priority"], []).append(r["name"])
 
-check("B2 四个域名单元拿到四个互不相同的桶号", len(buckets) == 4,
+# 两个分组各 2 个域名、各自从 10 编号 -> 去重后只有 {10, 20} 两个数值。
+# 注意这里**不能**断言"数值个数 == 域名单元数"：那是全局唯一的旧口径。
+check("B2 桶号数值个数 == 单组域名数（各组共用同一套编号）", len(buckets) == 2,
       "桶号分布=%r" % {k: v for k, v in sorted(buckets.items())})
-check("B3 桶号全局唯一（跨渠道不撞）", all(len(v) == 1 for v in buckets.values()),
-      "同桶成员=%r" % {k: v for k, v in buckets.items() if len(v) > 1})
+
+# 组内唯一：同一个 group 的两个域名不能撞桶（这才是容灾依赖的性质）
+_by_group = {}
+for r in recs:
+    _by_group.setdefault(r["group"], {})[r["name"]] = r["new_priority"]
+_dupes = {g: m for g, m in _by_group.items()
+          if len(set(m.values())) != len(m)}
+check("B3 组内桶号唯一（同组不同域名不撞桶）", not _dupes, "撞桶=%r" % _dupes)
+
+# 跨组允许相同 —— 显式把这个新语义钉下来，避免以后有人又"修"回全局唯一
+_shapes = {g: sorted(m.values()) for g, m in _by_group.items()}
+check("B3b 两个分组的桶号各从 10 起（互不影响）",
+      all(v and v[0] == 10 for v in _shapes.values()), "各组桶号=%r" % _shapes)
 
 # 同域名同渠道的多 KEY 必须同桶
 recs2 = [
@@ -189,8 +209,14 @@ b_of = new_remap_priority.remap_priority_smart(
 check("C1 分页取全量（250 条走两页）", len(api.calls) >= 2, "calls=%r" % api.calls)
 check("C2 按域名单元建表", set(b_of.keys()) == {tool._host_key(r) for r in recs4},
       "keys=%r" % sorted(str(k) for k in b_of.keys()))
-check("C3 桶号全局唯一", len(set(b_of.values())) == len(b_of),
-      "values=%r" % sorted(b_of.values()))
+
+# 按分组归拢桶号，用于"组内唯一"断言（口径见 B 段说明）
+_group_vals = {}
+for _k, _v in b_of.items():
+    _group_vals.setdefault(str(_k[0]), []).append(_v)
+check("C3 组内桶号唯一（同组不同域名不撞桶）",
+      all(len(set(v)) == len(v) for v in _group_vals.values()),
+      "各组桶号=%r" % {g: sorted(v) for g, v in _group_vals.items()})
 check("C4 同渠道同域名同桶（多 KEY 互为备份）",
       b_of[tool._host_key(recs4[0])] == b_of[tool._host_key(recs4[1])],
       "%r vs %r" % (b_of[tool._host_key(recs4[0])], b_of[tool._host_key(recs4[1])]))
@@ -439,15 +465,34 @@ for r in recs_j:
     by_bucket.setdefault(r["new_priority"], []).append(r)
 
 units = {(r["group"], tool.host_of(r["base_url"])) for r in recs_j}
-check("J1 桶数 == 域名单元数（全局唯一）", len(by_bucket) == len(units),
-      "桶=%d 单元=%d" % (len(by_bucket), len(units)))
 
+# 组内唯一：每个分组各自编号，所以断言要按分组分组做。
+# 跨分组允许同号（选号按 group_id 取候选，两边互不可见）—— 见 B 段说明。
+_by_grp_units = {}
+for g, h in units:
+    _by_grp_units.setdefault(g, set()).add(h)
+_by_grp_buckets = {}
+for r in recs_j:
+    _by_grp_buckets.setdefault(r["group"], set()).add(r["new_priority"])
+_grp_bad = {g: (len(_by_grp_buckets.get(g, ())), len(hs))
+            for g, hs in _by_grp_units.items()
+            if len(_by_grp_buckets.get(g, ())) != len(hs)}
+check("J1 每组内 桶数 == 该组域名单元数", not _grp_bad,
+      "不一致的分组(桶数,单元数)=%r" % _grp_bad)
+
+# 同组内不允许两个域名落进同一桶
 bad = []
-for b, rs in by_bucket.items():
-    hosts = {tool.host_of(r["base_url"]) for r in rs}
-    if len(hosts) > 1:
-        bad.append((b, hosts))
-check("J2 没有跨域名撞桶", not bad, "%r" % bad)
+for _g, hs in _by_grp_units.items():
+    seen_h = {}
+    for r in recs_j:
+        if r["group"] != _g:
+            continue
+        h = tool.host_of(r["base_url"])
+        seen_h.setdefault(r["new_priority"], set()).add(h)
+    for b, hh in seen_h.items():
+        if len(hh) > 1:
+            bad.append((_g, b, hh))
+check("J2 组内没有跨域名撞桶", not bad, "%r" % bad)
 
 # 同渠道同域名的两条必须同桶
 same = [r for r in recs_j if r["base_url"].endswith("a.example.com")]
@@ -455,11 +500,14 @@ check("J3 同渠道同域名同桶（互为备份）",
       len({r["new_priority"] for r in same}) == 1,
       "%r" % [r["new_priority"] for r in same])
 
-# 不同渠道即使 CPA priority 相同，也必须不同桶（原先的缺陷）
+# 不同渠道（= 不同 sub2api 分组）各自独立编号，所以**允许**同号；
+# 但两组的桶号必须都从 10 起步、且组内不与其他域名冲突。
+# 口径变更见 B 段说明（2026-09-19：全局唯一 -> 组内唯一）。
 cx = [r for r in recs_j if r["section"] == "codex-api-key"][0]
 oa = [r for r in recs_j if r["section"] == "openai-compatibility"][0]
-check("J4 同 CPA priority 的跨渠道域名不同桶（回归修复）",
-      cx["new_priority"] != oa["new_priority"],
+check("J4 两个 openai 系分组各自编号、互不遮蔽（组内各自从 10 起）",
+      min(r["new_priority"] for r in recs_j if r["group"] == "Codex") == 10
+      and min(r["new_priority"] for r in recs_j if r["group"] == "OpenAI") == 10,
       "codex=%s openai=%s" % (cx["new_priority"], oa["new_priority"]))
 
 # 确定性：同一份配置重跑得到同样的桶号（不含随机/时间因素）
@@ -791,6 +839,104 @@ _silent = [s for s in _dropped if "没有 api-key" in s or "api-key-entries" in 
 check("R1 空 api-key 子条目被记入 dropped_notes（以前无声丢弃）",
       len(_silent) >= 2, "命中 %d 条：%r" % (len(_silent), _silent[:3]))
 check("R2 有 api-key 的条目照常导入", len(_recs) == 1, "%d 条" % len(_recs))
+
+print()
+print("=" * 70)
+print("S. 日志（需求第 8 条：支持详细日志输出以便出错时排查）")
+print("=" * 70)
+
+import logging  # noqa: E402
+
+# S1: LOG_LEVEL / LOG_TO_FILE 必须在 env_mappings 里真的接线。
+# 这两个键以前只在 .env.example 里"写着"，设了完全不生效——
+# 与 HTTP_TIMEOUT / HTTP_RETRIES 是同一类"文档与行为不一致"的问题。
+_src = _read("tool.py")
+_m = re.search(r"env_mappings = \{(.*?)\n    \}", _src, re.S)
+_mapped = set(re.findall(r'"([A-Z][A-Z0-9_]+)":', _m.group(1)))
+check("S1 LOG_LEVEL 已接线到 env_mappings", "LOG_LEVEL" in _mapped, sorted(_mapped)[:8])
+check("S2 LOG_TO_FILE 已接线到 env_mappings", "LOG_TO_FILE" in _mapped)
+
+# S3: DEFAULTS 里要有 log_level / log_to_file（否则环境变量没设时 KeyError
+# 或行为不定）
+check("S3 DEFAULTS 有 log_level 且默认 INFO",
+      re.search(r'"log_level"\s*:\s*"INFO"', _src) is not None)
+check("S4 DEFAULTS 有 log_to_file 且默认 False",
+      re.search(r'"log_to_file"\s*:\s*False', _src) is not None)
+
+# S5: logger 本身必须是 DEBUG，级别过滤交给 handler。
+# 若把 logger 也设成 INFO，文件 handler 写着 DEBUG 也收不到 DEBUG 记录
+# （实测踩过：LOG_TO_FILE=1 且 LOG_LEVEL=INFO 时文件里没有 DEBUG 行）。
+check("S5 logger 恒为 DEBUG，级别过滤在 handler 上",
+      "lg.setLevel(logging.DEBUG)" in _src
+      and "sh.setLevel(level)" in _src
+      and "fh.setLevel(logging.DEBUG)" in _src)
+
+# S6: 认不出的级别名要回退 INFO 并告警，不能默默按 DEBUG（日志会暴涨）
+check("S6 非法 LOG_LEVEL 回退 INFO 并告警",
+      "不是有效级别" in _src and 'level_name = "INFO"' in _src)
+
+# S7: log_exc 只在真有活跃异常时才带 traceback，否则会出现
+# "NoneType: None" 噪音行
+check("S7 log_exc 用 sys.exc_info() 判断是否带 traceback",
+      "in_handler = sys.exc_info()[0] is not None" in _src)
+
+# S8: 运行时验证 —— LOG_LEVEL=ERROR 时 INFO 被过滤
+_lg = tool.log()
+_applied = [logging.getLevelName(h.level) for h in _lg.handlers]
+check("S8 日志 handler 已按级别装配", len(_applied) >= 1, "handlers=%r" % _applied)
+
+# S9: 原本静默的 except 必须改成会出声。
+# 抽查性质，不穷举——只钉住最容易再被写回去的那几处。
+_silent_now = [
+    ("代理兜底失败", "代理兜底到底试没试过是排查 5xx 的常问项"),
+    ("重查分组列表也失败", "拿不到 group_id 会让账号不知去哪"),
+    ("重查代理列表也失败", "拿不到 proxy_id 会静默直连（不产生代理）"),
+    ("探活计划失败", "区分'查不到'与'查到但没成功'决定要不要启用账号"),
+    ("漂移诊断失败", "'把失败当成功'最误导人"),
+]
+_missing = [n for n, _ in _silent_now if n not in _src]
+check("S9 关键静默点已改为出声", not _missing, "仍未出声：%r" % _missing)
+
+# S10: 设置.json 读取失败的告警**不能**走 logger（会与日志初始化递归）
+check("S10 设置.json 读取失败用 stderr 直写（避开 logger 递归）",
+      "读取 %s 失败" in _src and "file=sys.stderr" in _src)
+
+# S11: 探测缓存读/写失败要有痕迹（写失败会让下次全量重探，代价约 2 分钟）
+_mp = _read("model_probe.py")
+check("S11 探测缓存读失败有痕迹", "缓存 %s 读取失败" in _mp)
+check("S12 探测缓存写失败有痕迹", "缓存写入失败" in _mp)
+
+# S13: model_probe 的日志必须懒加载（顶层 import tool 会循环导入）
+check("S13 model_probe 懒加载 tool.log_exc（防循环导入）",
+      "_log_exc_tried" in _mp and "from tool import log_exc" in _mp)
+
+# S14: 探测语料不能再是常量（需求第 2⑷：规避站方反测活）。
+# 原来三个平台都硬写 "hi"，站方按"请求体恒为 hi 且 max_tokens=1"就能认出探活。
+check("S14 探测语料已改成随机池（无硬编码 \"hi\"）",
+      '"hi"' not in _mp or "硬写" in _mp,
+      "仍出现字面 \"hi\" 作为请求体")
+check("S15 探测语料池存在且中英双语",
+      "probe_prompts" in _mp and "你好，今天天气如何？" in _mp
+      and "Hi, how are you?" in _mp)
+
+# S16: 运行时验证 —— 连续两次构造请求，语料应当会变（随机抽取生效）
+_try = set()
+for _p in ("anthropic", "openai", "gemini"):
+    for _ in range(12):
+        _m, _u, _h, _b = model_probe._build_request(
+            _p, "https://x.example.com", "k", "m", None)
+        if _p == "gemini":
+            _try.add(_b["contents"][0]["parts"][0]["text"])
+        else:
+            _try.add(_b["messages"][0]["content"])
+check("S16 同一平台多次构造拿到不同语料（随机生效）",
+      len(_try) >= 4, "只抽到 %d 种：%r" % (len(_try), sorted(_try)[:4]))
+
+# S17: 请求体仍然很小（max_tokens=1）——探活不该消耗额度
+_m, _u, _h, _b = model_probe._build_request(
+    "openai", "https://x.example.com", "k", "m", None)
+check("S17 探测仍是 max_tokens=1（极低消耗）",
+      _b.get("max_tokens") == 1, "%r" % _b)
 
 print()
 print("=" * 70)

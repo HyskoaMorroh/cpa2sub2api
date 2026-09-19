@@ -8,14 +8,23 @@
 #   必然 `python3: not found` → 检查恒定失败 → 容器永远 unhealthy。
 #   同一镜像里也**没有 curl**（有 wget）。两个都试过，只有 shell + busybox 可用。
 #
-#   注：仓库里另有一份 healthcheck.py（Python），是给**本镜像**
-#   （python:3.11-slim 派生，有 python3 无 curl）用的；mihomo 容器用这一份。
+#   注：仓库里另有一份 healthcheck.py（Python），是给**本项目镜像**
+#   （python:3.11-slim 派生）用的；那份不能丢，它还要探本容器自己的进程。
+#
+# 为什么这个脚本对**两种**宿主要都能跑：
+#   本脚本有两个可能的执行者 ——
+#     · metacubex/mihomo:latest             → busybox 基座，`nc`/`wget` 直接可用
+#     · cpa2sub2api / cpa-upstream-importer → Debian slim + 安装的 busybox
+#   Debian 上装了 busybox 也**不会**自动给出 /usr/bin/nc 这个软链
+#   （实测 2026-09-19：have busybox，MISS nc），所以不能假设 `nc` 在 PATH 里。
+#   下面对 `nc` 与 `wget` 各做一次"命令探测 + 回退到 busybox 子命令"，
+#   两套基座共用同一份脚本，不靠"记得给 Debian 也建软链"这种隐性约定。
 #
 # 为什么不能只靠 docker healthcheck：
 #   healthcheck 只能把容器标成 unhealthy 或触发重启，**改不了 mihomo 的选路**。
 #   机场节点全挂时进程本身活得好好的（端口在听、API 有响应），重启也救不回来，
-#   而 CPA 的 proxy-url 指着 7890，于是全部上游请求走进一个没有可用出口的代理里
-#   排队直到超时 —— 表面现象是上游 502/524，真因在这里。
+#   而 config.yaml 里配了代理的上游都指向本容器，于是请求走进一个没有可用出口的
+#   代理里排队直到超时 —— 表面现象是上游 502/524，真因在这里。
 #
 #   所以本脚本做两件事：
 #     1. 判活：API 通不通、AUTO 组有没有节点、实际能不能出网
@@ -46,10 +55,30 @@ TMP="${TMPDIR:-/tmp}"
 
 log() { echo "[healthcheck] $*"; }
 
-# ---- 用 nc 发一个最简 HTTP 请求（busybox 没有 curl，wget 只能 GET）----
+# ---- 能力探测：busybox 基座直接用，Debian 基座回退到 `busybox <applet>` ----
+# 只探一次，结果放变量里，避免每次调用都 fork 两次。
+NC=""
+if command -v nc >/dev/null 2>&1; then
+    NC="nc"
+elif command -v busybox >/dev/null 2>&1 && busybox nc --help >/dev/null 2>&1; then
+    NC="busybox nc"
+fi
+
+WGET=""
+if command -v wget >/dev/null 2>&1; then
+    WGET="wget"
+elif command -v busybox >/dev/null 2>&1 && busybox wget --help >/dev/null 2>&1; then
+    WGET="busybox wget"
+fi
+
+# ---- 用 nc 发一个最简 HTTP 请求（本脚本唯一的"非 wget"HTTP 手段）----
 # 用法：http_req <method> <path> [json_body]
+#
+# 为什么必须能用 nc：切换出口是 PUT，而 busybox 的 wget 只能发 GET/POST
+# （没有 -X / --method）。没有 nc 就只剩 curl，而 busybox 基座里没有 curl。
 http_req() {
     _m="$1"; _p="$2"; _b="${3:-}"
+    [ -n "$NC" ] || return 1
     if [ -n "$_b" ]; then
         _len=$(printf '%s' "$_b" | wc -c | tr -d ' ')
     else
@@ -69,7 +98,7 @@ http_req() {
         fi
         printf '\r\n'
         [ -n "$_b" ] && printf '%s' "$_b"
-    } | nc -w 5 "$API_HOST" "$API_PORT" 2>/dev/null
+    } | $NC -w 5 "$API_HOST" "$API_PORT" 2>/dev/null
 }
 
 # ---- API 是否可用：只要拿到 HTTP 状态行就算通（不看状态码）----
@@ -91,18 +120,20 @@ group_node_count() {
 
 # ---- 经代理实际出一次网。wget -Y on 让 busybox 认 http_proxy ----
 probe_via_proxy() {
+    [ -n "$WGET" ] || return 1
     http_proxy="http://$PROXY_HOST:$PROXY_PORT/" \
     https_proxy="http://$PROXY_HOST:$PROXY_PORT/" \
-        wget -q -Y on -T 12 -O /dev/null "$PROBE_URL" >/dev/null 2>&1
+        $WGET -q -Y on -T 12 -O /dev/null "$PROBE_URL" >/dev/null 2>&1
 }
 
 # ---- 不经代理直连 ----
 probe_direct() {
+    [ -n "$WGET" ] || return 1
     http_proxy="" https_proxy="" \
-        wget -q -Y off -T 12 -O /dev/null "$PROBE_URL" >/dev/null 2>&1
+        $WGET -q -Y off -T 12 -O /dev/null "$PROBE_URL" >/dev/null 2>&1
 }
 
-# ---- 切组。切成功判定为响应里不含 error ----
+# ---- 切组。切成功判定为响应里含 2xx 或 4xx 状态行 ----
 switch_to() {
     _resp=$(http_req PUT "/proxies/$GROUP" "{\"name\":\"$1\"}")
     printf '%s' "$_resp" | head -n 1 | grep -qE "HTTP/1\.[01] (2|4)"
@@ -120,6 +151,13 @@ write_state() {
 # ============================================================================
 # 主流程
 # ============================================================================
+
+# ---- 0. 两个必需工具都没有：明确说清楚，别让它看起来像"出口不通" ----
+if [ -z "$NC" ] || [ -z "$WGET" ]; then
+    log "缺少 HTTP 工具（nc=${NC:-无} wget=${WGET:-无}）：容器基座里既没有 nc/wget，
+也没有 busybox 可回退。这不是出口故障，是本镜像缺工具 —— 装 busybox 与 wget 即可。"
+    exit 1
+fi
 
 # ---- 1. API 是否响应。不响应说明进程真的坏了，让 docker 重启它 ----
 if ! api_alive; then

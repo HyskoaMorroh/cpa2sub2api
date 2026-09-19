@@ -10,6 +10,7 @@
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import sys
@@ -41,11 +42,30 @@ except ImportError:
 
 # 导入智能优先级模块
 try:
-    from new_remap_priority import remap_priority_smart
+    from new_remap_priority import (remap_priority_smart,
+                                    assign_group_local_buckets)
     SMART_PRIORITY_AVAILABLE = True
 except ImportError:
     SMART_PRIORITY_AVAILABLE = False
     print("警告: new_remap_priority.py 未找到，使用传统优先级映射")
+
+    # 兜底实现：new_remap_priority 缺失时本模块仍要能用（它被 remap_priority
+    # 与 health_rerank_priority 两处调用）。这里给一份等价的最小实现，
+    # 而不是让上面那个 ImportError 顺带把这两个函数也废掉 ——
+    # "模块缺失"应该只降级智能优先级，不该让导入整体不可用。
+    def assign_group_local_buckets(units, sort_key):
+        from collections import defaultdict as _dd
+        _by = _dd(list)
+        for _u in units:
+            if isinstance(_u, (tuple, list)) and len(_u) >= 2:
+                _by[str(_u[0])].append(_u)
+            else:
+                _by["_"].append(_u)
+        _out = {}
+        for _g, _keys in _by.items():
+            for _i, _k in enumerate(sorted(_keys, key=sort_key), 1):
+                _out[_k] = _i * 10
+        return _out
 
 # 导入模型选择模块（就高原则）
 #
@@ -100,6 +120,138 @@ SETTINGS_PATH = os.path.join(HERE, "设置.json")
 CONFIG_YAML = os.path.join(HERE, "config.yaml")
 OUT_DIR = os.path.join(HERE, "out")
 PLAN_PATH = os.path.join(OUT_DIR, "import-plan.json")
+LOG_DIR = os.path.join(OUT_DIR, "logs")
+
+
+# =============================================================================
+# 日志（需求第 8 条：支持详细的日志输出，出错时能及时排查）
+# =============================================================================
+#
+# 以前全仓库没有一处 `import logging`，而 .env.example 里承诺了
+# `LOG_LEVEL=INFO`（第 226 行）—— **设了完全不生效**，属于"文档与行为
+# 不一致"那一类（同 HTTP_TIMEOUT / HTTP_RETRIES 的历史问题）。
+#
+# 这里补一套最小的日志设施，只做三件事：
+#   1. 级别可控（LOG_LEVEL 环境变量 / 设置.json 的 log_level）
+#   2. 可选落盘（LOG_TO_FILE=1 → out/logs/run-<时间戳>.log）
+#   3. 静默失败点有地方出声（见 `log_exc`）
+#
+# 为什么同时保留 print：本工具的主要交互是"给用户看的进度与结论"，
+# 那些是**产品输出**，不该被日志级别过滤掉；日志只承载**排查信息**。
+# 所以两者分工明确，不互相替代：
+#   print     -> stdout，给用户看的阶段进度、统计、结论
+#   log.*     -> 给排查看的细节（重试、降级、被丢弃的字段、异常原因）
+#   log_exc   -> 原本静默的 except，现在带上异常类型与位置
+_LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "WARN": 30,
+               "ERROR": 40, "CRITICAL": 50}
+_logger = None
+_log_ready = False
+
+
+def _init_logging():
+    """懒初始化日志。第一次需要写日志时才建 handler。
+
+    为什么懒初始化：load_settings() 本身要读 设置.json 与环境变量，而
+    log_level / log_to_file 是**它读出来的**。如果在模块导入期就初始化，
+    那时 settings 还没加载，只能拿环境变量的默认值 —— 用户写在
+    设置.json 里的 log_level 会被永远忽略。
+    """
+    global _logger, _log_ready
+    if _log_ready:
+        return _logger
+    _log_ready = True
+
+    lg = logging.getLogger("cpa2sub2api")
+    lg.setLevel(logging.DEBUG)          # handler 上再按级别过滤
+    lg.propagate = False
+    if lg.handlers:
+        _logger = lg
+        return lg
+
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S")
+
+    # 级别与落盘都从 settings 读；读不到就用环境变量兜底，再兜底 INFO。
+    # 全程 try：日志设施本身**绝不能**把主流程搞崩 —— 它只是排查辅助。
+    level_name = "INFO"
+    to_file = False
+    try:
+        s = load_settings()
+        level_name = str(s.get("log_level") or "").strip().upper() or "INFO"
+        to_file = str(s.get("log_to_file") or "").lower() in ("1", "true", "yes", "on")
+    except Exception:
+        env_lv = str(os.environ.get("LOG_LEVEL") or "").strip().upper()
+        if env_lv:
+            level_name = env_lv
+        to_file = str(os.environ.get("LOG_TO_FILE") or "").lower() in (
+            "1", "true", "yes", "on")
+
+    # 认不出的级别名要**明确回退到 INFO 并说出来**，不能默默按 DEBUG 处理 ——
+    # 那是把"排查信息全开"当成默认，日志会一下子膨胀几十倍；
+    # 反过来若默默按 ERROR 处理，用户会以为没日志。两种误判都很难查。
+    if level_name not in _LOG_LEVELS:
+        print("警告: LOG_LEVEL=%r 不是有效级别（可选 %s），已按 INFO 处理"
+              % (level_name, "/".join(sorted(_LOG_LEVELS))), file=sys.stderr)
+        level_name = "INFO"
+    level = _LOG_LEVELS[level_name]
+    # logger 本身**恒为 DEBUG**，级别过滤交给各 handler 自己做。
+    #
+    # 不能 here 设成 `level`：那样 DEBUG 记录在到达 handler 之前就被
+    # logger 级别挡掉了，文件 handler 虽然写着 DEBUG 也永远收不到 ——
+    # 实测踩到（LOG_TO_FILE=1 且 LOG_LEVEL=INFO 时，文件里没有 DEBUG 行）。
+    lg.setLevel(logging.DEBUG)
+
+    # stdout handler：与 print 混在一起，容器里 `docker logs` 能直接看
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setLevel(level)
+    sh.setFormatter(fmt)
+    lg.addHandler(sh)
+
+    if to_file:
+        try:
+            if not os.path.isdir(LOG_DIR):
+                os.makedirs(LOG_DIR)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            fh = logging.FileHandler(
+                os.path.join(LOG_DIR, "run-%s.log" % stamp), encoding="utf-8")
+            # 文件里一律记 DEBUG 及以上：落盘的目的是事后排查，
+            # 用户把 LOG_LEVEL 调成 INFO 时也不该丢掉 DEBUG 细节。
+            fh.setLevel(logging.DEBUG)
+            fh.setFormatter(fmt)
+            lg.addHandler(fh)
+        except Exception as ex:
+            lg.warning("日志落盘失败（%s），只在 stdout 输出", ex)
+
+    _logger = lg
+    return lg
+
+
+def log():
+    """取 logger。用法 `log().debug(...)`，不在导入期建 handler。"""
+    return _init_logging() or logging.getLogger("cpa2sub2api")
+
+
+def log_exc(what, exc, level="debug"):
+    """把**原本会被静默吞掉**的异常记下来。
+
+    需求第 8 条要求"出错时能及时排查"。而这类 `except Exception: pass`
+    是排查的最大障碍：出问题时**没有任何痕迹**，只能靠复现。
+
+    用法：`except Exception as ex: log_exc("读 设置.json 失败", ex)`
+
+    默认 DEBUG 级别 —— 这些位置大多是"有兜底、业务能继续"的降级路径，
+    不该在正常运行时刷屏；但设 LOG_LEVEL=DEBUG 或 LOG_TO_FILE=1 时必须
+    全部可见。真的影响业务时调用方应自己用 warning/error。
+    """
+    msg = "%s: %s: %s" % (what, type(exc).__name__, exc)
+    # 只有**真的处于 except 块里**时才带 traceback。否则 exc_info=True 会打出
+    # 一行 "NoneType: None"（当前没有活跃异常时的占位）—— 纯噪音，还会让人
+    # 以为有问题。sys.exc_info()[0] 非空就说明有活跃异常。
+    in_handler = sys.exc_info()[0] is not None
+    getattr(log(), level, log().debug)(msg, exc_info=in_handler)
+
+
 
 # 本工具写进 accounts.notes 开头的固定标记。
 # 用它而不是"备注里出现 CPA 字样"来认自己导入的账号——后者会把用户手工建的、
@@ -147,6 +299,21 @@ DEFAULTS = {
     # （ent/schema/account.go:139 Default(true)），不显式传就会吃到这个默认，
     # 于是界面上出现"过期自动暂停调度"已勾选。CreateAccountRequest 支持该字段。
     "auto_pause_on_expired": False,
+    # ---- 日志（需求第 8 条）----
+    # 级别：DEBUG / INFO / WARNING / ERROR / CRITICAL。默认 INFO。
+    #
+    # 为什么要"详细日志"这件事单独占一个开关：本工具的主输出（阶段进度、
+    # 统计、结论）走 print，是给用户看的；日志承载的是**排查信息** ——
+    # 重试、降级、被丢弃的字段、原本静默的异常。两者职责不同，不能用
+    # 日志级别去过滤产品输出，也不能让产品输出淹没排查信息。
+    "log_level": "INFO",
+    # 是否把日志落盘到 out/logs/run-<时间戳>.log。
+    #
+    # 默认关：本工具的常见用法是"跑一次就退"，落盘会在 out/ 里攒文件。
+    # 但**排查时请打开** —— 事后追查"当时到底发生了什么"只有它能给答案
+    # （容器里 stdout 经常只有最后几十行）。落盘时一律记 DEBUG 及以上，
+    # 所以把 LOG_LEVEL 调成 INFO 也不会丢掉 DEBUG 细节。
+    "log_to_file": False,
     # 导入后自动挂定时探活计划（auto_recover=true），用 sub2api 自带机制恢复。
     "auto_recover_enabled": True,
     "auto_recover_cron": "*/30 * * * *",
@@ -226,8 +393,18 @@ def load_settings():
         try:
             with io.open(SETTINGS_PATH, encoding="utf-8-sig") as f:
                 s.update(json.load(f))
-        except Exception:
-            pass
+        except Exception as ex:
+            # 这条**必须出声**（需求第 8 条）：设置.json 是用户唯一手写的配置，
+            # 它坏了却静默退回默认值的话，表现是"我明明配了 / 改了，为什么不生效"——
+            # 而且改的是密钥、地址这类最要紧的字段时特别难查。
+            #
+            # 注意：这里不能用 log_exc()。load_settings 是日志初始化**自己**要
+            # 调的（读 log_level），在初始化过程中打日志会无限递归。所以直接
+            # 写 stderr —— 不经过 logger，没有递归风险。
+            print("警告: 读取 %s 失败（%s: %s），已改用默认值 + 环境变量。"
+                  "该文件里的配置本次**不会生效**。"
+                  % (os.path.basename(SETTINGS_PATH), type(ex).__name__, ex),
+                  file=sys.stderr)
 
     # 2. 环境变量覆盖（高优先级）
     env_mappings = {
@@ -275,6 +452,12 @@ def load_settings():
         "HTTP_RETRIES": "http_retries",
         "DISABLE_PROXY_FALLBACK": "disable_proxy_fallback",
 
+        # 日志（需求第 8 条）。这两个键以前**只在 .env.example 里写着**
+        # （LOG_LEVEL 在第 226 行），env_mappings 里没有接线 —— 设了完全不生效。
+        # 与 HTTP_TIMEOUT / HTTP_RETRIES 是同一类"文档与行为不一致"的问题。
+        "LOG_LEVEL": "log_level",
+        "LOG_TO_FILE": "log_to_file",
+
         # 模型代际连通性探测
         "MODEL_PROBE_ENABLED": "model_probe_enabled",
         "MODEL_PROBE_WORKERS": "model_probe_workers",
@@ -287,17 +470,28 @@ def load_settings():
             # 数值字段转换
             if setting_key in ("import_workers", "test_plan_workers", "pricing_workers",
                               "default_concurrency", "batch_size", "pool_mode_retry_count",
-                              "model_probe_workers", "model_probe_cache_ttl"):
+                              "model_probe_workers", "model_probe_cache_ttl",
+                              # HTTP_TIMEOUT / HTTP_RETRIES 以前不在这里，值是字符串。
+                              # 用它的地方有 `int(...)` 兜着，所以**行为是对的**，
+                              # 但 settings 里存字符串意味着任何新调用点漏了 int()
+                              # 就会 TypeError —— 而且只在设了这两个变量时才出现。
+                              # 统一在这里转成整数，消掉这个埋着的坑。
+                              "http_timeout", "http_retries"):
                 try:
                     s[setting_key] = int(val)
                 except ValueError:
-                    pass
+                    # 环境变量写了个非数字。静默忽略会让"我设了 IMPORT_WORKERS=8
+                    # 怎么还是慢"这种问题查不出来 —— 说清是哪个键、值是什么、
+                    # 退回了什么。同样用 stderr 避开 logger 递归。
+                    print("警告: 环境变量 %s=%r 不是整数，已忽略（沿用默认值 %r）"
+                          % (env_key, val, s.get(setting_key)),
+                          file=sys.stderr)
             # 布尔字段转换
             elif setting_key in ("auto_recover_enabled", "health_rerank_enabled",
                                 "sync_existing_accounts", "respect_weight_zero",
                                 "fetch_upstream_src", "pool_mode_enabled", "auto_pause_on_expired",
                                 "model_probe_enabled", "probe_inactive",
-                                "revive_proven_inactive"):
+                                "revive_proven_inactive", "log_to_file"):
                 s[setting_key] = val.lower() in ("true", "1", "yes", "on")
             # 字符串字段
             else:
@@ -468,9 +662,11 @@ def _http(method, url, headers=None, body=None, timeout=None, retries=None,
                                 _allow_proxy_fallback=False)
                 print("    [代理兜底] 直连失败，经代理成功：%s" % url)
                 return st, txt
-            except Exception:
-                # 代理也不通：如实报直连的那个错，别拿代理的错掩盖真实原因
-                pass
+            except Exception as ex:
+                # 代理也不通：如实报直连的那个错，别拿代理的错掩盖真实原因。
+                # 但**要留痕** —— "代理兜底到底试没试过、为什么没成功"是排查
+                # 上游 5xx/超时时最常问的问题，静默会让日志看起来像"根本没兜底"。
+                log_exc("代理兜底失败（%s，最终按直连的错误上报）" % fb, ex)
 
     if last:
         raise last
@@ -1530,7 +1726,7 @@ def remap_priority(recs):
     for i, v in enumerate(ordered, 1):
         bucket_of[v] = i * 10
 
-    # ---- 第二步：全局定序，保证桶号全局唯一 ----
+    # ---- 第二步：组内定序，保证同组内桶号唯一 ----
     #
     # 关键：排序与去重都必须是**全局**的，不能按渠道各算一套。
     #
@@ -1543,16 +1739,30 @@ def remap_priority(recs):
     # openai-d.example.com 三个不同渠道的不同域名全部拿到桶号 10，
     # 被 sub2api 当成同一桶轮循，跨域名降级容灾完全失效。
     #
-    # 现在改成：把所有 (渠道, 域名) 单元按 (序位降序, 渠道名, 域名字典序)
-    # 全局排序后依次编号，桶号全局唯一。排序后两项只为确定性
-    # （同一份配置多次运行得到同样的桶号），不参与优先级语义。
-    all_units = sorted(tier_of.keys(),
-                       key=lambda k: (-tier_of[k], k[0], k[1]))
-    adjusted_bucket = {}
-    for i, k in enumerate(all_units, 1):
-        adjusted_bucket[k] = i * 10
+    # 现在改成：按**分组各自**编号 —— 同组内把所有 (渠道, 域名) 单元按
+    # (序位降序, 域名字典序) 排序后依次编号，组内桶号唯一、各组都从 10 起。
+    #
+    # 为什么从"全局唯一"再改成"组内唯一"（2026-09-19）：
+    #   分桶的作用域本来就是分组。sub2api 选号按 group_id 取候选
+    #   （SelectAccountWithGroup → account_groups 中间表），实测 231 条
+    #   账号在 account_groups 里是 231 条映射、**跨组账号 0 条** —— 每条
+    #   账号只属于一个分组，所以 CPA-Claude 的桶号 10 与 CPA-OpenAI 的
+    #   320 永远不会被放在一起比较。
+    #
+    #   全局编号的代价：某个组的最大桶号 = 全配置域名单元总数 × 10，
+    #   加一个域名到 A 组会让 B 组的上限跟着涨，站点多的配置会逼近
+    #   sub2api 的 priority 上限（不受我们控制）；而且界面上 Codex 显示
+    #   120、Claude 显示 10 会让人误判谁更优先。
+    #
+    #   组内编号把"跨渠道撞桶"从根上消除（不同分组根本不在一个命名空间
+    #   比较），同时保住真正要保的两条：同组同域名同桶、同组不同域名桶号
+    #   互不相同。见 new_remap_priority.assign_group_local_buckets 的长注释。
+    adjusted_bucket = assign_group_local_buckets(
+        list(tier_of.keys()),
+        key=lambda k: (-tier_of[k], k[1]))
 
     # 保留基础映射表：仅用于日志/回溯"某个 CPA 序位被映射到了哪个基准桶"。
+    # 这张表只进日志，不参与实际赋值，所以保持全局去重编号即可。
     bucket_of = {}
     for i, v in enumerate(sorted(set(tier_of.values()), reverse=True), 1):
         bucket_of[v] = i * 10
@@ -1713,24 +1923,30 @@ def health_rerank_priority(recs, have_map, cfg):
             continue
         health[k] = (st["sched"] / float(n)) * 0.6 + (st["active"] / float(n)) * 0.4
 
-    # ---- 第三步：全局统一定序 ----
+    # ---- 第三步：按分组各自 dense rank ----
     # 文档第 2 条⑶④："同一个类型不同域名的优先级一定要不同，哪怕算出来相同，
-    # 也要适当做点微调给出点偏差"；文档第 5 条："全局 dense rank 映射"。
+    # 也要适当做点微调给出点偏差"。
     #
-    # 这里**必须**是全局排名，不能按渠道各自从 1 开始编号。以前是
-    # `for group: for i, k in enumerate(keys, 1): bucket = i * 10`，
-    # 于是每个渠道的"第 1 名"都是 10、"第 2 名"都是 20 —— 跨渠道必然撞桶，
-    # 两个不同渠道的不同域名被发到同一个 priority 上，sub2api 的
-    # filterByMinPriority 会把它们当成同一桶轮循，正是文档第 5 条要防的场景
-    # （remap_priority 的 docstring 也专门论证过"跨渠道必须可比"）。
+    # 编号范围是**分组内**，不是全局。为什么（2026-09-19 改，附实测证据）：
+    #   · 选号按 group_id 取候选（SelectAccountWithGroup → account_groups），
+    #     实测 231 条账号 231 条映射、**跨组账号 0 条**，所以两个分组的桶号
+    #     之间不存在可比性；
+    #   · 全局编号会让一个组的桶号上限被**别的组**的域名数推高（加域名到 A 组、
+    #     B 组上限跟着涨），有撞上 sub2api priority 上限的隐患；
+    #   · 界面上会误读（Codex 显示 120、Claude 显示 10，看着像低一等）。
     #
-    # 排序键：健康分降序 -> 渠道名 -> 域名字典序。
-    # 后两项只为确定性（同一份配置多次运行得到同样的桶号），不参与优先级语义。
-    all_keys = sorted(health.keys(),
-                      key=lambda k: (-health[k], k[0], k[1]))
-    bucket_of = {}
-    for i, k in enumerate(all_keys, 1):
-        bucket_of[k] = i * 10          # 步长 10，留出人工插桶空间
+    # 以前是 `for group: for i, k in enumerate(keys, 1): bucket = i * 10`，
+    # 那个写法的问题是**每组都从 1 重新开始**却没有分组语义 —— 当时确实会
+    # 跨渠道撞桶；现在的 assign_group_local_buckets 明确了"同一分组内唯一"，
+    # 不同分组各编各的，跨撞在定义上不可能发生。
+    #
+    # 排序键：健康分降序 -> 域名字典序。
+    # 第二项只为确定性（同一份配置多次运行得到同样的桶号），不参与优先级语义。
+    bucket_of = assign_group_local_buckets(
+        list(health.keys()),
+        key=lambda k: (-health[k], str(k[1])))
+    # 回填时按 (分组, 桶号) 排序，让日志与对照表的顺序稳定可读
+    all_keys = sorted(health.keys(), key=lambda k: (str(k[0]), bucket_of[k]))
 
     # 把桶号回填到每条记录。原先是嵌套在排序循环里、每条记录都要重算一次
     # _host_key，成了 O(域名数 × 记录数)；这里改成先建索引再一次赋值。
@@ -1753,7 +1969,7 @@ def health_rerank_priority(recs, have_map, cfg):
         if len(keys) > 4:
             parts.append("…共 %d 个域名" % len(keys))
         detail.append("%s：%s" % (group, " > ".join(parts)))
-    return ranked, "按实测健康度重排 %d 个域名单元（全局统一定序）。%s" % (
+    return ranked, "按实测健康度重排 %d 个域名单元（各分组内独立定序）。%s" % (
         ranked, "；".join(detail))
 
 
@@ -1974,8 +2190,11 @@ def to_account(r, cfg, group_id_map, proxy_id_map, proxy_need_map):
         try:
             hs = float(hs)
             acc["load_factor"] = 8 if hs >= 0.9 else 6 if hs >= 0.7 else 4 if hs >= 0.5 else 2
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as ex:
+            # 健康分算不出来时不发 load_factor，sub2api 用自己的默认值。
+            # 这是有意的降级，但要说清楚 —— load_factor 直接影响桶内负载
+            # 分配，静默缺失会让人以为"重排生效了但调度没变"。
+            log_exc("health_score=%r 无法转成浮点，本条不发 load_factor" % (hs,), ex)
 
     # auto_pause_on_expired 必须显式写。sub2api 的 schema 默认是 true
     # （ent/schema/account.go:139 Default(true)，由 sync_constants 从源码
@@ -2698,8 +2917,13 @@ def ensure_groups(api, groups):
             if ex.status == 409 or "exist" in ex.body.lower():
                 try:
                     existing = {g["name"]: g["id"] for g in api.list_groups() if g.get("name")}
-                except ApiError:
+                except ApiError as ex2:
                     existing = {}
+                    # 重查失败 = 拿不到已有分组的 ID = 这批账号没有 group_id。
+                    # 以前静默，表现为"日志说重名冲突，然后账号不知去哪了"。
+                    log_exc("建分组撞重名后重查分组列表也失败（HTTP %s %s），"
+                            "无法复用已有分组" % (ex2.status, ex2.body[:80]), ex2,
+                            level="warning")
                 if full in existing:
                     gmap[gname] = existing[full]
                     print("    [复用] %s (id=%s)" % (full, gmap[gname]))
@@ -2752,8 +2976,13 @@ def ensure_proxies(api, proxies):
                         if k == key and p.get("id"):
                             pmap[purl] = p["id"]
                             break
-                except ApiError:
-                    pass
+                except ApiError as ex2:
+                    # 建代理撞重名后重查失败 → 这批账号拿不到 proxy_id → 会
+                    # **静默直连**（而不是走代理）。这正好是需求第 4⑷ 抱怨的
+                    # "前端 mihomo 链接失败"的一种成因，必须留痕。
+                    log_exc("建代理撞重名后重查代理列表也失败（HTTP %s %s），"
+                            "相关账号将直连而非走代理" % (ex2.status, ex2.body[:80]),
+                            ex2, level="warning")
                 if purl in pmap:
                     print("    [复用] %s (id=%s)" % (purl, pmap[purl]))
                     continue
@@ -3192,8 +3421,12 @@ def do_import(api, plan, ask=None):
         os.makedirs(OUT_DIR, exist_ok=True)
         with io.open(os.path.join(OUT_DIR, "import-record.json"), "w", encoding="utf-8") as f:
             json.dump(stat, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    except Exception as ex:
+        # import-record.json 是"这次到底导了哪些账号"的**唯一存档**。
+        # 写不出来不影响本次导入的正确性，但事后追查（"某条为什么是停用"）
+        # 就没有依据了 —— 而且屏幕上的汇总一滚就没了。所以必须出声。
+        log_exc("写 out/import-record.json 失败（本次导入的明细无法事后追查）",
+                ex, level="warning")
     return stat
 
 
@@ -3675,7 +3908,13 @@ def revive_proven_inactive(api, cfg, dry_run=False, batch=50):
         aid, nm = item
         try:
             plans = _unwrap_list(api.list_test_plans(aid))
-        except Exception:
+        except Exception as ex:
+            # 取不到探活计划 = 这条账号"有没有被探活证明可用"未知。
+            # 本函数的结论直接决定**要不要把停用账号重新启用**，所以
+            # "查不到"和"查到了但没成功"必须能区分开 —— 以前两者都是
+            # 静默 return None，日志上完全看不出区别。
+            log_exc("取账号 %s 的探活计划失败，按「无证据」处理（不会因此启用它）"
+                    % aid, ex)
             return None
         for p in plans:
             pid = p.get("id")
@@ -3683,7 +3922,9 @@ def revive_proven_inactive(api, cfg, dry_run=False, batch=50):
                 continue
             try:
                 results = _unwrap_list(api.list_test_results(pid))
-            except Exception:
+            except Exception as ex:
+                log_exc("取探活计划 %s（账号 %s）的结果失败，按「无证据」处理"
+                        % (pid, aid), ex)
                 continue
             # 结果按时间倒序返回；只认最近一条，历史成功不代表现在能用
             for r in results[:1]:
@@ -4629,8 +4870,10 @@ def _price_paths(s):
         for fn in sorted(os.listdir(HERE)):
             if fn.lower().endswith(".mhtml"):
                 local_mhtml.append(os.path.join(HERE, fn))
-    except OSError:
-        pass
+    except OSError as ex:
+        # 列不出本目录。价格工具会因此少几个候选来源 —— 不是致命错，
+        # 但如果用户明明放了 .mhtml 却"没被识别"，这条是唯一的线索。
+        log_exc("列举 %s 下的 .mhtml 失败" % HERE, ex)
 
     base = s.get("price_tool_dir") or ""
     mh = pick(s.get("price_mhtml"),
@@ -4843,8 +5086,12 @@ def sync_constants(s, verbose=True):
         msgs.extend(warns)
         if verbose:
             msgs.extend(infos)
-    except Exception:
-        pass
+    except Exception as ex:
+        # 漂移诊断失败 = "上游常量有没有变"这件事没被检查。
+        # 以前静默，界面表现为"漂移检查跑了，无异常" —— 而实际是没跑。
+        # 这类"把失败当成功"的静默是最误导人的一种。
+        log_exc("上游漂移诊断失败（extract.diagnose），本次**未能**检查"
+                "SECTION_MAP 等常量是否与上游一致", ex)
 
     if verbose and not msgs:
         msgs.append("常量已与上游源码核对一致（黑名单 %d 项）。" % len(HEADER_BLACKLIST))
@@ -4895,8 +5142,12 @@ def act_import_menu(s):
                       % meta.get("generated_at", "?"))
                 print(" 请先重新跑 [3]，否则会按旧配置导入。")
                 return
-        except Exception:
-            pass
+        except Exception as ex:
+            # 这里失败意味着**没能校验 config.yaml 是否被改过**。
+            # 计划可能已经过期，但校验器自己哑了 —— 以前静默通过，
+            # 于是"按旧配置导入"这件事毫无提示。宁可出声。
+            log_exc("校验 config.yaml 是否被改过时失败，本次未做该检查"
+                    "（导入仍会继续，但计划可能已过期）", ex, level="warning")
 
     api = Sub2Api(s)
     stat = do_import(api, plan, ask=lambda q: input(q + " 输入 yes 继续：").strip().lower() == "yes")

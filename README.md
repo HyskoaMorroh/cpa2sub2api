@@ -19,7 +19,7 @@
 | **参数全覆盖** | credentials、priority、concurrency、auto_pause_on_expired、proxy_id、请求头、冷却规则、Websockets、模型白名单等一次性迁移 |
 | **客户端形态伪装** | 站方只认特定客户端时，自动补齐 `claude-cli` / `codex_cli_rs` / `GeminiCLI` 形态的请求头（只补缺，不覆盖你显式配的），解决「直连能用、经中转 503」 |
 | **按域名分桶** | 同一上游的多个 KEY 落进同一优先级桶，互为备份；只有整桶不可用才降级到下一个域名 |
-| **健康度重排** | 按 sub2api 实测的「可调度率×60% + 活跃率×40%」重排优先级，桶号全局唯一 |
+| **健康度重排** | 按 sub2api 实测的「可调度率×60% + 活跃率×40%」重排优先级，各分组内桶号唯一 |
 | **模型就高原则** | codex 单族 / openai 多族分开处理；代际门槛从上游源码反推，不写死版本号 |
 | **连通性探测** | 按代际实发请求验证；最新代打不通时保留最新代占位并补入实测可用的次最新代 |
 | **停用站自动复活** | 探活证明可用后自动重新启用被停用的上游（证据驱动，只动本工具导入的账号） |
@@ -27,6 +27,9 @@
 | **定时探活** | 复用 sub2api 自带的 scheduled-test-plans，自动恢复 error 状态 |
 | **反测活** | 自然语料 + 每个账号错开的探活时刻 |
 | **代理兜底** | 直连失败自动经 mihomo 重试；容器部署下由环境变量正确下发 |
+| **自带代理内核** | 镜像内含 mihomo 二进制与地理数据，同一个镜像兼任 init 与代理本体 —— 部署不需要第二个镜像，宿主机也不放任何配置文件 |
+| **代理镜像可互换** | `upstream-importer` 的镜像里也打了**同一份** mihomo（二进制与两份脚本的 md5 均相同）。整栈里那个共享的 `mihomo` 服务用哪个镜像起都行，用 `.env` 的 `MIHOMO_IMAGE` 切换 |
+| **出口自动降级** | 节点全挂时 `healthcheck.sh` 把 PROXY 组切到 DIRECT（裸连总比全挂好），恢复后自动切回 AUTO |
 | **可排障** | 全流程出声：丢弃的凭据条目、未迁移的能力、补入的请求头、被降级的站点都写进对照表与备注 |
 
 ### 已知限制（诚实标注）
@@ -111,6 +114,12 @@ python 一键导入.py        # 一键全自动
 - **优先级**：环境变量 > `设置.json` > 内置默认值。容器部署只用环境变量。
 - **代理地址**：容器里**必须**用服务名 `http://mihomo:7890`。
   写 `127.0.0.1:7890` 指向容器自己，不是代理。
+- **代理用哪个镜像起**：本镜像与 `upstream-importer` 的镜像里打的是**同一份**
+  mihomo（实测二进制与 `healthcheck.sh`、`bootstrap-mihomo.sh` 的 md5 都相同），
+  所以整栈里那个共享的 `mihomo` 服务用哪个都行。用 `.env` 的 `MIHOMO_IMAGE`
+  切换，不设则用本镜像。
+- **宿主端口**：`MIHOMO_HTTP_PORT` / `MIHOMO_API_PORT` 可覆盖（本机已有代理
+  客户端时会占着 7890）。容器内端口不能动 —— 要与 `proxy-url` 和健康检查一致。
 - **User-Agent**：sub2api 在 Cloudflare 后面时，必须用浏览器 UA，
   否则会被 CF 的浏览器完整性检查拦成 `403 error code: 1010`
   （请求根本到不了源站，sub2api 日志里看不到任何记录）。
@@ -135,9 +144,14 @@ CPA 和 sub2api 都按优先级**严格分桶**：只调度最优的那一桶，
 
 1. **同一域名下所有 KEY 同桶**：它们是彼此的备份。拆进不同桶，sub2api 只调度
    最小的那个，其余全部闲置，冗余退化成单点。
-2. **不同域名桶号全局唯一**：撞桶意味着两个域名混在一桶里轮循，
+2. **同一分组内不同域名桶号唯一**：撞桶意味着两个域名混在一桶里轮循，
    失去"整桶挂掉才降级"的分层容灾。
 3. **步长 10**，留出人工插桶空间。
+4. **编号范围是分组内，不是全局**（2026-09-19 改）：sub2api 选号按 `group_id`
+   取候选（`SelectAccountWithGroup` → `account_groups` 中间表），实测每条账号
+   只属于一个分组 —— 所以 `CPA-Claude` 的桶号 `10` 与 `CPA-OpenAI` 的 `320`
+   永远不会被放在一起比较。每组各自从 `10` 编号，组号上限不再随**别的组**的
+   域名数增长。跨分组的桶号相同是正常的，不是缺陷。
 
 ### 三层容灾
 
@@ -230,6 +244,13 @@ MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数
 两层：中英双语自然语料随机抽取；**每个账号派生稳定的分钟偏移**，
 避免所有账号在同一分钟一起探活（"全体同时发问"这个同时性比措辞更容易被识别）。
 
+语料分两个池，因为两条链路的诉求相反：
+
+- **探活计划**（sub2api 定时任务）用 30 条较长句子 —— 要模型真的把话答完才算成功
+- **模型探测**（`model_probe.py`，导入时判模型通不通）用 10 条短句中英各半 ——
+  请求体越小越不容易被限流。此前这里三处硬写 `"hi"`（常量、最容易被识别），
+  已改成随机抽取，仍保持 `max_tokens=1`
+
 ---
 
 ## 产出文件
@@ -265,7 +286,10 @@ MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数
 | 改了代码但 VPS 行为没变 | Docker 默认「本地没有才拉」，`up -d` 不会取新镜像。本仓库已设 `pull_policy: always`；手工 `docker compose pull cpa2sub2api` 兜底 |
 | `Permission denied: '/app/out/...'` | `out` 目录属主与容器 uid 不匹配。compose 已用 `user:` 覆盖为 root；或把宿主目录 `chown 1000:1000` |
 | `[Errno 21] Is a directory: '/app/config.yaml'` | 宿主上该路径是**目录**（Docker 在文件不存在时自动建的空目录）。放上真正的文件，或改用 `CPA_BASE_URL` 在线拉取 |
-| mihomo 容器一直 `unhealthy` | 官方镜像里**没有 python3 也没有 curl**。本仓库用纯 busybox 的 `healthcheck.sh`（教程 11 表第 7 项） |
+| mihomo 容器一直 `unhealthy` | 官方镜像里**没有 python3 也没有 curl**。本仓库用纯 busybox 的 `healthcheck.sh`（教程 11 表第 7 项）。现在 mihomo 由**本项目镜像**充当，里面装了 busybox+wget，脚本对 `nc`/`wget` 会做"命令探测 + 回退到 `busybox <applet>`" |
+| mihomo 日志说「缺少 HTTP 工具」 | 镜像基座里既没有 nc/wget 也没有 busybox。这不是出口故障 —— 按 Dockerfile 装上 `busybox` 与 `wget` 即可 |
+| 出口正常但上游全 502/524 | 节点其实挂了。手动跑 `docker compose exec mihomo sh /root/.config/mihomo/healthcheck.sh` 看它有没有把出口降级到 DIRECT（教程 5.6） |
+| `bootstrap-mihomo.sh` 抛 `TypeError: must be real number` | 订阅 URL 里的 `%2F`/`%3D` 被当成格式化占位符。本仓库已改成一次填完 + `json.dumps`；若你本地有旧副本，同步一次 |
 | `Pool overlaps with other one on this address space` | 网段冲突。在 `.env` 里设 `CPA2SUB2API_SUBNET=172.29.0.0/16` |
 
 ### 密钥排障速查（教程 8.9–8.13）
@@ -297,7 +321,7 @@ environment:
 python tests/test_fixes.py
 ```
 
-纯函数回归测试，不联网、不写 `out/`。覆盖：优先级全局唯一定序、
+纯函数回归测试，不联网、不写 `out/`。覆盖：优先级分组内唯一定序、
 同域名同桶、健康度重排与冷启动保护、模型就高分流、域名级冷却规则、
 探活时刻错开、低档模型过滤、连通性探测三分支、配置解析。
 
