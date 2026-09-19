@@ -1969,45 +1969,61 @@ MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数（6 小时）</code></pre>
   重试、降级、被丢弃的字段、原本被静默吞掉的异常。
 </p>
 
+<p>
+  整栈有两个 Python 服务都支持 DEBUG 落盘，<b>变量名不同</b>，写在执行根的 <code>.env</code>：
+</p>
+
 <div class="tw">
 <table>
-  <thead><tr><th>变量</th><th>默认</th><th>说明</th></tr></thead>
+  <thead><tr><th>变量</th><th>默认（当前设置）</th><th>作用服务</th><th>说明</th></tr></thead>
   <tbody>
-    <tr><td><code>LOG_LEVEL</code></td><td><code>INFO</code></td>
+    <tr><td><code>CPA2SUB_LOG_LEVEL</code></td><td><code>DEBUG</code></td>
+        <td>cpa2sub2api</td>
         <td><code>DEBUG</code> / <code>INFO</code> / <code>WARNING</code> /
-            <code>ERROR</code> / <code>CRITICAL</code>。
-            排查时设 <code>DEBUG</code></td></tr>
-    <tr><td><code>LOG_TO_FILE</code></td><td><code>false</code></td>
-        <td>写 <code>out/logs/run-&lt;时间戳&gt;.log</code>。
-            <b>排查时建议打开</b>：容器里 <code>docker logs</code>
-            通常只剩最后几十行</td></tr>
+            <code>ERROR</code>。DEBUG 把重试、降级、静默异常全打出来</td></tr>
+    <tr><td><code>CPA2SUB_LOG_TO_FILE</code></td><td><code>1</code></td>
+        <td>cpa2sub2api</td>
+        <td>写 <code>/app/out/logs/run-&lt;时间戳&gt;.log</code>（容器内，
+            通过 cpa2sub2api-out 卷或 docker cp 取出）</td></tr>
+    <tr><td><code>IMPORTER_LOG_LEVEL</code></td><td><code>DEBUG</code></td>
+        <td>upstream-importer</td>
+        <td>DEBUG 输出每次上游请求、探测、写回的完整细节</td></tr>
+    <tr><td><code>IMPORTER_LOG_TO_FILE</code></td><td><code>1</code></td>
+        <td>upstream-importer</td>
+        <td>写 <code>/app/logs/importer-&lt;时间戳&gt;.log</code>（容器内）</td></tr>
   </tbody>
 </table>
 </div>
 
 <div class="box tip">
-  <b>为什么落盘文件一律记 DEBUG</b>
-  即使你把 <code>LOG_LEVEL</code> 留在 <code>INFO</code>（为了屏幕干净），
-  文件里仍然有完整的 DEBUG 细节。这是刻意的：屏幕要能看清结论，
-  文件要能事后追查 —— 两者的诉求正好相反。
+  <b>文件永远记 DEBUG，屏幕级别独立</b>
+  文件 handler 固定 DEBUG 级别，与 <code>*_LOG_LEVEL</code> 设置无关。
+  即使屏幕设 INFO（输出干净），文件里仍有完整 DEBUG 记录。
+  屏幕要能看清结论，文件要能事后追查 —— 两者的诉求正好相反。
 </div>
 
 <div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 一次排查运行的完整姿势（三处都打开）
+<pre># 一次排查运行的完整姿势
 
-# 1) 在部署根的 .env 里加：
-LOG_LEVEL=DEBUG
-LOG_TO_FILE=1
+# 1) 在执行根 .env 里（v1.0.0 起已是默认值，无需修改）：
+CPA2SUB_LOG_LEVEL=DEBUG
+CPA2SUB_LOG_TO_FILE=1
+IMPORTER_LOG_LEVEL=DEBUG
+IMPORTER_LOG_TO_FILE=1
 
-# 2) 重跑（容器方式）
-docker compose run --rm cpa2sub2api
+# 2) 重启服务
+docker compose up -d cpa2sub2api upstream-importer
 
-# 3) 把日志和产物一起取出来
-docker compose cp cpa2sub2api:/app/out/logs ./logs-debug
-ls -la ./logs-debug
+# 3) 实时跟踪
+docker compose logs -f cpa2sub2api
+docker compose logs -f upstream-importer
 
-# 本机直接跑（不经容器）：
-LOG_LEVEL=DEBUG LOG_TO_FILE=1 python 一键导入.py</pre></div>
+# 4) 把落盘文件取出来（事后排查）
+docker compose cp cpa2sub2api:/app/out/logs ./logs-cpa/
+docker compose cp upstream-importer:/app/logs ./logs-importer/
+
+# 本机直接跑 cpa2sub2api（不经容器）：
+CPA2SUB_LOG_LEVEL=DEBUG CPA2SUB_LOG_TO_FILE=1 python 一键导入.py</pre></div>
 
 <p>日志里该看什么——按"最常问的四个问题"对照：</p>
 
