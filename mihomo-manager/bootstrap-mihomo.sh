@@ -37,13 +37,20 @@ die() { echo "[mihomo-init] ERROR: $*" >&2; exit 1; }
 mkdir -p "$DST_DIR/providers"
 
 # ---- healthcheck 每次都同步：它是脚本不是配置，没有"用户改过"的语义 ----
-# 用 .py 而非 .sh：两个候选镜像里都没有 curl（实测 2026-09-13），
-# 原 shell 版全篇依赖它，放进任一容器都会立刻失败。
-if [ -f "$SRC_DIR/mihomo/healthcheck.py" ]; then
-    cp "$SRC_DIR/mihomo/healthcheck.py" "$DST_DIR/healthcheck.py"
-    chmod +x "$DST_DIR/healthcheck.py"
-    log "已同步 healthcheck.py"
-fi
+# 两份都要同步，因为**两个容器的工具集不同**：
+#   · healthcheck.sh —— 给 mihomo 容器用。实测 metacubex/mihomo:latest 里
+#     没有 python3 / curl，只有 busybox 的 wget/nc/sed/awk/grep，
+#     所以健康检查只能写成纯 shell。
+#   · healthcheck.py —— 给本镜像（python:3.11-slim 派生，有 python3 无 curl）
+#     或其它 Python 环境用。
+# compose 里 mihomo 的 healthcheck 调的是 .sh 那一份。
+for _hc in healthcheck.sh healthcheck.py; do
+    if [ -f "$SRC_DIR/mihomo/$_hc" ]; then
+        cp "$SRC_DIR/mihomo/$_hc" "$DST_DIR/$_hc"
+        chmod +x "$DST_DIR/$_hc"
+        log "已同步 $_hc"
+    fi
+done
 
 # ---- 已有配置且未要求重建：保留 ----
 if [ -f "$CONFIG" ] && [ -z "${MIHOMO_FORCE_REBUILD:-}" ]; then

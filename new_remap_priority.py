@@ -67,7 +67,28 @@ def _fetch_runtime_accounts(sub2api_client):
     return out
 
 
-def remap_priority_smart(recs, sub2api_client, host_of_func, account_fingerprint_func, is_int_func, host_tier_map_func, host_key_func):
+def _acc_base_url(acc):
+    """账号记录里的上游地址。
+
+    list_accounts 返回的是 DTO，base_url 在 credentials 里；
+    但也见过被提到顶层的形式（和 host_of 一样两种都认）。
+    """
+    if not isinstance(acc, dict):
+        return ""
+    creds = acc.get("credentials")
+    if isinstance(creds, dict):
+        for k in ("base_url", "api_base_url", "base-url"):
+            v = creds.get(k)
+            if v:
+                return str(v)
+    for k in ("base_url", "api_base_url", "base-url"):
+        v = acc.get(k)
+        if v:
+            return str(v)
+    return ""
+
+
+def remap_priority_smart(recs, sub2api_client, host_of_func, account_fingerprint_func, is_int_func, host_tier_map_func, host_key_func, name_to_hostkey=None):
     """基于 sub2api 实际运行状态的智能优先级分配。
 
     Args:
@@ -78,6 +99,7 @@ def remap_priority_smart(recs, sub2api_client, host_of_func, account_fingerprint
         is_int_func: _is_int() 函数引用
         host_tier_map_func: _host_tier_map() 函数引用
         host_key_func: _host_key() 函数引用
+        name_to_hostkey: {账号名: (渠道, 域名)}。**必须传**，见下面的键口径说明。
 
     Returns:
         bucket_of: 优先级映射字典
@@ -94,24 +116,44 @@ def remap_priority_smart(recs, sub2api_client, host_of_func, account_fingerprint
         print(f"警告：无法获取 sub2api 运行状态，回退到原始逻辑: {e}")
         return remap_priority_legacy(recs, host_of_func, account_fingerprint_func, is_int_func, host_tier_map_func, host_key_func)
 
-    # 第二步：按 (platform, domain) 聚合统计
+    # 第二步：按 (渠道, 域名) 聚合统计
+    #
+    # 键的口径必须与调用方 _host_key(r) 完全一致（(渠道, 域名) 元组）。
+    #
+    # 以前这里用的是字符串 f'{platform}:{domain}'，而调用方拿 (group, host)
+    # 元组去查 —— 两套命名空间没有交集（一边是 "openai:xxx.com"，
+    # 一边是 ("OpenAI", "xxx.com")），health_scores.get(k, 0) 恒取默认值 0。
+    # 后果：**所有域名的健康分都是 0**，全被分到同一档，智能优先级退化成
+    # "按渠道名+域名字典序排"，与健康度毫无关系。
+    # 之所以一直没被发现，是因为 do_import 阶段还有一次
+    # health_rerank_priority 会覆盖 new_priority，把生成阶段这个错误盖住了。
+    #
+    # 账号列表里的 group 是**名称**还是 id 不确定（接口两种都可能返回），
+    # 所以不靠 group 去猜，改用账号名反查：账号名由 assign_names 生成，
+    # 与 recs 里的 name 一一对应，name_to_hostkey 就是这张对照表。
     runtime_stats = {}
     for acc in accounts:
-        platform = acc.get('platform', '')
-        creds = acc.get('credentials', {})
-        base_url = creds.get('base_url', '') if isinstance(creds, dict) else ''
+        base_url = _acc_base_url(acc)
 
         if not base_url:
             continue
 
-        # 提取域名
+        # 域名
         try:
             parsed = urlparse(base_url)
             domain = parsed.netloc if parsed.netloc else base_url.replace('https://', '').replace('http://', '').split('/')[0]
-        except:
+        except Exception:
             domain = base_url.replace('https://', '').replace('http://', '').split('/')[0]
 
-        key = f'{platform}:{domain}'
+        key = None
+        if name_to_hostkey:
+            key = name_to_hostkey.get(str(acc.get('name') or ''))
+        if key is None:
+            # 名对不上（用户改名、或账号不是本工具建的）时，退化成
+            # "同域名的所有渠道合并统计"：口径偏粗，但**不会像以前那样
+            # 恒为 0** —— 一个已知偏差远好过一个静默失效。
+            key = ('', domain)
+
         if key not in runtime_stats:
             runtime_stats[key] = {'total': 0, 'active': 0, 'error': 0, 'schedulable': 0, 'not_schedulable': 0}
 
