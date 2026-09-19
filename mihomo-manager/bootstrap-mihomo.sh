@@ -1,5 +1,5 @@
 #!/bin/sh
-# mihomo 配置自举 —— 由 upstream-importer 镜像作为 init 容器执行
+# mihomo 配置自举 —— 由**本项目镜像**（cpa2sub2api 或 upstream-importer）作为 init 容器执行
 #
 # 为什么需要这个脚本：
 #   部署方式是"VPS 只拉镜像，宿主不预置任何文件"。而 mihomo 官方镜像基于
@@ -10,13 +10,15 @@
 #   compose 里的顺序由 depends_on + service_completed_successfully 保证：
 #     mihomo-init（本脚本，跑完即退）-> mihomo（长驻）
 #
-# 幂等：卷里已有 config.yaml 就不覆盖，只补缺失的 healthcheck.py。
+# 幂等：卷里已有 config.yaml 就不覆盖，只补 healthcheck 与地理数据。
 #   想强制重建：设 MIHOMO_FORCE_REBUILD=1，或直接删掉卷里的 config.yaml。
-#   不默认覆盖是因为 probe-upstreams.py --apply 会把探测结果写进 AUTO 组的
-#   filter，容器重启就冲掉那些结果等于让探测白跑。
+#   不默认覆盖是因为探测脚本会把结果写进 AUTO 组的 filter，
+#   容器重启就冲掉那些结果等于让探测白跑。
 #
 # 环境变量：
 #   MIHOMO_TARGET_DIR      物化目标目录（默认 /mihomo-config，即共享卷挂载点）
+#   MIHOMO_SRC_DIR         镜像内 mihomo-manager 所在目录（默认 /app/mihomo-manager）
+#   MIHOMO_GEO_SRC_DIR     镜像内地理数据所在目录（默认 /usr/local/share/mihomo）
 #   MIHOMO_SECRET          RESTful API 鉴权密钥；留空则不设鉴权并告警
 #   MIHOMO_SUBSCRIPTIONS   订阅清单，多行或分号分隔的 `名称=URL`
 #   MIHOMO_SUB_<名称>      单个订阅的 URL（与上面二选一，大写名称）
@@ -52,6 +54,32 @@ for _hc in healthcheck.sh healthcheck.py; do
     fi
 done
 
+# ---- 地理数据也每次同步 ----
+#
+# 为什么必须拷：配置里所有 GEOIP/GEOSITE 规则都要这两份数据，缺了 mihomo
+# 启动会报 "geoip.dat not found"，并把每条 GEOIP 规则静默当成不匹配 ——
+# 表现是"规则看起来在，实际全走 MATCH 兜底"，很难查。
+#
+# 为什么卷里没有：本镜像（或 importer 镜像）把它放在
+# /usr/local/share/mihomo/，而 mihomo 的 -d 指向挂载卷
+# /root/.config/mihomo —— 卷挂上去会把镜像里那份遮掉，所以每次启动都补。
+#
+# metadb 是新版 mihomo 的默认 geoip 格式（geoip.dat 是老格式），两份都拷，
+# 由配置文件里 geoip 相关字段决定用哪个。
+GEO_SRC="${MIHOMO_GEO_SRC_DIR:-/usr/local/share/mihomo}"
+_geo_copied=0
+for _geo in geoip.dat geosite.dat geoip.metadb; do
+    if [ -f "$GEO_SRC/$_geo" ]; then
+        cp "$GEO_SRC/$_geo" "$DST_DIR/$_geo"
+        _geo_copied=$((_geo_copied + 1))
+    fi
+done
+if [ "$_geo_copied" -gt 0 ]; then
+    log "已同步地理数据 $_geo_copied 份"
+else
+    log "! 未找到地理数据（$GEO_SRC），GEOIP/GEOSITE 规则会全部不匹配"
+fi
+
 # ---- 已有配置且未要求重建：保留 ----
 if [ -f "$CONFIG" ] && [ -z "${MIHOMO_FORCE_REBUILD:-}" ]; then
     log "配置已存在，保留不覆盖（要重建设 MIHOMO_FORCE_REBUILD=1）"
@@ -73,7 +101,7 @@ fi
 #   MIHOMO_SUBSCRIPTIONS="wog=https://a;wogb=https://b"  （分号或换行分隔）
 #   MIHOMO_SUB_WOG=... / MIHOMO_SUB_WOGB=...             （每个订阅一个变量）
 python3 - "$TEMPLATE" "$CONFIG" <<'PY'
-import io, os, re, sys
+import io, json, os, re, sys
 
 tpl, out = sys.argv[1], sys.argv[2]
 with io.open(tpl, encoding="utf-8") as f:
@@ -122,10 +150,28 @@ text = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", expand, text)
 # 模板里预置的是 wog/wogb 两个示例。用户给了别的订阅名时，这三处都要跟着变，
 # 否则生成的配置引用一堆不存在的 provider，mihomo 启动即报错。
 if subs:
-    def hc_block(url):
+    # name 与 url **一次填完**，不再分两段（2026-09-16 从 importer 侧同步过来）。
+    #
+    # 原来的写法是两段式：这里先填 url、留一个字面 "%s" 给 name，调用方再
+    # `hc_block(url) % name` 填第二次。于是 url 自己带的百分号会在第二次
+    # 格式化时被当成格式符 ——
+    #
+    #   url = "https://x.example/sub?t=a%2Fb"
+    #     → 第二次 % 把 "%2F" 读成「宽度 2 的 f 转换」
+    #     → TypeError: must be real number, not str
+    #
+    # 而 `%2F` / `%3D` / `%3A` 在订阅链接里是常态（路径与 token 都要
+    # percent-encode）。崩溃点在 init 容器里，表现是它非零退出、
+    # `service_completed_successfully` 依赖不满足 —— **整个代理永不启动**。
+    # 日志里只有一行 TypeError，与「订阅写错了」长得一样。
+    # 实测 2026-09-19：本仓库这一份当时确实还是旧写法，已改成一次填完。
+    #
+    # 顺带把 url 从裸插值改成 json.dumps：YAML 的双引号串与 JSON 字符串
+    # 转义规则一致，这样 url 里真的出现引号或反斜杠时也不会破坏结构。
+    def hc_block(name, url):
         return (
             '    type: http\n'
-            '    url: "%s"\n'
+            '    url: %s\n'
             '    path: ./providers/%s.yaml\n'
             '    interval: %s\n'
             '    health-check:\n'
@@ -133,14 +179,15 @@ if subs:
             '      url: "https://www.gstatic.com/generate_204"\n'
             '      interval: %s\n'
             '      lazy: false\n'
-            % (url, "%s", os.environ.get("MIHOMO_PROVIDER_INTERVAL", "21600"),
+            % (json.dumps(url, ensure_ascii=False), name,
+               os.environ.get("MIHOMO_PROVIDER_INTERVAL", "21600"),
                os.environ.get("MIHOMO_HC_INTERVAL", "300"))
         )
 
     lines = ["proxy-providers:"]
     for name, url in subs:
         lines.append("  %s:" % name)
-        lines.append(hc_block(url) % name)
+        lines.append(hc_block(name, url))
     providers_block = "\n".join(lines).rstrip("\n") + "\n"
 
     # 替换整个 proxy-providers 段（到下一个顶级键为止）

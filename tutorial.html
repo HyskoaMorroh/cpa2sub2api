@@ -171,9 +171,12 @@
     <li><a href="#s3">Docker 部署</a></li>
     <li><a href="#s4">配置文件逐项说明</a></li>
     <li><a href="#s5">代理（mihomo）</a></li>
+    <li><a href="#s5-5">代理本体：同镜像起两个容器</a></li>
+    <li><a href="#s5-6">出口真的废了会自动降级</a></li>
     <li><a href="#s6">执行导入</a></li>
     <li><a href="#s7">工作原理</a></li>
     <li><a href="#s8">故障排查</a></li>
+    <li><a href="#s8-0">先把日志打开</a></li>
     <li><a href="#s9">附录：环境变量表</a></li>
     <li><a href="#s10">站方只认特定客户端：怎么让导入后的路由等价于直连</a></li>
     <li><a href="#s11">VPS 部署验收清单</a></li>
@@ -295,7 +298,7 @@
   </div>
   <div class="card">
     <h4>健康度重排 <span class="bd bd-new">已修</span></h4>
-    <p>按 sub2api 实测的可调度率 60% + 活跃率 40% 重排优先级，桶号全局唯一。</p>
+    <p>按 sub2api 实测的可调度率 60% + 活跃率 40% 重排优先级，分组内桶号唯一。</p>
   </div>
   <div class="card">
     <h4>模型就高原则 <span class="bd bd-fix">已修</span></h4>
@@ -516,12 +519,27 @@ openai-compatibility:
       - name: gpt-6
         alias: gpt-6</pre></div>
 
+<p>
+  本项目镜像<b>自带 mihomo</b>（代理内核 + 地理数据都打进镜像了）。所以代理不需要
+  额外的镜像、也不需要宿主机放任何 mihomo 文件 —— 同一个镜像起两个容器就够了：
+  一个跑 <code>bootstrap-mihomo.sh</code> 把配置物化进共享卷，一个跑
+  <code>mihomo</code> 本体。
+</p>
+
+<div class="box tip">
+  <b>为什么不直接用 mihomo 官方镜像</b>
+  它基于 scratch：没有 shell、没有 python，展不开
+  <code>config.template.yaml</code>（要填订阅 URL 与 secret），连 bootstrap 脚本都跑不起来。
+  而部署约束是「VPS 只拉镜像 + 只上传三个配置文件」，宿主机上不能预置配置 ——
+  所以由本镜像兼任 init 与代理两个角色。
+  实测该二进制是 Go 静态编译（不 link musl 运行库），搬到 Debian 基座上照跑：
+  <code>mihomo -v</code> → v1.19.31，<code>-t</code> 语法检查 rc=0。
+</div>
+
 <div class="step"><span class="sn">3</span><span class="st">接入 compose</span></div>
 
 <p>
-  本项目<b>不自带 mihomo</b>。如果你的栈里已经有 mihomo（比如由
-  upstream-importer 的 <code>mihomo-init</code> 自举），就只加本项目这一个服务，
-  通过服务名复用代理：
+  本项目服务通过服务名复用同栈的 mihomo：
 </p>
 
 <div class="cw"><button class="cp" onclick="cp(this)">复制</button>
@@ -1142,6 +1160,160 @@ proxy-url: "http://mihomo:7890"</pre></div>
   —— 同一个站的其它 KEY 出口 IP 一样，拦不拦是同一个答案。
 </p>
 
+<h3 id="s5-5">5.5 代理本体：同镜像起两个容器</h3>
+
+<p>
+  本项目镜像里已经装了 mihomo 二进制与地理数据，所以 compose 里只需两个服务，
+  都用同一个镜像，靠 <code>entrypoint</code> 区分角色：
+</p>
+
+<div class="box tip">
+  <b>同一个 mihomo，两个项目都能用</b>
+  整栈上通常还跑着 <code>upstream-importer</code>，而<b>它的镜像里也打了同一份
+  mihomo</b>。实测两者的 mihomo 完全同源：二进制 md5 相同、<code>mihomo -v</code>
+  都是 <code>v1.19.31</code>、<code>healthcheck.sh</code> 与
+  <code>bootstrap-mihomo.sh</code> 的 md5 也相同、路径都是
+  <code>/usr/local/bin/mihomo</code>。
+  <b>所以代理服务用哪个镜像起都行</b>，所以这里写成了变量：
+  <div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>image: "${MIHOMO_IMAGE:-${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest}"</pre></div>
+  不设 <code>MIHOMO_IMAGE</code> 就用本项目镜像；想在整栈里改用 importer 的，
+  在部署根 <code>.env</code> 里设：
+  <div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>MIHOMO_IMAGE=swhesong/cpa-upstream-importer:latest</pre></div>
+  <b>两个服务（<code>mihomo</code> 与 <code>mihomo-init</code>）必须用同一个镜像</b> ——
+  它们是同一个能力的两半（前者物化配置进卷、后者读卷跑代理）。
+</div>
+
+<div class="tw">
+<table>
+  <thead><tr><th>消费方</th><th>怎么指向这个代理</th></tr></thead>
+  <tbody>
+    <tr><td><code>cli-proxy-api</code>（CPA 本体）</td>
+        <td>config.yaml 里 <code>proxy-url: "http://mihomo:7890"</code></td></tr>
+    <tr><td><code>cpa2sub2api</code>（本项目）</td>
+        <td><code>FALLBACK_PROXY=${FALLBACK_PROXY:-http://mihomo:7890}</code></td></tr>
+    <tr><td><code>upstream-importer</code></td>
+        <td><code>DRIFT_PROXY</code> / <code>MIHOMO_URL</code>，代码回落表也是
+            <code>http://mihomo:7890</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  三者都在 <code>default</code> 网络上，靠服务名 <code>mihomo</code> 直连容器 IP，
+  不经过宿主端口映射 —— 所以宿主端口冲突不影响它们。
+</p>
+
+<div class="box danger">
+  <b>宿主 7890 常被占</b>
+  本机若装着 Clash / Mihomo 客户端，它自己就占着 7890，<code>up -d</code> 会直接
+  失败（<code>bind: Only one usage of each socket address</code>）。
+  宿主侧端口是<b>可覆盖</b>的，在 <code>.env</code> 里改：
+  <div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># 宿主端口冲突时改这两个（容器内端口不能动）
+MIHOMO_HTTP_PORT=7890
+MIHOMO_API_PORT=9090</pre></div>
+  容器内端口必须保持 7890/9090 —— 它要与 config.yaml 里的
+  <code>proxy-url: http://mihomo:7890</code> 以及 <code>healthcheck.sh</code>
+  的探测端口一致。改宿主侧即可，容器间通信走服务名，不受影响。
+</div>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre>  mihomo-init:              # 一次性：把配置物化进共享卷
+    image: "${MIHOMO_IMAGE:-${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest}"
+    pull_policy: always
+    restart: "no"
+    user: "0:0"             # 卷首次由 Docker 以 root 建出，uid 1000 写不进去
+    entrypoint: ["/bin/sh", "/app/mihomo-manager/bootstrap-mihomo.sh"]
+    environment:
+      MIHOMO_SUB_WOG:  "${MIHOMO_SUB_WOG}"
+      MIHOMO_SUB_WOGB: "${MIHOMO_SUB_WOGB}"
+      MIHOMO_SECRET:   "${MIHOMO_SECRET:-}"
+      MIHOMO_TARGET_DIR: "/root/.config/mihomo"
+    volumes:
+      - mihomo-data:/root/.config/mihomo:Z
+
+  mihomo:                   # 长驻：同一个镜像，换成 mihomo 本体
+    image: "${MIHOMO_IMAGE:-${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest}"
+    pull_policy: always
+    container_name: mihomo
+    restart: unless-stopped
+    user: "0:0"             # 要往配置目录写 cache.db
+    entrypoint: ["mihomo"]  # 两个镜像都在 /usr/local/bin，写名字即可
+    command: ["-d", "/root/.config/mihomo"]
+    depends_on:
+      mihomo-init: { condition: service_completed_successfully }
+    ports:
+      # 宿主侧可覆盖（本机已有代理客户端时会占着 7890）；
+      # 容器内端口不能动 —— 要与 proxy-url 和 healthcheck 一致
+      - "${MIHOMO_BIND:-127.0.0.1}:${MIHOMO_HTTP_PORT:-7890}:7890"
+      - "${MIHOMO_BIND:-127.0.0.1}:${MIHOMO_API_PORT:-9090}:9090"
+    volumes:
+      - mihomo-data:/root/.config/mihomo:Z
+    healthcheck:
+      # 见 5.6：脚本不只会判活，还会把出口降级到 DIRECT
+      test: ["CMD", "sh", "/root/.config/mihomo/healthcheck.sh"]
+      interval: 60s
+      timeout: 40s
+      retries: 3
+      start_period: 40s</pre></div>
+
+<div class="box tip">
+  <b>三个容易踩的点</b>
+  <ul>
+    <li>两个服务必须挂<b>同一个卷</b>，否则 init 写的配置本体读不到；</li>
+    <li>两个服务都写 <code>user: "0:0"</code> —— 命名卷首次由 Docker 以 root 建出，
+        uid 1000 往里写会 <code>Permission denied</code>；</li>
+    <li>卷要用 <code>:Z</code>，CentOS 9 默认 SELinux enforcing，不加标签容器读不到。</li>
+  </ul>
+</div>
+
+<h3 id="s5-6">5.6 出口真的废了会自动降级 <span class="bd bd-hot">容易忽略</span></h3>
+
+<p>
+  机场节点全挂时，mihomo <b>进程本身活得好好的</b>：端口在听、API 有响应、
+  AUTO 组里还列着几十个节点名字。日志里看不出任何异常，但所有配了
+  <code>proxy-url</code> 的上游都会走进这个没有出口的代理里排队到超时 ——
+  表面现象是上游 502/524。
+</p>
+
+<p>
+  光把容器标成 <code>unhealthy</code> 救不回来：<code>restart: unless-stopped</code>
+  <b>不会</b>因为 unhealthy 重启容器，而且健康检查本身改不了选路。
+  所以健康检查调的是 <code>healthcheck.sh</code>，它会：
+</p>
+
+<ol>
+  <li>查 9090 API 是否响应（没响应 = 进程坏了，退出 1 让 docker 重启）；</li>
+  <li>清点 AUTO 组节点数（只用于日志，节点数不是可用性判据）；</li>
+  <li>真正经 7890 出一次网。通 → 若当前在 DIRECT 就切回 AUTO；</li>
+  <li>不通 → 调 <code>PUT /proxies/PROXY {"name":"DIRECT"}</code> 降级，
+      再试直连；直连通就保持健康（降级不算失败），都不通才报 unhealthy。</li>
+</ol>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># 手动跑一次（排查用；它真的会切组）
+docker compose exec mihomo sh /root/.config/mihomo/healthcheck.sh; echo rc=$?
+
+# 正常时的两种输出：
+#   [healthcheck] 出口已恢复（AUTO 组 59 个节点），切回 AUTO
+#   [healthcheck] 代理出口不可用（AUTO 节点 59 个，探测 ... 失败），降级 DIRECT
+#   [healthcheck] 直连可用，容器保持健康（流量已走 DIRECT）
+
+# 看 compose 记下的最近几次检查结果
+docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output}}{{"\n"}}{{end}}' mihomo</pre></div>
+
+<div class="danger">
+  <b>脚本要在两种基座里都能跑</b>
+  mihomo 官方镜像是 busybox，本项目镜像是 Debian slim —— 两者可用的命令不同。
+  Debian 里装了 busybox 也<b>不会</b>自动出现 <code>/usr/bin/nc</code>
+  （实测：have busybox，MISS nc），而切换出口是 PUT，busybox 的 wget 只能发 GET/POST，
+  必须有 nc。所以脚本对 <code>nc</code> / <code>wget</code> 各做一次"命令探测 +
+  回退到 <code>busybox &lt;applet&gt;</code>"，同一份脚本两边通用。
+  两个工具都找不到时它会直接说"本镜像缺工具"，不会伪装成出口故障。
+</div>
+
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s6">六、执行导入</h2>
 
@@ -1279,7 +1451,7 @@ proxy-url: "http://mihomo:7890"</pre></div>
 
   <line x1="40" y1="162" x2="860" y2="162" stroke="#1E2636" stroke-width="2"/>
   <text x="450" y="184" fill="#FB7185" font-size="11.5" text-anchor="middle">
-    ⚠ 桶号必须全局唯一。若两个域名撞进同一桶，它们会被混着轮循，
+    ⚠ 同一分组内桶号必须唯一。若两个域名撞进同一桶，它们会被混着轮循，
   </text>
   <text x="450" y="204" fill="#FB7185" font-size="11.5" text-anchor="middle">
     「整桶挂掉才降级」的容灾特性就失效了
@@ -1320,7 +1492,7 @@ proxy-url: "http://mihomo:7890"</pre></div>
     按健康分降序分配桶号（分高 → 桶号小 → 优先调度）
   </text>
   <text x="665" y="87" fill="#9CA3AF" font-size="10.5" text-anchor="middle">
-    桶号全局唯一 · 步长 10
+    分组内唯一 · 步长 10 · 每组各自从 10 起
   </text>
 
   <!-- load_factor -->
@@ -1765,14 +1937,125 @@ MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数（6 小时）</code></pre>
 <p>两层措施：</p>
 <ul>
   <li><b>语料</b>：中英双语、覆盖多种日常话题，随机抽取。不用
-      「test」「你好」「你是什么模型」这类教科书特征。</li>
+      「test」「你好」「你是什么模型」这类教科书特征。
+      <span class="bd bd-new">2026-09-19 补齐</span>
+      探活计划那条链路本来就有 30 条语料池，但<b>探测链路</b>
+      （<code>model_probe.py</code>，导入时用来判模型通不通）三处都硬写着
+      <code>"hi"</code> —— 那是个常量，站方按「请求体恒为 hi 且
+      <code>max_tokens=1</code>」就能一眼认出探活流量，比措辞本身更好认。
+      现已改成与探活同类的短句池（中英各 5 条）随机抽取，
+      仍保持 <code>max_tokens=1</code> 的极低消耗。</li>
   <li><b>时刻错开</b> <span class="bd bd-new">新增</span>：
       给每个账号派生一个稳定的分钟偏移（用账号名哈希，保证同一账号每次
       得到同一偏移、不同账号之间散开）。实测 100 个账号会散到 29/30 种可能的时刻。</li>
 </ul>
 
+<div class="box tip">
+  <b>两条链路的语料为什么是两个池</b>
+  探活计划（sub2api 定时任务）用的是 30 条较长句子，因为它要模型
+  <b>真的把话答完</b>才算成功；探测链路只判「这一代模型在这个站上认不认」，
+  请求体越小越不容易被限流，所以用短句。两者都避开教科书特征词，
+  但长度诉求相反 —— 合成一个池反而两头不讨好。
+</div>
+
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s8">八、故障排查</h2>
+
+<h3 id="s8-0">8.0 先把日志打开（需求第 8 条）</h3>
+
+<p>
+  遇到问题时，<b>第一件事是打开 DEBUG 日志和落盘</b>。默认级别下你看到的是
+  「阶段进度 + 统计 + 结论」，而故障现场在<b>那些没有打印出来的分支里</b> ——
+  重试、降级、被丢弃的字段、原本被静默吞掉的异常。
+</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>变量</th><th>默认</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>LOG_LEVEL</code></td><td><code>INFO</code></td>
+        <td><code>DEBUG</code> / <code>INFO</code> / <code>WARNING</code> /
+            <code>ERROR</code> / <code>CRITICAL</code>。
+            排查时设 <code>DEBUG</code></td></tr>
+    <tr><td><code>LOG_TO_FILE</code></td><td><code>false</code></td>
+        <td>写 <code>out/logs/run-&lt;时间戳&gt;.log</code>。
+            <b>排查时建议打开</b>：容器里 <code>docker logs</code>
+            通常只剩最后几十行</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="box tip">
+  <b>为什么落盘文件一律记 DEBUG</b>
+  即使你把 <code>LOG_LEVEL</code> 留在 <code>INFO</code>（为了屏幕干净），
+  文件里仍然有完整的 DEBUG 细节。这是刻意的：屏幕要能看清结论，
+  文件要能事后追查 —— 两者的诉求正好相反。
+</div>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># 一次排查运行的完整姿势（三处都打开）
+
+# 1) 在部署根的 .env 里加：
+LOG_LEVEL=DEBUG
+LOG_TO_FILE=1
+
+# 2) 重跑（容器方式）
+docker compose run --rm cpa2sub2api
+
+# 3) 把日志和产物一起取出来
+docker compose cp cpa2sub2api:/app/out/logs ./logs-debug
+ls -la ./logs-debug
+
+# 本机直接跑（不经容器）：
+LOG_LEVEL=DEBUG LOG_TO_FILE=1 python 一键导入.py</pre></div>
+
+<p>日志里该看什么——按"最常问的四个问题"对照：</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>你想知道</th><th>日志里搜什么</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>代理兜底到底试没试？</td>
+      <td><code>代理兜底失败</code> / <code>[代理兜底]</code></td>
+      <td>直连失败后是否走过代理、代理那一步为什么没成。
+          以前这一步<b>完全静默</b>，日志看起来像根本没兜底</td>
+    </tr>
+    <tr>
+      <td>探活计划为什么没挂上？</td>
+      <td><code>取账号 … 的探活计划失败</code></td>
+      <td>区分「查不到」与「查到了但没成功」——
+          后者才会启用停用账号，前者不会</td>
+    </tr>
+    <tr>
+      <td>为什么账号没走代理（直连了）？</td>
+      <td><code>重查代理列表也失败</code> / <code>相关账号将直连</code></td>
+      <td>建代理撞重名后重查失败 → 拿不到 <code>proxy_id</code> →
+          静默直连。<b>这正是「前端 mihomo 链接失败」的一种成因</b></td>
+    </tr>
+    <tr>
+      <td>我的配置到底生效了没有？</td>
+      <td><code>不是整数，已忽略</code> / <code>不是有效级别</code> /
+          <code>读取 设置.json 失败</code></td>
+      <td>写错类型的变量会被明确点名并说出退回了什么，
+          而不是默默沿用默认值</td>
+    </tr>
+    <tr>
+      <td>上游常量跟上版本了吗？</td>
+      <td><code>漂移诊断失败</code></td>
+      <td>出现即表示<b>没能</b>检查 SECTION_MAP 等是否与上游一致
+          （以前这种失败会被当成「检查通过」）</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="box danger">
+  <b>要被支持的两种失败必须能分开</b>
+  日志改造的一个原则：<b>「没做成」和「没检查」不能长得一样</b>。
+  以前的 <code>except: pass</code> 让两者都表现为"安静地过去了"，
+  运维据此只能怀疑自己。现在每一处静默降级都留下了带异常类型与位置的记录。
+</div>
 
 <h3>8.1 sub2api 的 IP 管理页显示「链接失败」</h3>
 
@@ -1928,7 +2211,9 @@ MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数（6 小时）</code></pre>
       （同一站的所有 KEY 共用同一个池子），不是单个 KEY 的毛病。
       本工具给这类错误码下发更长（180 分钟）、关键词更特异的冷却规则，
       避免在同一池子里逐个 KEY 空撞。</li>
-  <li><b>全局唯一桶号</b>：保证「整桶挂掉才降级」真的能降级。</li>
+  <li><b>分组内唯一桶号</b>：保证「整桶挂掉才降级」真的能降级。
+      编号范围是分组内 —— sub2api 选号按 <code>group_id</code> 取候选，
+      跨分组的桶号之间没有可比性，所以各组都从 <code>10</code> 起。</li>
   <li><b>桶内冗余</b>：同域名多 KEY 同桶轮循，一个被冷却后请求轮到同桶其它 KEY。</li>
 </ol>
 
@@ -2529,8 +2814,10 @@ FROM accounts;"</pre></div>
 <tr>
   <td>7</td>
   <td>mihomo 出口真的通</td>
-  <td><code>docker compose exec mihomo sh -c 'wget -q -Y off -T 5 -O /dev/null http://www.gstatic.com/generate_204 &amp;&amp; echo 直连OK'</code></td>
-  <td>容器报 <code>unhealthy</code>；所有上游 502/524</td>
+  <td><code>docker compose exec mihomo sh /root/.config/mihomo/healthcheck.sh; echo rc=$?</code><br>
+      看输出里是「出口已恢复」还是「降级 DIRECT」</td>
+  <td>容器报 <code>unhealthy</code>；所有上游 502/524；<br>
+      <code>sh: can't open …/healthcheck.sh</code> 说明 mihomo-init 没自举成功</td>
 </tr>
 </tbody>
 </table>

@@ -42,6 +42,12 @@ services:
     # 本机 Windows + Docker Desktop 走 9p/gRPC-FUSE，bind mount 的权限位
     # 不生效（表现为谁都能写），所以本地一直是绿的，只有 VPS 上才暴露。
     # 想按 uid 1000 跑就先把宿主目录 chown 1000:1000，然后删掉这一行。
+    #
+    # 2026-09-19 补：改成 root 之后曾经**直接崩** —— 镜像里的依赖是
+    # `pip install --user` 装进 /home/app/.local 的，而 --user 目录按 HOME
+    # 解析，root 的 HOME 是 /root，于是 `import yaml` 报 ModuleNotFoundError。
+    # 已在 Dockerfile 里用 `ENV PYTHONUSERBASE=/home/app/.local` 修掉（该设置
+    # 与 HOME 无关，root 与 app 都生效）。改这一行前先确认那个 ENV 还在。
     user: "${IMPORTER_UID:-0}:${IMPORTER_GID:-0}"
 
     env_file:
@@ -167,10 +173,25 @@ services:
   # Mihomo 代理服务
   # ====================================
   mihomo:
-    image: metacubex/mihomo:latest
+    # 同一个本项目镜像：里面装了 mihomo 二进制与地理数据
+    # （Dockerfile 里 `COPY --from=mihomo /mihomo /usr/local/bin/mihomo`）。
+    # 这里只是把 entrypoint 换成 mihomo 本体，配置由 mihomo-init 写进共享卷。
+    #
+    # 不再用 metacubex/mihomo:latest 的原因：那样部署要拉两个镜像，
+    # 而且 healthcheck 脚本得同时兼容两种基座。同镜像两角色还有一个好处 ——
+    # 版本只有一处，不会出现"内核 v1.19.31、脚本按 v1.19.20 的 API 写"这类漂移。
+    image: ${DOCKERHUB_USERNAME:?请在 .env 里设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: mihomo
     profiles: ["mihomo"]
     pull_policy: always
+
+    # root：要往配置目录写 cache.db，而命名卷首次由 Docker 以 root 建出
+    user: "0:0"
+    entrypoint: ["mihomo"]
+    command: ["-d", "/root/.config/mihomo"]
 
     ports:
       # 只绑回环，仅用于宿主机 curl 验证。
@@ -205,19 +226,23 @@ services:
       mihomo-init:
         condition: service_completed_successfully
 
-    # 健康检查用**纯 busybox shell**，不用 curl 也不用 python3。
+    # 健康检查调 healthcheck.sh —— 它不只判活，还会改选路。
     #
-    # 实测（2026-09-19，metacubex/mihomo:latest）镜像里的工具：
-    #   HAVE wget / nc / sed / awk / grep / date
-    #   MISS curl / python / python3
-    # 之前写的是 `python3 healthcheck.py` —— 该镜像里没有 python3，
-    # 这个检查恒定报 "python3: not found"，容器永远是 unhealthy。
-    # 更早的版本用 curl，同样不存在。
-    # 所以改成 sh + healthcheck.sh（只用 busybox 工具，见其头部说明）。
+    # 为什么不能只判活：机场节点全挂时 mihomo 进程活得很好（端口在听、
+    # API 有响应、AUTO 组里还列着节点名），日志里看不出异常，但所有配了
+    # proxy-url 的上游都会走进这个没有出口的代理里排队到超时。
+    # 脚本会调 9090 的 `PUT /proxies/PROXY {"name":"DIRECT"}` 把出口降级
+    # （裸连总比全挂好），恢复后自动切回 AUTO。
+    #
+    # 脚本要在两种基座里都能跑：busybox（metacubex/mihomo）与本镜像的
+    # Debian slim。Debian 装了 busybox 也**不会**自动有 /usr/bin/nc
+    # （实测：have busybox，MISS nc），所以脚本对 nc/wget 做了
+    # "命令探测 + 回退到 `busybox <applet>`"。本镜像的 Dockerfile 因此
+    # 额外装了 busybox 与 wget 两个包（合计约 1.3 MB）。
     healthcheck:
       test: ["CMD", "sh", "/root/.config/mihomo/healthcheck.sh"]
       interval: 60s
-      timeout: 20s
+      timeout: 40s
       retries: 2
       start_period: 30s
 

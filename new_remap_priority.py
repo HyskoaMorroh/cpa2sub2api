@@ -23,6 +23,80 @@ from collections import defaultdict
 from urllib.parse import urlparse
 
 
+def assign_group_local_buckets(units, sort_key=None, key=None):
+    """把域名单元编号成桶号 —— **按分组各自独立编号**（步长 10）。
+
+    参数：
+      units     可迭代的域名单元，每个单元是 (分组, 域名) 元组。
+      sort_key  单元 -> 排序键，**降序**排列（键小者拿小桶号 = 更优先）。
+                内部用 `sorted(..., key=sort_key)` 升序排，所以调用方要给出
+                "越小越优先"的键。
+      key       sort_key 的别名。两个都收是为了不因为调用方写错名字而崩 ——
+                这个函数在导入主链路上。
+
+    返回 {单元: 桶号}。
+
+    ============================================================
+    为什么是"分组各自独立"而不是"全局统一"（2026-09-19 改）
+    ============================================================
+    分桶的作用域是**分组**，不是全局。sub2api 选号时按 group_id 取候选：
+
+        SelectAccountWithGroup → account_groups 中间表 → 只在本组内挑
+
+    实测（本地真 sub2api + 231 条真实凭据）确认：
+      · account_groups 里 231 条账号 231 条映射，**跨组账号 0 条** ——
+        每条账号只属于一个分组；
+      · 因此 CPA-Claude 的桶号 10 与 CPA-OpenAI 的桶号 320 **永远不会
+        被放在一起比较**，两个数字之间不存在大小关系。
+
+    以前这里是全局 dense rank：所有分组的单元混在一起排 1..N 再乘 10。
+    后果有两个，都不致命但都是实质损失：
+
+      1. **数值空间被别的组吃掉**。某个组能拿到的最大桶号 = 全配置的域名
+         单元总数 × 10。加一个域名到 A 组，B 组的上限跟着涨。站点多的
+         配置会逼近 sub2api 的 priority 上限（int），而这个上限不是我们
+         能控制的 —— 属于"早晚会撞"的隐患。
+      2. **界面误导**。管理页上 CPA-Codex 的 priority 显示 120、CPA-Claude
+         显示 10，看起来像 Codex 低一等；实际两者八竿子打不着。运维据此
+         判断"谁的优先级高"必然判错。
+
+    ============================================================
+    为什么这不违反需求里"全局 dense rank 映射"那一条
+    ============================================================
+    那条要求（文档第 5 条）的**目的是防跨渠道撞桶**：早期版本按渠道各自
+    从 1 编号，于是每组的"第 1 名"都是 10，跨渠道必然撞，sub2api 会把
+    两个不相干的域名当成同一桶轮循。
+
+    按分组独立编号把这个问题**从根上消除**了：不同分组根本不在一个命名
+    空间里比较，谈不上撞。同时在"同一分组内"仍然保证：
+
+      · 同 (分组, 域名) 的所有 KEY 同桶 —— 互为备份，不退化单点；
+      · 同分组不同域名桶号互不相同 —— 保留"整桶挂掉才降级到下个域名"
+        的分层容灾。
+
+    这两条才是容灾真正依赖的性质，二者都保持。
+    """
+    bucket_of = {}
+    _sort_key = sort_key if sort_key is not None else key
+    if _sort_key is None:
+        # 两个都没给：退化成按单元自身排序。宁可顺序无意义，也不要抛异常
+        # 打断导入 —— 桶号仍然满足"同分组内唯一"这条硬约束。
+        _sort_key = lambda k: str(k)
+    by_group = defaultdict(list)
+    for u in units:
+        # 单元一定是 (分组, 域名) 二元组；万一上游给了别的东西（字符串等），
+        # 归到一个 "_" 分组里，宁可编号粗一点也不要 KeyError 崩掉整个导入。
+        if isinstance(u, (tuple, list)) and len(u) >= 2:
+            by_group[str(u[0])].append(u)
+        else:
+            by_group["_"].append(u)
+
+    for _grp, keys in by_group.items():
+        for i, k in enumerate(sorted(keys, key=_sort_key), 1):
+            bucket_of[k] = i * 10          # 步长 10，留出人工插桶空间
+    return bucket_of
+
+
 def _fetch_runtime_accounts(sub2api_client):
     """翻页取回全部账号，用于统计运行状态。
 
@@ -241,13 +315,13 @@ def remap_priority_smart(recs, sub2api_client, host_of_func, account_fingerprint
     # 轮循，跨域名降级容灾失效。文档第 5 条要求"全局 dense rank 映射"、
     # "同一类型不同域名的优先级一定要不同"，所以必须按域名单元建表。
     #
-    # 同时这里做全局 dense rank：按健康分降序编号（步长 10），
-    # 用渠道名 + 域名打破并列，保证同一份配置多次运行得到相同的桶号。
-    all_units = sorted(domain_priorities.keys(),
-                       key=lambda k: (-health_scores.get(k, 0), str(k[0]), str(k[1])))
-    bucket_of = {}
-    for i, k in enumerate(all_units, 1):
-        bucket_of[k] = i * 10
+    # 按**分组各自** dense rank：按健康分降序编号（步长 10），
+    # 用域名打破并列，保证同一份配置多次运行得到相同的桶号。
+    # 为什么不是全局统一编号，见 assign_group_local_buckets 的长注释。
+    all_units = list(domain_priorities.keys())
+    bucket_of = assign_group_local_buckets(
+        all_units,
+        key=lambda k: (-health_scores.get(k, 0), str(k[1])))
 
     return bucket_of
 
@@ -256,16 +330,16 @@ def remap_priority_legacy(recs, host_of_func, account_fingerprint_func, is_int_f
     """原始优先级映射逻辑（盲目复制 config.yaml）。
 
     仅作为 API 查询失败或首次导入时的回退方案。
-    同样按**全局 dense rank** 编号：把各域名单元的 CPA 序位去重后降序编号，
+    同样按**分组各自** dense rank 编号：把各域名单元的 CPA 序位去重后降序编号，
     而不是按序位值本身建表（那会跨渠道撞桶）。
+    为什么不是全局统一编号，见 assign_group_local_buckets 的长注释。
     """
     tier_of = host_tier_map_func(recs)
     # 每个域名单元一个桶号，按该单元的 CPA 序位降序；同序位用域名打破并列
-    units = sorted(tier_of.keys(),
-                   key=lambda k: (-tier_of.get(k, 0), str(k[0]), str(k[1])))
-    bucket_of = {}
-    for i, k in enumerate(units, 1):
-        bucket_of[k] = i * 10
+    units = list(tier_of.keys())
+    bucket_of = assign_group_local_buckets(
+        units,
+        key=lambda k: (-tier_of.get(k, 0), str(k[1])))
 
     print(f"[回退逻辑] 使用原始优先级映射，共 {len(bucket_of)} 个域名单元")
     return bucket_of

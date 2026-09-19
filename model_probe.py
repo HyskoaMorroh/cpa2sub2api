@@ -62,6 +62,33 @@ try:
 except ImportError:
     CONCURRENT_OK = False
 
+# 日志。本模块被 tool.py 导入，那边有完整的日志设施。
+#
+# **必须懒加载**：模块顶层 `import tool` 会在"先 import model_probe"的顺序下
+# 变成循环导入（tool 也 import model_probe）。实测当前两种导入顺序都能过，
+# 但那依赖 import 语句的书写顺序 —— 属于"今天能跑、改一行就炸"的隐式约束。
+# 所以这里延迟到第一次真要写日志时才去拿 tool.log_exc；
+# 拿不到（独立运行本模块）就退化成空实现，不因此崩掉。
+_log_exc_impl = None
+_log_exc_tried = False
+
+
+def _log_exc(what, exc, level="debug"):
+    global _log_exc_impl, _log_exc_tried
+    if not _log_exc_tried:
+        _log_exc_tried = True
+        try:
+            from tool import log_exc as _le
+            _log_exc_impl = _le
+        except Exception:
+            _log_exc_impl = None
+    if _log_exc_impl is not None:
+        try:
+            _log_exc_impl(what, exc, level)
+        except Exception:
+            pass
+    return None
+
 
 # 缓存有效期：6 小时。上游的模型上下架不会比这更频繁，
 # 而同一次运维会话里重跑多次是常态。
@@ -154,10 +181,43 @@ def _build_request(platform, base_url, api_key, model, headers=None):
     if headers:
         hdr.update({k: v for k, v in headers.items() if v})
 
+    # 探测语料（需求第 2 条⑷：规避站方的反测活监测）。
+    #
+    # 原来这里三处都硬写 `"hi"` —— 那是一个**常量**：同一批站点、同一轮探测、
+    # 每次都发完全一样的两个字符。站方只要按"请求体恒为 hi 且 max_tokens=1"
+    # 就能一眼认出探活流量，比措辞本身更容易被识别。
+    #
+    # 换成从池里随机抽，并与 tool.py 探活计划用的是**同一类**自然语料
+    # （中英双语、日常话题、都是完整的一句话，不是教科书特征词）。
+    # 仍然保持**极短**：探测只需验证链路，请求体越大越容易被限流；
+    # 而且这里要的是"能不能通"，不需要模型真的把话答完。
+    #
+    # 为什么不直接用 tool.py 里那个 30 条的池：那个池的句子偏长（打满
+    # max_tokens=1 会立刻截断，部分站方会因此报奇怪的错）。这里用一组
+    # **短句**，语义上仍是自然问题，长度上仍是 1 个 token 的活。
+    probe_prompts = (
+        # 英文（短句）
+        "Hi, how are you?",
+        "What's the weather like?",
+        "Give me a quick tip.",
+        "How do I center a div?",
+        "Name one good book.",
+        # 中文（短句）
+        "你好，今天天气如何？",
+        "帮我把这句话改短一点。",
+        "推荐一本入门书。",
+        "怎么提高工作效率？",
+        "解释一下什么是递归。",
+    )
+    # 用 random 而不是固定取值。注意**不**做全局 seed：每次进程启动的
+    # 种子不同，探测流量的措辞才会在多次运行之间也变化。
+    import random as _random
+    text = _random.choice(probe_prompts)
+
     if platform == "gemini":
         # Gemini 的 key 走 query string；版本段固定 v1beta（glAPIVersion）
         url = "%s/v1beta/models/%s:generateContent?key=%s" % (base, model, api_key)
-        body = {"contents": [{"parts": [{"text": "hi"}]}],
+        body = {"contents": [{"parts": [{"text": text}]}],
                 "generationConfig": {"maxOutputTokens": 1}}
         return "POST", url, hdr, body
 
@@ -166,7 +226,7 @@ def _build_request(platform, base_url, api_key, model, headers=None):
         hdr["anthropic-version"] = "2023-06-01"
         url = base + "/v1/messages"
         body = {"model": model, "max_tokens": 1,
-                "messages": [{"role": "user", "content": "hi"}]}
+                "messages": [{"role": "user", "content": text}]}
         return "POST", url, hdr, body
 
     # openai / codex。两段都用 chat/completions 而不是 codex 的 /responses：
@@ -176,7 +236,7 @@ def _build_request(platform, base_url, api_key, model, headers=None):
     hdr["Authorization"] = "Bearer " + api_key
     url = base + "/chat/completions"
     body = {"model": model, "max_tokens": 1,
-            "messages": [{"role": "user", "content": "hi"}]}
+            "messages": [{"role": "user", "content": text}]}
     return "POST", url, hdr, body
 
 
@@ -261,7 +321,10 @@ def load_cache(out_dir, ttl=DEFAULT_CACHE_TTL):
     try:
         with io.open(p, encoding="utf-8") as f:
             raw = json.load(f)
-    except Exception:
+    except Exception as ex:
+        # 缓存坏了就当没有（下次重探），但要说一声 —— 否则"命中缓存 0"
+        # 看起来像"缓存机制没生效"，实际是文件坏了，排查方向完全不同。
+        _log_exc("探测缓存 %s 读取失败，本次按无缓存处理" % os.path.basename(p), ex)
         return {}
     now = time.time()
     out = {}
@@ -282,8 +345,10 @@ def save_cache(out_dir, entries):
         with io.open(_cache_path(out_dir), "w", encoding="utf-8") as f:
             json.dump({"version": 1, "saved_at": time.time(),
                        "entries": entries}, f, ensure_ascii=False, indent=1)
-    except Exception:
-        pass
+    except Exception as ex:
+        # 写不进缓存不影响正确性，但**代价很大**：下一次运行要把全部单元
+        # 重探一遍（实测 49 个单元约 139 秒）。所以值得说一声。
+        _log_exc("探测缓存写入失败（下次运行会重探全部单元）", ex, level="warning")
 
 
 def cache_key(section, host, latest_gen, prev_gen):

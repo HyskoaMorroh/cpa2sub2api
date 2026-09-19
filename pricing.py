@@ -23,6 +23,23 @@ import os
 import quopri
 import re
 
+
+def _log(msg, level="warning"):
+    """轻量日志。pricing 可能被 tool 导入、也可能独立跑（见 tool.py 的说明）。
+
+    **懒加载**：模块顶层 import tool 会与"先 import pricing"的顺序形成循环
+    导入。拿不到就退化成 print —— 定价解析的告警是给用户看的，宁可打在
+    屏幕上也不要静默丢掉。
+    """
+    try:
+        import tool as _t
+        getattr(_t.log(), level, _t.log().warning)("[pricing] " + msg)
+    except Exception:
+        try:
+            print("[pricing] 警告: " + msg)
+        except Exception:
+            pass
+
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
@@ -219,7 +236,10 @@ def parse_block(lines, known_models):
             try:
                 rec["group_mult"] = float(m.group(1))
             except ValueError:
-                pass
+                # 解析不出倍数就少一个乘数，**定价会算错**（而不是"算不出"）。
+                # 以前静默 pass，表现为"推给 sub2api 的价格比面板上低一截"。
+                _log("分组倍率 %r 无法解析为数字，本条价格将缺少该乘数"
+                     % (m.group(1),))
             pending = None
             continue
 
@@ -231,7 +251,9 @@ def parse_block(lines, known_models):
             try:
                 rec["comp_ratio"] = float(m.group(1))
             except ValueError:
-                pass
+                # 同 group_mult：静默丢掉会直接改变算出来的价格
+                _log("对比倍率 %r 无法解析为数字，本条价格将缺少该乘数"
+                     % (m.group(1),))
             pending = None
             continue
 
