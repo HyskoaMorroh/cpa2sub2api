@@ -6,6 +6,19 @@
 # 敏感信息
 # ====================================
 设置.json
+# 设置.json 的所有变体：备份 / 模板 / 带时间戳的副本。
+#
+# 为什么逐条列而不是只写一条"设置.json"：Docker 的 .dockerignore 里
+# **后匹配的规则覆盖先匹配的**，而下面有 `!设置.json.template` 这类取反
+# 放行规则；只写一条精确名会被后续规则重新放行。
+#
+# 实测（2026-09-19）：仓库根存在 设置.json.bak-20260915-232432，里面是
+# **真实的 sub2api 管理密钥与 CPA 管理密钥**。构建上下文会被送到
+# docker daemon / buildkit，CI 里还会被 buildx 的 gha 缓存带走——
+# 也就是说这份带密钥的备份此前每次本机构建都会进构建上下文。
+*设置*.json
+设置.json.*
+*设置*json*
 config.yaml
 .env
 .env.*
@@ -17,6 +30,9 @@ config.yaml
 *.crt
 *.cer
 *.pfx
+**/id_rsa
+**/*_rsa
+**/*.ppk
 
 # ====================================
 # 输出和缓存
@@ -26,11 +42,19 @@ output/
 *.log
 *.mhtml
 
-# 上游缓存
+# 上游缓存（out/upstream-cache 与根级 .upstream_cache 两种都存在）
 upstream-cache/
+.upstream_cache/
+
+# 需求文档的中间产物：docx 解包后的 word/media/*.png 是**含明文 API Key 的
+# 界面截图**（见 .gitignore 里 2026-09-15 的记录）。二进制截图文本 grep 审不出来，
+# 只能靠这里整目录排除。graphify-out 是代码图谱，含全量路径与符号表，同样不外发。
+docx_temp/
+graphify-out/
 
 # 备份文件
 *.bak
+*.bak-*
 *~
 *.swp
 *.swo
@@ -46,7 +70,10 @@ upstream-cache/
 .vscode/
 .idea/
 *.pyc
+# __pycache__/ 只匹配根级目录；子目录（如 mihomo-manager/mihomo/__pycache__）
+# 需要 **/ 前缀才会被排除。实测该目录此前确实进了镜像。
 __pycache__/
+**/__pycache__/
 *.pyo
 *.pyd
 .Python

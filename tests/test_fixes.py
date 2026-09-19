@@ -622,6 +622,176 @@ _to_acc_params = _sigs.get("to_account", {}).get("params") or []
 check("M2 to_account 仍是 5 参数（改签名时别忘了 一键导入.py）",
       len(_to_acc_params) == 5, "%r" % _to_acc_params)
 
+
+print()
+print("=" * 70)
+print("N. 客户端形态请求头（需求 2⑴：站方只认特定客户端）")
+print("=" * 70)
+
+# 以前 build_header_overrides 只做**被动搬运**：CPA 里写了就搬，没写就什么都不带。
+# 于是靠 CPA 默认伪装跑通的站点，导入 sub2api 后退化成裸请求 →
+# 上游回 `503 No available accounts / this group only allows ...`。
+
+_h, _d = tool.build_header_overrides({}, "anthropic")
+check("N1 anthropic 空输入也会补客户端头（以前返回空）",
+      len(_h) > 0, "%d 个" % len(_h))
+check("N2 补出的 UA 是 claude-cli 形态",
+      str(_h.get("user-agent", "")).startswith("claude-cli/"),
+      repr(_h.get("user-agent")))
+check("N3 补出 x-app: cli", _h.get("x-app") == "cli", repr(_h.get("x-app")))
+
+_h2, _ = tool.build_header_overrides({"user-agent": "my-custom/1.0"}, "anthropic")
+check("N4 用户显式配的 UA 不被覆盖（只补缺）",
+      _h2.get("user-agent") == "my-custom/1.0", repr(_h2.get("user-agent")))
+
+_h3, _ = tool.build_header_overrides({}, "gemini")
+check("N5 gemini 段不再被整段丢弃（以前 HEADER_OK_PLATFORMS 不含 gemini）",
+      len(_h3) > 0, "%d 个" % len(_h3))
+
+_h4, _ = tool.build_header_overrides({"authorization": "x"}, "anthropic")
+check("N6 黑名单仍然拦住（带了会被服务端 400 拒整条账号）",
+      "authorization" not in _h4, "")
+check("N7 不补 accept-encoding（在黑名单里）",
+      "accept-encoding" not in _h4, "")
+
+_many = {"h%d" % i: "v" for i in range(200)}
+_h5, _ = tool.build_header_overrides(_many, "anthropic")
+check("N8 超过 64 条上限时被裁剪", len(_h5) <= tool.MAX_HEADER_ENTRIES,
+      "%d 条" % len(_h5))
+check("N9 裁剪时优先保留客户端形态头",
+      "user-agent" in _h5 and "x-app" in _h5, "")
+check("N10 不支持的平台仍然全丢（不硬塞头）",
+      tool.build_header_overrides({"a": "b"}, "unknownplat")[0] == {}, "")
+
+print()
+print("=" * 70)
+print("O. 单对象接口信封（/accounts/{id} 带 {code,data,message}）")
+print("=" * 70)
+
+# 实测 2026-09-19：ensure_test_plans 直接读顶层 credentials，拿到 None，
+# 于是每条账号都"未找到可用模型"，231 条探活计划全部挂载失败。
+# 探活是停用账号恢复的唯一证据来源，挂了等于自动恢复链路整体断掉。
+_uw = tool._unwrap_one({"code": 0, "message": "ok",
+                        "data": {"id": 7, "platform": "anthropic",
+                                 "credentials": {"model_mapping": {"claude-opus-5": "x"}}}})
+check("O1 单对象信封能取出 data", _uw.get("id") == 7, repr(_uw)[:120])
+check("O2 取出的对象带 credentials",
+      isinstance(_uw.get("credentials"), dict) and "model_mapping" in _uw["credentials"], "")
+_uw2 = tool._unwrap_one({"id": 9, "platform": "openai"})
+check("O3 无信封时原样返回（不丢数据）", _uw2.get("id") == 9, repr(_uw2)[:80])
+check("O4 非 dict 输入返回空 dict", tool._unwrap_one(None) == {} and tool._unwrap_one([]) == {}, "")
+_uw3 = tool._unwrap_one({"data": {"items": [{"id": 3}]}})
+check("O5 data.items 也能取第一条", _uw3.get("id") == 3, repr(_uw3)[:80])
+
+print()
+print("=" * 70)
+print("P. 探活选型口径与写入白名单一致（source_section 贯通）")
+print("=" * 70)
+
+# codex 段与 openai-compatibility 段都是 platform=openai，但选型分流不同：
+# codex 走单族、openai 走多族。探活若不传 source_section 会落到多族分支，
+# 挑出一个**不在白名单里**的模型，那样探活结果不能代表账号真实可用性。
+_mm = {"gpt-6-astra": "gpt-6-astra", "gpt-5.6": "gpt-5.6", "claude-opus-5": "claude-opus-5"}
+_a = tool._pick_probe_model(_mm, "openai", source_section="codex-api-key")
+_b = tool._pick_probe_model(_mm, "openai", source_section="openai-compatibility")
+check("P1 _pick_probe_model 接受 source_section 参数", _a is not None, repr(_a))
+check("P2 不传 source_section 时仍能工作（向后兼容）",
+      tool._pick_probe_model(_mm, "openai") is not None, "")
+check("P3 anthropic 优先挑 sonnet",
+      "sonnet" in (tool._pick_probe_model(
+          {"claude-sonnet-5": "x", "claude-opus-5": "x", "claude-haiku-4-5": "x"},
+          "anthropic") or ""),
+      "")
+
+print()
+print("=" * 70)
+print("Q. 部署链路（本机实测暴露过的坑）")
+print("=" * 70)
+
+_here = os.path.dirname(os.path.abspath(__file__))
+_root = os.path.dirname(_here)
+
+
+def _read(rel):
+    try:
+        with open(os.path.join(_root, rel), encoding="utf-8") as _f:
+            return _f.read()
+    except Exception as _ex:
+        # 读不到就打印出来，不要静默返回空串——否则下面所有"文件里应当包含 X"
+        # 的断言都会因为读到空串而误报失败，看起来像代码有问题。
+        print("  ! 读不到 %s：%s" % (rel, _ex))
+        return ""
+
+
+_dc = _read("docker-compose.yml")
+# 实测 2026-09-19：metacubex/mihomo:latest 里 HAVE wget/nc/sed/awk/grep，
+# MISS curl/python/python3。所以 mihomo 的 healthcheck 不能是 python3 或 curl。
+check("Q1 mihomo 的 healthcheck 指向 healthcheck.sh（不是 python3）",
+      '"sh", "/root/.config/mihomo/healthcheck.sh"' in _dc, "")
+_hc_lines = [l for l in _dc.splitlines() if l.strip().startswith("test:")]
+check("Q1b mihomo 的 test 里不出现 python3 / curl",
+      not any("python3" in l or "curl" in l for l in _hc_lines),
+      repr(_hc_lines[:2]))
+
+check("Q2 新增了 mihomo 容器用的 healthcheck.sh",
+      os.path.exists(os.path.join(_root, "mihomo-manager", "mihomo", "healthcheck.sh")), "")
+_hcsh = _read("mihomo-manager/mihomo/healthcheck.sh")
+# 去掉注释行后再判，避免"注释里提到 curl"被误判成依赖 curl
+_hc_code = "\n".join(l for l in _hcsh.splitlines() if not l.strip().startswith("#"))
+check("Q3 healthcheck.sh 代码里不依赖 curl / python",
+      "curl" not in _hc_code and "python" not in _hc_code, "")
+check("Q4 healthcheck.sh 只用 busybox 可用命令（wget + nc）",
+      "wget" in _hc_code and "nc " in _hc_code, "")
+
+# mihomo-init 缺 env_file 时，.env 里的 MIHOMO_SUBSCRIPTIONS 传不进容器
+# （值里含 = 和 ;，compose 的 ${VAR} 插值处理不了），init 会因占位符未展开
+# 退出 1，mihomo 因 service_completed_successfully 永不启动。
+_init_block = (_dc.split("mihomo-init:")[1].split("\n  mihomo:")[0]
+               if "mihomo-init:" in _dc else "")
+check("Q5 本机 compose 里 mihomo-init 接了 env_file", "env_file" in _init_block, "")
+check("Q6 docker-compose 的 bind mount 带 :Z（CentOS SELinux）",
+      ":ro,Z" in _dc and ":/app/out:Z" in _dc, "")
+check("Q7 子网可通过变量覆盖（VPS 网段冲突）",
+      "CPA2SUB2API_SUBNET" in _dc, "")
+check("Q8 有 pull_policy（否则 up -d 不会拉新镜像）",
+      "pull_policy: always" in _dc, "")
+
+_di = _read(".dockerignore")
+check("Q9 .dockerignore 排除 设置.json 的所有变体（含带时间戳的备份）",
+      "*设置*.json" in _di and "设置.json.*" in _di, "")
+check("Q10 .dockerignore 排除 docx_temp（含明文 key 的截图）", "docx_temp/" in _di, "")
+check("Q11 .dockerignore 排除 graphify-out", "graphify-out/" in _di, "")
+check("Q12 .dockerignore 排除 .upstream_cache", ".upstream_cache/" in _di, "")
+check("Q13 .dockerignore 排除子目录 __pycache__", "**/__pycache__/" in _di, "")
+
+_dex = _read(".env.example")
+check("Q14 .env.example 里有 REVIVE_PROVEN_INACTIVE（此前从未接线）",
+      "REVIVE_PROVEN_INACTIVE" in _dex, "")
+check("Q15 .env.example 里有 PROBE_INACTIVE", "PROBE_INACTIVE" in _dex, "")
+
+print()
+print("=" * 70)
+print("R. 空 key 凭据不再无声丢弃（需求第 8 条：日志可排查）")
+print("=" * 70)
+
+# collect 以前对 api-key 为空的子条目直接跳过且不记账，用户永远不知道漏填了。
+_cfg_min = {
+    "openai-compatibility": [
+        {"name": "p1", "base-url": "https://a.example.com", "priority": 1,
+         "api-key-entries": [{"api-key": "sk-a"},
+                             {"weight": 1}],          # 无 api-key
+         "models": [{"name": "gpt-6", "alias": "gpt-6"}]},
+    ],
+    "claude-api-key": [
+        {"base-url": "https://b.example.com", "priority": 2},   # 无 api-key
+    ],
+}
+_recs, _dropped = tool.collect(_cfg_min)
+_silent = [s for s in _dropped if "没有 api-key" in s or "api-key-entries" in s]
+check("R1 空 api-key 子条目被记入 dropped_notes（以前无声丢弃）",
+      len(_silent) >= 2, "命中 %d 条：%r" % (len(_silent), _silent[:3]))
+check("R2 有 api-key 的条目照常导入", len(_recs) == 1, "%d 条" % len(_recs))
+
 print()
 print("=" * 70)
 print("G. 汇总")

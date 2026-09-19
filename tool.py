@@ -150,6 +150,20 @@ DEFAULTS = {
     # 导入后自动挂定时探活计划（auto_recover=true），用 sub2api 自带机制恢复。
     "auto_recover_enabled": True,
     "auto_recover_cron": "*/30 * * * *",
+    # 停用账号也要挂探活计划。需求第 2 条⑴要求"原先 config.yaml 里已关闭的
+    # 上游，检测可用也要重新打开"——不探测就永远不知道它恢复没有。
+    "probe_inactive": True,
+    # 探活证明可用后，把本工具建成的 inactive 账号**自动重新启用**。
+    #
+    # 需求第 2 条⑴ 的核心诉求，但这个键此前**从来没有被接到设置里**：
+    # revive_proven_inactive() 读 cfg.get("revive_proven_inactive", False)，
+    # 而 DEFAULTS、设置.json、.env.example 三处都没有这个键 → 恒为 False →
+    # 探活即使证明某站已恢复，账号也永远躺在 inactive，只能人工点开。
+    # 这正是"原配置关闭的上游永远起不来"的另一半成因。
+    #
+    # 只动本工具导入的账号（notes 带 NOTE_SENTINEL），且必须有
+    # success/ok/passed 的探活记录才启用，不会放开用户手工停用的账号。
+    "revive_proven_inactive": True,
     # 每次运行是否把已存在账号的 model_mapping / 优先级等同步成 config.yaml 的最新值。
     # 关掉就退回"只建新号"的一次性快照行为（CPA 改了排除规则这边不会跟上）。
     "sync_existing_accounts": True,
@@ -237,6 +251,8 @@ def load_settings():
         "AUTO_RECOVER_ENABLED": "auto_recover_enabled",
         "AUTO_RECOVER_CRON": "auto_recover_cron",
         "AUTO_PAUSE_ON_EXPIRED": "auto_pause_on_expired",
+        "PROBE_INACTIVE": "probe_inactive",
+        "REVIVE_PROVEN_INACTIVE": "revive_proven_inactive",
 
         # 功能开关
         "HEALTH_RERANK_ENABLED": "health_rerank_enabled",
@@ -280,7 +296,8 @@ def load_settings():
             elif setting_key in ("auto_recover_enabled", "health_rerank_enabled",
                                 "sync_existing_accounts", "respect_weight_zero",
                                 "fetch_upstream_src", "pool_mode_enabled", "auto_pause_on_expired",
-                                "model_probe_enabled"):
+                                "model_probe_enabled", "probe_inactive",
+                                "revive_proven_inactive"):
                 s[setting_key] = val.lower() in ("true", "1", "yes", "on")
             # 字符串字段
             else:
@@ -564,11 +581,24 @@ class Sub2Api(object):
             return True, "连接正常，当前 %d 个分组" % n
         except ApiError as ex:
             if ex.status == 401:
-                return False, "密钥不对（401）。请检查 设置.json 里的 sub2api_admin_key。"
+                return False, ("密钥不对（401）。请检查 设置.json 里的 sub2api_admin_key：\n"
+                               "        必须是 x-api-key 那一个（admin- 开头的管理密钥），\n"
+                               "        不是面板登录密码、也不是用户的 API Key。")
             if ex.status == 403:
                 return False, "密钥权限不足（403）。请用 admin- 开头的管理密钥。"
             if ex.status == 404:
                 return False, "接口 404。检查 sub2api 地址是否正确。"
+            if ex.status == 423:
+                # sub2api 新版本给管理员加了**合规确认门禁**
+                # （server/middleware/admin_compliance.go）：管理员没在面板上
+                # 确认合规承诺之前，所有 /api/v1/admin/* 都返回 423 Locked。
+                # 密钥明明是对的、地址也是对的，症状却像"认证失败"，
+                # 是本工具最容易被误判成"密钥填错"的一种情况。
+                return False, ("被 sub2api 的合规确认门禁拦住（423 Locked）。\n"
+                               "        这不是密钥问题：请先用管理员账号登录 sub2api 面板，\n"
+                               "        按提示确认管理员合规承诺（每个管理员各确认一次），\n"
+                               "        确认后本工具即可正常写入。\n"
+                               "        原文：" + ex.body[:120])
             if ex.status == 0:
                 return False, ex.body
             return False, "HTTP %s：%s" % (ex.status, ex.body[:160])
@@ -730,7 +760,48 @@ SECTION_GROUP = {
 }
 GROUP_PLATFORM = {"Claude": "anthropic", "Gemini": "gemini",
                   "Codex": "openai", "OpenAI": "openai", "Grok": "grok"}
-HEADER_OK_PLATFORMS = {"anthropic", "openai", "kimi", "zhipu", "deepseek", "minimax", "grok"}
+HEADER_OK_PLATFORMS = {"anthropic", "openai", "kimi", "zhipu", "deepseek", "minimax", "grok",
+                       "gemini"}
+# 需求第 2 条⑴：站方只认特定客户端时，请求头没有伪装到位就会回
+# `503 No available accounts / this group only allows ...`。CPA 那边的做法是
+# 在凭据的 headers 里显式写一套客户端头（实测 config.yaml 里 75/77 条
+# claude-api-key 都手写了 user-agent + anthropic-beta + x-app + x-stainless-*）。
+# 本工具原先只做**被动搬运**：CPA 里写了就搬，没写就什么都不带——于是那些
+# 靠 CPA 默认伪装跑通的站点，导入 sub2api 后就退化成裸请求。
+#
+# 这里补一套**与 sub2api 自身内置伪装一致的客户端头**作为兜底：只在 CPA
+# 没给同名头时补，不覆盖用户显式配置。来源是 sub2api 自己的常量表
+#（backend/internal/pkg/claude/constants.go 的 DefaultHeaders + beta 族），
+# 所以补出来的形态与 sub2api 原生 Claude Code 伪装完全相同，不会自相矛盾。
+#
+# 注意：不补 anthropic-version——CPA 给 75/77 条都写了，缺的那些可能是有意的；
+# 也不补 accept-encoding（在 sub2api 的黑名单里，带了会被 400 拒整条账号）。
+CLIENT_PROFILE_HEADERS = {
+    "anthropic": {
+        "user-agent": "claude-cli/2.1.258 (external, cli)",
+        "x-app": "cli",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "x-stainless-lang": "js",
+        "x-stainless-package-version": "0.94.0",
+        "x-stainless-os": "Linux",
+        "x-stainless-arch": "arm64",
+        "x-stainless-runtime": "node",
+        "x-stainless-runtime-version": "v24.3.0",
+        "x-stainless-retry-count": "0",
+        "x-stainless-timeout": "600",
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,"
+                          "interleaved-thinking-2025-05-14",
+    },
+    "openai": {
+        "user-agent": "codex_cli_rs/0.20.0 (Mac OS 15.0; arm64) vscode",
+        "originator": "codex_cli_rs",
+    },
+    "gemini": {
+        "user-agent": "GeminiCLI/0.1.5 (darwin; arm64)",
+        "x-goog-api-client": "gl-go/1.24.0 gccl/0.1.5",
+        "accept": "*/*",
+    },
+}
 # 禁止覆写的请求头，共 30 条，完全照抄 sub2api 源码
 # （internal/service/account_header_override.go 的 headerOverrideBlockedNames）。
 # 带了其中任何一个，整条账号创建会被 400 拒绝（INVALID_HEADER_OVERRIDE），
@@ -1120,6 +1191,22 @@ def serves_nothing(r):
                                    probe=_pb)
 
 
+def _apply_client_profile(headers, platform, source=""):
+    """把 CLIENT_PROFILE_HEADERS 里该平台缺失的客户端头补齐。
+
+    只在 CPA 没给同名头时补，绝不覆盖用户显式配置——用户写的值优先，
+    这与 CPA 自己的 ensureHeader/setHeader 分流是同一个原则。
+    返回补入的头名字典（供日志说明"补了什么"）。
+    """
+    added = {}
+    for k, v in CLIENT_PROFILE_HEADERS.get(platform, {}).items():
+        if k in headers:
+            continue
+        headers[k] = v
+        added[k] = source or platform
+    return added
+
+
 def build_header_overrides(headers, platform):
     """CPA headers -> credentials.header_overrides。
 
@@ -1128,13 +1215,13 @@ def build_header_overrides(headers, platform):
     不在黑名单、长度不超限、值里不能有控制字符。任一条不符就会被 400 拒掉
     整条账号，所以这里提前剔除而不是交给服务端报错。
     """
-    if not isinstance(headers, dict) or not headers:
-        return {}, []
+    if not isinstance(headers, dict):
+        headers = {}
     if platform not in HEADER_OK_PLATFORMS:
         return {}, sorted(str(k).lower() for k in headers)
 
     keep, drop = {}, []
-    for k, v in headers.items():
+    for k, v in (headers or {}).items():
         lk = str(k).strip().lower()
         sv = str(v).strip()
         # CPA 里以 $ 开头的值是**动态头**：$CPA-SESSION-ID 展开成 CPA 内部的
@@ -1159,10 +1246,20 @@ def build_header_overrides(headers, platform):
             drop.append(lk)
             continue
         keep[lk] = sv
+    # 需求 2⑴：补齐客户端形态的头（只补缺，不覆盖用户显式配置）。
+    added = _apply_client_profile(keep, platform)
+
+    # 截断放在补头**之后**：CLIENT_PROFILE_HEADERS 是伪装的最低要求，
+    # 若先按 64 条截断再补，补完又超限；若补完不截断，服务端 400 拒整条账号。
+    # 超出时优先保留客户端形态头，被砍掉的记进 drop 让用户看得见。
     if len(keep) > MAX_HEADER_ENTRIES:
-        for k in sorted(keep)[MAX_HEADER_ENTRIES:]:
+        removable = [k for k in sorted(keep) if k not in added]
+        for k in removable[:len(keep) - MAX_HEADER_ENTRIES]:
             keep.pop(k, None)
-            drop.append(k)
+            drop.append(k + "(超出 %d 条上限)" % MAX_HEADER_ENTRIES)
+
+    for k in added:
+        drop.append(k + "(补客户端形态)")
     return keep, drop
 
 
@@ -1346,7 +1443,8 @@ def collect(cfg_dict):
                 "disabled": bool(entry.get("disabled", False)),
             }
             if section == "openai-compatibility":
-                for sub in entry.get("api-key-entries") or []:
+                entries = entry.get("api-key-entries") or []
+                for idx, sub in enumerate(entries):
                     if isinstance(sub, dict) and sub.get("api-key"):
                         r = dict(base)
                         r["api_key"] = sub["api-key"]
@@ -1354,11 +1452,25 @@ def collect(cfg_dict):
                         # openai-compatibility 顶层没有 proxy-url，只在 key 级别有
                         r["proxy_url"] = sub.get("proxy-url") or ""
                         recs.append(r)
+                    else:
+                        # 需求第 8 条：以前这条是**无声丢弃**——api-key 为空或
+                        # 不是 dict 的子条目直接消失，用户永远不知道自己漏填了。
+                        # 现在记进 dropped_notes，跑完能看见丢了几条、丢在哪。
+                        dropped_notes.append(
+                            "%s[%s] 第 %d 个 api-key-entries 没有 api-key，已跳过"
+                            % (section, entry.get("name") or base.get("fp") or "?",
+                               idx + 1))
             elif api_key:
                 r = dict(base)
                 r["api_key"] = api_key
                 r["weight"] = entry.get("weight")
                 recs.append(r)
+            else:
+                # 同上：非 openai-compatibility 段的空 api-key 凭据以前也是
+                # 无声丢弃（collect 顶部只在 base-url 也为空时才记账）。
+                dropped_notes.append(
+                    "%s 有一条凭据没有 api-key（base-url=%s），已跳过"
+                    % (section, base.get("base_url") or "空"))
     return recs, dropped_notes
 
 
@@ -2245,9 +2357,23 @@ def build_plan(s):
         try:
             api = Sub2Api(s)
             print("[智能优先级] 启用基于健康度的动态优先级分配...")
+            # 账号名 -> (渠道, 域名) 对照表。智能优先级内部按 (渠道, 域名)
+            # 统计健康分，而 sub2api 账号列表里的 group 字段是名称还是 id
+            # 不确定，所以用账号名反查（账号名由 assign_names 生成，一一对应）。
+            name_to_hostkey = {}
+            for _r in recs:
+                if not _r.get("name"):
+                    # assign_names 在本函数后半段才跑；智能优先级需要账号名
+                    # 反查域名单元，所以这里先按同一套规则物化一次。
+                    _stem = "%s-%s" % (_r["prefix"] or _r["platform"][:3].upper(),
+                                       host_of(_r["base_url"]))
+                    _r["fp"] = account_fingerprint(_r)
+                    _r["name"] = "%s-%s" % (_stem, _r["fp"])
+                name_to_hostkey[_r["name"]] = _host_key(_r)
             bucket_of = remap_priority_smart(
                 recs, api, host_of, account_fingerprint,
-                _is_int, _host_tier_map, _host_key
+                _is_int, _host_tier_map, _host_key,
+                name_to_hostkey=name_to_hostkey
             )
             # 应用映射到每条记录。
             # bucket_of 的键是**域名单元** (_host_key)，不是 CPA 的 priority 数值。
@@ -2745,7 +2871,10 @@ def do_import(api, plan, ask=None):
 
     batch_size = int(cfg.get("batch_size", 50) or 50)
     total = len(recs)
-    name_to_rec = {r["name"]: r for r in recs}
+    # 注意：recs 到这里已经是"仅新账号"（上面已把已存在的过滤进 dup）。
+    # 所以全量对照表必须用 dup + recs 一起建 —— 只按 recs 建的话，
+    # 已存在账号在表里查不到，下面补挂探活计划时会一条都匹配不上。
+    name_to_rec = {r["name"]: r for r in list(dup) + list(recs)}
     created_ids = {}
 
     # 2026-09-13：从 CPA 已有的 proxy_url 反推每个域名是否需要代理。
@@ -2915,8 +3044,34 @@ def do_import(api, plan, ask=None):
         probe_inactive = cfg.get("probe_inactive", True)
         targets = {nm: aid for nm, aid in created_ids.items()
                    if nm in success and (probe_inactive or nm not in off_set)}
+        # 已存在的账号也要一起挂（幂等：已挂过的由 sub2api 返回 409，
+        # ensure_test_plans 把它算作"已存在"而不是失败）。
+        #
+        # 为什么必须补这一步：targets 原先只取 created_ids，也就是**本轮新建**
+        # 的账号。于是任何一次"没挂上探活"的导入都会留下永久缺口——
+        # 重跑时这些账号走的是"已存在→跳过"分支，探活计划永远不会被补挂。
+        # 实测（2026-09-19）就是这样：第一次导入时单对象接口的信封没解开，
+        # 231 条全部"未找到可用模型"，重跑时一条都不会重试。
+        # 而探活是停用账号恢复（revive_proven_inactive）的唯一证据来源，
+        # 缺口=自动恢复链路永久断掉。
+        if not hm_err:
+            for nm, cur in (have_map or {}).items():
+                aid = cur.get("id")
+                if not aid or nm in targets:
+                    continue
+                if nm not in name_to_rec:
+                    continue          # config.yaml 里已经删掉的，不碰
+                if not (probe_inactive or nm not in off_set):
+                    continue
+                targets[nm] = aid
         n_off_probed = sum(1 for nm in targets if nm in off_set)
-        plan_ok, plan_fail = ensure_test_plans(api, targets, cfg)
+        # 段名要传给 ensure_test_plans：探活挑模型时 select_highest_models
+        # 需要 source_section 才能与写入白名单走同一条分流（否则 codex 段会
+        # 落到 openai 多族分支，挑出白名单外的模型）。
+        section_by_name = {r["name"]: (r.get("source_section") or r.get("section"))
+                           for r in recs if isinstance(r, dict) and r.get("name")}
+        plan_ok, plan_fail = ensure_test_plans(api, targets, cfg,
+                                               section_by_name=section_by_name)
         print("    挂载 %d 条，失败 %d 条（cron=%s）"
               % (plan_ok, len(plan_fail), cfg.get("auto_recover_cron")))
         if n_off_probed:
@@ -3569,6 +3724,37 @@ def revive_proven_inactive(api, cfg, dry_run=False, batch=50):
     return done, len(proven), None
 
 
+def _unwrap_one(resp):
+    """从 sub2api 的**单对象**响应里取出对象。
+
+    为什么必须有这个函数：sub2api 的两类接口信封不一样。
+      · 列表接口（/accounts?page=..）      -> {"data": {"items": [...], "total": N}}
+      · 单对象接口（/accounts/{id}）        -> {"code": 0, "message": "...", "data": {...}}
+    直接读顶层键（resp["credentials"]、resp["platform"]）在单对象接口上
+    **恒为 None** —— 不抛异常、不报错，只是悄悄拿到空值。
+    实测后果（2026-09-19，本机 231 条导入）：ensure_test_plans 逐账号去读
+    credentials.model_mapping 拿模型，拿到的全是 None，于是每条都
+    "未找到可用模型" → **231 条探活计划全部挂载失败**。
+    而探活是停用账号恢复的唯一手段（见 revive_proven_inactive），
+    挂了等于整条自动恢复链路断掉。
+    """
+    if not isinstance(resp, dict):
+        return {}
+    d = resp.get("data")
+    if isinstance(d, dict):
+        # 有的接口 data 里还套一层 items
+        for k in ("items", "list", "results", "records"):
+            v = d.get(k)
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                return v[0]
+        return d
+    if not any(k in resp for k in ("code", "message", "success")):
+        # 没有任何信封特征：就当它本身就是那个对象
+        return resp
+    # 有信封但没有可用的 data，退回原响应（至少不丢信息）
+    return resp
+
+
 def _unwrap_list(resp):
     """从 sub2api 的响应里取出列表，兼容 {data:[...]} / {data:{items:[...]}} / [...]。"""
     if isinstance(resp, list):
@@ -3653,7 +3839,7 @@ def _cron_with_offset(cron, offset):
     return " ".join(parts)
 
 
-def _pick_probe_model(model_mapping, platform):
+def _pick_probe_model(model_mapping, platform, source_section=None):
     """从账号的 model_mapping 里挑一个探活用的模型 id，挑不到返回 None。
 
     规则必须与写入白名单时的就高原则一致，所以直接复用 model_selection
@@ -3661,6 +3847,11 @@ def _pick_probe_model(model_mapping, platform):
     才是这里独有的：
       · claude 优先 sonnet（额度便宜、响应快），其次 opus，最后 haiku；
       · 其它平台取就高结果里的第一个。
+
+    source_section 必须一路传下来：写入白名单时 select_highest_models 是按
+    它分流的（codex-api-key 走单族、openai-compatibility 走多族），探活若不传
+    就会落到多族分支，**挑出一个不在白名单里的模型**——探活结果无论成败都
+    不能代表这个账号真实可用性，还会在 sub2api 里留下无意义的失败记录。
     """
     if not model_mapping or not isinstance(model_mapping, dict):
         return None
@@ -3670,7 +3861,8 @@ def _pick_probe_model(model_mapping, platform):
         return keys[0] if keys else None
 
     models = [{"name": k, "alias": k} for k in keys]
-    picked = select_highest_models(models, platform, series=MODEL_SERIES)
+    picked = select_highest_models(models, platform, series=MODEL_SERIES,
+                                  source_section=source_section)
     names = [m["name"] for m in picked] or keys
 
     if platform == "anthropic":
@@ -3681,7 +3873,7 @@ def _pick_probe_model(model_mapping, platform):
     return names[0] if names else None
 
 
-def ensure_test_plans(api, name_to_id, cfg, dry_run=False):
+def ensure_test_plans(api, name_to_id, cfg, dry_run=False, section_by_name=None):
     """给账号挂上 sub2api 自带的定时探活计划（auto_recover=true）。
 
     用上游已有的机制，不自己造轮子：sub2api 的 scheduled_test_plans 表
@@ -3769,7 +3961,10 @@ def ensure_test_plans(api, name_to_id, cfg, dry_run=False):
     def create_test_plan_for_account(nm, aid):
         """为单个账号创建探活计划"""
         try:
-            acc = api._call("GET", f"/api/v1/admin/accounts/{aid}")
+            # 单对象接口带信封 {code,data,message}，必须 unwrap。
+            # 不 unwrap 时 credentials/platform 恒为 None，下面会一路
+            # "未找到可用模型"，231 条计划全部挂载失败（实测 2026-09-19）。
+            acc = _unwrap_one(api._call("GET", f"/api/v1/admin/accounts/{aid}"))
         except Exception as ex:
             return nm, False, f"获取账号失败: {str(ex)[:60]}"
 
@@ -3784,7 +3979,9 @@ def ensure_test_plans(api, name_to_id, cfg, dry_run=False):
         # 根本没放行的模型（比如白名单已按当代门槛裁到 gpt-7，探活还在打 gpt-6），
         # 那类失败会被误读成"账号不可用"。
         # 现在统一走 model_selection，门槛也跟随上游同步。
-        model_id = _pick_probe_model(model_mapping, platform)
+        model_id = _pick_probe_model(
+            model_mapping, platform,
+            source_section=(section_by_name or {}).get(nm))
 
         if not model_id and model_mapping:
             model_id = next(iter(model_mapping.keys()))

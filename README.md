@@ -6,7 +6,7 @@
 构建推 Docker Hub → VPS 拉镜像运行。VPS 上不需要源码。
 
 - 图文并茂的完整教程：[`tutorial.html`](tutorial.html)
-  —— 15 张自绘示意图（架构 / 流程 / 数据可视化）+ 27 处一键复制 + 逐项配置说明。
+  —— 17 张自绘示意图（架构 / 流程 / 数据可视化）+ 30 处一键复制 + 逐项配置说明。
   所有插图均为**脱敏的自绘 SVG**，不含任何真实域名、密钥或账号数据。
 - 代理实现文档：[`mihomo-README.md`](mihomo-README.md)、[`mihomo-manager/README.md`](mihomo-manager/README.md)
 
@@ -17,14 +17,27 @@
 | 能力 | 说明 |
 |---|---|
 | **参数全覆盖** | credentials、priority、concurrency、auto_pause_on_expired、proxy_id、请求头、冷却规则、Websockets、模型白名单等一次性迁移 |
+| **客户端形态伪装** | 站方只认特定客户端时，自动补齐 `claude-cli` / `codex_cli_rs` / `GeminiCLI` 形态的请求头（只补缺，不覆盖你显式配的），解决「直连能用、经中转 503」 |
 | **按域名分桶** | 同一上游的多个 KEY 落进同一优先级桶，互为备份；只有整桶不可用才降级到下一个域名 |
 | **健康度重排** | 按 sub2api 实测的「可调度率×60% + 活跃率×40%」重排优先级，桶号全局唯一 |
 | **模型就高原则** | codex 单族 / openai 多族分开处理；代际门槛从上游源码反推，不写死版本号 |
 | **连通性探测** | 按代际实发请求验证；最新代打不通时保留最新代占位并补入实测可用的次最新代 |
+| **停用站自动复活** | 探活证明可用后自动重新启用被停用的上游（证据驱动，只动本工具导入的账号） |
 | **并发导入** | 建号 / 探活 / 定价三条链路走线程池，worker 可配且自动钳上限 |
 | **定时探活** | 复用 sub2api 自带的 scheduled-test-plans，自动恢复 error 状态 |
 | **反测活** | 自然语料 + 每个账号错开的探活时刻 |
 | **代理兜底** | 直连失败自动经 mihomo 重试；容器部署下由环境变量正确下发 |
+| **可排障** | 全流程出声：丢弃的凭据条目、未迁移的能力、补入的请求头、被降级的站点都写进对照表与备注 |
+
+### 已知限制（诚实标注）
+
+| 项 | 现状 |
+|---|---|
+| `weight` 数值 | sub2api **没有**账号级 weight 字段，只落到备注；负载分配由 `load_factor` 承担。零权重默认「降到队尾」而非停用（可逆） |
+| `cloak` 请求伪装 | 写入 `extra.cloak`，但 **sub2api 网关层没有消费逻辑**，写了不生效 |
+| TLS 指纹「是否需要」 | **未实现自动检测**，只做字段搬运（`enable_tls_fingerprint`）；且 sub2api 的 TLS 指纹只对 Anthropic OAuth 账号生效，本工具导入的都是 api_key 账号 |
+| `match-regexr` 冷却规则 | 无法迁移（sub2api 只支持子串匹配，不支持正则） |
+| `rebuild-mid-system-message` | 无 sub2api 等价物，只记进备注 |
 
 ---
 
@@ -102,6 +115,10 @@ python 一键导入.py        # 一键全自动
   否则会被 CF 的浏览器完整性检查拦成 `403 error code: 1010`
   （请求根本到不了源站，sub2api 日志里看不到任何记录）。
 - **并发上限**：三个 worker 都硬钳到 8。调更大只会压垮连接池，不会更快。
+- **输入文件**：本工具读的是 CPA 生成的 `config.yaml`（容器里 `/app/config.yaml`，只读）。
+  它的逐字段含义见教程 **4.5**——包括哪些字段能迁、哪些只能落备注。
+- **两个新增开关**（`PROBE_INACTIVE` / `REVIVE_PROVEN_INACTIVE`，默认都开）：
+  config.yaml 里被关闭的上游也会挂探活，证明可用后自动重新启用，不需要人工盯着。
 
 完整环境变量表见教程附录，或 [`.env.example`](.env.example)。
 
@@ -235,14 +252,21 @@ MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数
 |---|---|
 | IP 管理页"链接失败" | `curl .../proxies/AUTO \| jq '.all\|length'` 是否为 0；`allow-lan` 是否 true；是否同一 Docker 网络 |
 | 只调高优先级上游，低优先级不试 | 402「预算池耗尽」类的凭据级错误；见教程 8.2 |
-| `503 No available accounts` + 分组权限提示 | 该上游只接受特定客户端，需在 CPA 侧配伪装请求头，与账号无关 |
+| `503 No available accounts` + 分组权限提示 | 该上游只接受特定客户端。本工具会自动补齐客户端形态头（教程 10.1）；仍不通则在 CPA 的 `headers` 里显式写私有头 |
 | `400 invalid codex request` | 自定义模型列表含上游不存在的模型名，或协议模式不匹配 |
 | `524 origin_response_timeout` | CF 回源超时 120 秒不可延长，需压缩 CPA 的重试预算；见教程 8.5 |
 | `empty or malformed response (HTTP 200)` + 0 SSE 事件 | 流式引导未缓冲；见教程 8.6 |
 | `403 error code: 1010` | CF 浏览器完整性检查，设置浏览器 `USER_AGENT` |
+| **所有**管理接口返回 `423 Locked` | **不是密钥问题**。sub2api 的管理员合规确认门禁：先去面板确认合规承诺；见教程 11.1 |
 | CPAMP 面板提示"管理员密钥无效" | 是**面板登录密钥**，不是 CPA 管理密钥。改文件无效，只能 `reset-admin-key`；见教程 8.9 / 8.10 |
 | `{"error":"IP banned due to too many failed attempts"}` | 认证失败超 5 次触发 30 分钟 IP 封禁。先停 CPAMP 再重启 CPA；见教程 8.11 |
 | 改了 `secret-key` 之后彻底登不进 | 该字段要的是 **bcrypt 哈希**（`$2a$` 开头），不是明文；见教程 8.12 |
+| 本机全绿但 VPS 报错 | 本机与 VPS 的六类环境差异；逐条核对教程第十一章的清单 |
+| 改了代码但 VPS 行为没变 | Docker 默认「本地没有才拉」，`up -d` 不会取新镜像。本仓库已设 `pull_policy: always`；手工 `docker compose pull cpa2sub2api` 兜底 |
+| `Permission denied: '/app/out/...'` | `out` 目录属主与容器 uid 不匹配。compose 已用 `user:` 覆盖为 root；或把宿主目录 `chown 1000:1000` |
+| `[Errno 21] Is a directory: '/app/config.yaml'` | 宿主上该路径是**目录**（Docker 在文件不存在时自动建的空目录）。放上真正的文件，或改用 `CPA_BASE_URL` 在线拉取 |
+| mihomo 容器一直 `unhealthy` | 官方镜像里**没有 python3 也没有 curl**。本仓库用纯 busybox 的 `healthcheck.sh`（教程 11 表第 7 项） |
+| `Pool overlaps with other one on this address space` | 网段冲突。在 `.env` 里设 `CPA2SUB2API_SUBNET=172.29.0.0/16` |
 
 ### 密钥排障速查（教程 8.9–8.13）
 

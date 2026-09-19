@@ -29,6 +29,21 @@ services:
     image: ${DOCKERHUB_USERNAME:?请在 .env 里设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
     container_name: cpa2sub2api
 
+    # CI 反复覆盖同一个 :latest 标签。Docker 的默认拉取策略是"本地没有才拉"，
+    # 所以 `up -d` **不会**自动取到新镜像 —— 表现为"改了代码、推了 CI，
+    # VPS 拉到的还是旧镜像"，而且界面上看不出任何报错。
+    # always = 每次 up 都先拉一次（拉不到才用本地）。
+    pull_policy: always
+
+    # 以 root 运行。原因：镜像里是 USER app（uid 1000），而
+    # `./out` 这个 bind mount 在 VPS 上的属主是 root:root（用 root 跑
+    # docker compose 时的默认结果），uid 1000 写不进去 →
+    # import-plan.json / 对照表.md 全部写失败。
+    # 本机 Windows + Docker Desktop 走 9p/gRPC-FUSE，bind mount 的权限位
+    # 不生效（表现为谁都能写），所以本地一直是绿的，只有 VPS 上才暴露。
+    # 想按 uid 1000 跑就先把宿主目录 chown 1000:1000，然后删掉这一行。
+    user: "${IMPORTER_UID:-0}:${IMPORTER_GID:-0}"
+
     env_file:
       - .env
 
@@ -37,18 +52,33 @@ services:
       # load_settings() 的环境变量映射（FALLBACK_PROXY -> fallback_proxy），
       # 不是 设置.json。容器里没有 设置.json，全靠这个环境变量。
       - FALLBACK_PROXY=${FALLBACK_PROXY:-http://mihomo:7890}
+      # 时区。镜像基于 python:3.11-slim，没装 tzdata 也没设 TZ 时容器跑 UTC。
+      # 不带 TZ 的后果不是功能错，而是**排障时日志时间对不上**：
+      # entrypoint.sh 的 $(date ...)、mihomo 配置备份的时间戳都按 UTC 记，
+      # 比本地（CST）少 8 小时。
+      - TZ=${TZ:-Asia/Shanghai}
 
     volumes:
-      # CPA 配置文件（只读）。宿主没有这个文件时 Docker 会建一个**空目录**，
-      # 于是工具读不到配置。容器部署请用 CPA_BASE_URL 走管理接口拉配置，
-      # 或把这个挂载改成实际存在的文件。
-      - ./config.yaml:/app/config.yaml:ro
+      # CPA 配置文件（只读）。
+      #
+      # 两个坑都要避开：
+      #  1) 宿主没有这个文件时 Docker 会建一个**同名空目录**顶上去。而
+      #     entrypoint.sh 的 `[ ! -r ... ]` 对目录也返回真，拦不住；
+      #     tool.py 的 os.path.exists() 同样为真，最后在 io.open() 抛
+      #     IsADirectoryError。所以要么保证文件存在，要么改用 CPA_BASE_URL。
+      #  2) `:Z` 是 SELinux 重打标签。CentOS / RHEL / AlmaLinux 上不加会
+      #     Permission denied（宿主安全上下文对不上容器）；Windows 与
+      #     普通 Ubuntu 上加了也无害（`:z`/`:Z` 只对启用了 SELinux 的宿主
+      #     生效）。这个项目的主要部署目标就是 CentOS。
+      #
+      # 宿主确实只有目录没有文件时，把这一段换成 CPA_BASE_URL 走管理接口拉。
+      - ./config.yaml:/app/config.yaml:ro,Z
 
-      # 输出目录（读写）
-      - ./out:/app/out
+      # 输出目录（读写）。`:Z` 的理由同上。
+      - ./out:/app/out:Z
 
       # 设置文件（可选）。不存在时不挂即可，环境变量优先。
-      # - ./设置.json:/app/设置.json:ro
+      # - ./设置.json:/app/设置.json:ro,Z
 
     networks:
       - cpa2sub2api-network
@@ -70,6 +100,16 @@ services:
           cpus: '0.5'
           memory: 512M
 
+    healthcheck:
+      # 只验证"代码能加载"：不碰网络、不依赖 mihomo 是否可用。
+      # 不用 service_healthy 做 depends_on 的判据（见上面的说明），
+      # 这里只为 `docker compose ps` 提供一个人能看懂的状态。
+      test: ["CMD", "python", "-c", "import tool, yaml, model_selection"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 20s
+
     restart: unless-stopped
     stdin_open: true
     tty: true
@@ -89,12 +129,24 @@ services:
       dockerfile: Dockerfile
     container_name: cpa2sub2api-mihomo-init
     profiles: ["mihomo"]
+    pull_policy: always
 
-    # 用本镜像当 init 容器：mihomo 官方镜像是 scratch，没有 shell/curl/python，
-    # 它自己没法把模板展开成 config.yaml。本镜像有 python3 和 sh。
+    # 用本镜像当 init 容器：mihomo 官方镜像里**没有 shell/python/curl**
+    # （只有 busybox 的少量工具），它自己没法把模板展开成 config.yaml。
+    # 本镜像有 python3 和 sh。
     entrypoint: ["/app/mihomo-manager/bootstrap-mihomo.sh"]
     user: "0:0"
     restart: "no"
+
+    # env_file 是必须的，不能只靠下面的 environment 逐项透传：
+    # MIHOMO_SUBSCRIPTIONS 的值形如 `wog=https://...;wogb=https://...`，
+    # 里面同时有 `=` 和 `;`，compose 的 ${VAR} 插值处理不了这种内容，
+    # 而 mihomo-manager/README.md 推荐的正是这种写法。
+    # 少了它 → init 容器拿到的订阅变量为空 → 模板里的占位符展不开 →
+    # bootstrap 打印"未展开的占位符"并以 code 1 退出 → mihomo 因为
+    # service_completed_successfully 永远不启动（表面上只是"代理没生效"）。
+    env_file:
+      - .env
 
     environment:
       - MIHOMO_TARGET_DIR=/mihomo-config
@@ -103,6 +155,7 @@ services:
       - MIHOMO_SUB_WOG=${MIHOMO_SUB_WOG:-}
       - MIHOMO_SUB_WOGB=${MIHOMO_SUB_WOGB:-}
       - MIHOMO_FORCE_REBUILD=${MIHOMO_FORCE_REBUILD:-}
+      - TZ=${TZ:-Asia/Shanghai}
 
     volumes:
       - mihomo-config:/mihomo-config
@@ -117,12 +170,19 @@ services:
     image: metacubex/mihomo:latest
     container_name: mihomo
     profiles: ["mihomo"]
+    pull_policy: always
 
     ports:
       # 只绑回环，仅用于宿主机 curl 验证。
       # 容器之间走 Docker 网络直连容器 IP（服务名 mihomo），不经过这里。
-      - "127.0.0.1:7890:7890"
-      - "127.0.0.1:9090:9090"
+      #
+      # 注意：宿主 7890 被别的代理软件（Clash 等）占着时，这一段会让
+      # `docker compose --profile mihomo up` 直接失败（端口冲突）。
+      # 本机实测就撞到过：7890 是 clash-win64。这时要么停掉它，
+      # 要么把下面的宿主端口改掉（容器内的 7890 不用动，
+      # cpa2sub2api 走的是服务名 mihomo:7890）。
+      - "${MIHOMO_BIND:-127.0.0.1}:${MIHOMO_HTTP_PORT:-7890}:7890"
+      - "${MIHOMO_BIND:-127.0.0.1}:${MIHOMO_API_PORT:-9090}:9090"
 
     volumes:
       # 命名卷，不是 bind mount：宿主不需要预置任何文件，配置由
@@ -130,19 +190,32 @@ services:
       - mihomo-config:/root/.config/mihomo
 
     networks:
-      - cpa2sub2api-network
+      # 服务别名：外部栈（CPA / sub2api）里写死的 proxy-url 通常就是
+      # http://mihomo:7890，别名保证它们在别的网络里也能解析到这个容器。
+      #
+      # 这里只挂自己的网络，不挂 default：compose 的 networks 映射**键**
+      # 不支持变量插值（实测报 "additional properties not allowed"），
+      # 想并入外部栈的网络时用下面的 external-network 覆盖方式，
+      # 见文件末尾 networks 段的说明。
+      cpa2sub2api-network:
+        aliases:
+          - mihomo
 
     depends_on:
       mihomo-init:
         condition: service_completed_successfully
 
-    # 健康检查用 python3 + urllib，**不用 curl**：
-    # metacubex/mihomo 是 busybox 基础镜像，里面没有 curl（有 wget）。
-    # 以前写成 `curl -f http://localhost:9090/`，该检查恒定失败，
-    # 而 cpa2sub2api 又 depends_on service_healthy —— 两个容器互相锁死，
-    # 表现为"mihomo 一直 unhealthy，本工具永远起不来"。
+    # 健康检查用**纯 busybox shell**，不用 curl 也不用 python3。
+    #
+    # 实测（2026-09-19，metacubex/mihomo:latest）镜像里的工具：
+    #   HAVE wget / nc / sed / awk / grep / date
+    #   MISS curl / python / python3
+    # 之前写的是 `python3 healthcheck.py` —— 该镜像里没有 python3，
+    # 这个检查恒定报 "python3: not found"，容器永远是 unhealthy。
+    # 更早的版本用 curl，同样不存在。
+    # 所以改成 sh + healthcheck.sh（只用 busybox 工具，见其头部说明）。
     healthcheck:
-      test: ["CMD", "python3", "/root/.config/mihomo/healthcheck.py"]
+      test: ["CMD", "sh", "/root/.config/mihomo/healthcheck.sh"]
       interval: 60s
       timeout: 20s
       retries: 2
@@ -164,7 +237,19 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.28.0.0/16
+        # 子网可覆盖。写死 172.28.0.0/16 在 VPS 上是常见故障源：
+        # 目标机已有容器占用同一网段时，`docker compose up` 直接失败
+        # （Pool overlaps with other one on this address space），
+        # 而开发机上通常只有一两个 stack，一直空着看不出问题。
+        # 撞了就在 .env 里设 CPA2SUB2API_SUBNET=172.29.0.0/16。
+        - subnet: ${CPA2SUB2API_SUBNET:-172.28.0.0/16}
+
+  # 与外部栈共享的网络（可选）。
+  #
+  # 独立部署（本文件自带 mihomo、sub2api 从外面来）时，把
+  # docker-compose.cpa2sub2api.yml 叠加上来即可：那一份把本服务接到外部
+  # 已存在的 sub2api-network 上，并以 external: true 引用。
+  # 两份文件分工明确，本文件不重复定义外部网络，避免"网络名冲突/重复定义"。
 
 volumes:
   # mihomo 的配置与节点缓存。用命名卷而不是宿主目录，

@@ -175,6 +175,8 @@
     <li><a href="#s7">工作原理</a></li>
     <li><a href="#s8">故障排查</a></li>
     <li><a href="#s9">附录：环境变量表</a></li>
+    <li><a href="#s10">站方只认特定客户端：怎么让导入后的路由等价于直连</a></li>
+    <li><a href="#s11">VPS 部署验收清单</a></li>
   </ol>
 </div>
 
@@ -447,9 +449,9 @@ DOCKERHUB_IMAGE=cpa2sub2api        # 可选，留空则用仓库名</pre></div>
 DOCKERHUB_USERNAME=你的用户名
 DOCKERHUB_IMAGE=cpa2sub2api
 
-# sub2api 管理地址。**必须用服务名**，不能写 127.0.0.1 ——
+# sub2api 管理地址。必须用服务名，不能写 127.0.0.1 ——
 # 容器里的 127.0.0.1 是本容器自己，不是 sub2api。
-# 端口用 sub2api **容器内**监听的端口，不是宿主映射端口。
+# 端口用 sub2api 容器内监听的端口，不是宿主映射端口。
 SUB2API_BASE_URL=http://sub2api:8080
 SUB2API_ADMIN_KEY=你的管理员密钥
 
@@ -724,6 +726,248 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
   返回 <code>403</code> 加一行 <code>error code: 1010</code>。
   注意这是 CF 边缘直接拒绝、请求根本没到源站，所以在 sub2api 日志里
   <b>什么都看不到</b>。鉴权仍然照常校验，这只是让合法的自动化请求不被按 UA 一刀切。
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h3>4.5 <code>config.yaml</code> 逐字段说明 <span class="bd bd-new">新增</span></h3>
+
+<p>
+  这一节回答的是「<b>CPA 的 config.yaml 里每个字段是什么意思、本工具怎么用它</b>」。
+  与 4.1–4.4 的关系：4.1–4.4 讲的是<b>本工具的配置</b>（<code>.env</code>），
+  这一节讲的是<b>输入数据</b>的格式。
+</p>
+
+<div class="box note">
+  <b>先分清两个同名文件</b>
+  <code>config.yaml</code> 这个名字在本项目里指两样东西，很容易混淆：
+  <br>· <b>CPA 的 config.yaml</b> —— 输入。CPA / CPAMP 生成的配置，里面有你要导入的全部上游凭据。
+  <br>· <b>本项目的 config.yaml.example</b> —— 只是<b>模板示意</b>，不参与运行。
+  <br>本工具读的是前者，容器里挂在 <code>/app/config.yaml</code>（只读）。
+</div>
+
+<p>config.yaml 里与本工具相关的顶层段一共 6 个，各自对应 sub2api 的一个渠道：</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>顶层段名</th><th>平台</th><th>渠道分组</th><th>协议</th></tr></thead>
+<tbody>
+<tr><td><code>claude-api-key</code></td><td>anthropic</td><td>CPA-Claude</td><td>Anthropic Messages</td></tr>
+<tr><td><code>codex-api-key</code></td><td>openai</td><td>CPA-Codex</td><td>强制 Responses</td></tr>
+<tr><td><code>openai-compatibility</code></td><td>openai</td><td>CPA-OpenAI</td><td>强制 Chat Completions</td></tr>
+<tr><td><code>gemini-api-key</code></td><td>gemini</td><td>CPA-Gemini</td><td>Gemini 原生</td></tr>
+<tr><td><code>interactions-api-key</code></td><td>gemini</td><td>CPA-Gemini</td><td>同 gemini</td></tr>
+<tr><td><code>xai-api-key</code></td><td>grok</td><td>CPA-Grok</td><td>同 codex 结构</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><b>凭据级字段</b>（每个段下面 <code>- </code> 开头的条目）——这些是最需要看明白的：</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>字段</th><th>含义</th><th>本工具怎么处理</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>api-key</code></td>
+  <td>上游密钥明文</td>
+  <td>原样迁到 sub2api 的 <code>credentials.api_key</code>。<b>必填</b>——为空会被跳过，
+      并记进「丢弃说明」让你看得见（以前是无声丢弃）</td>
+</tr>
+<tr>
+  <td><code>base-url</code></td>
+  <td>上游端点</td>
+  <td>迁到 <code>credentials.base_url</code>；同时决定归组用的<b>域名</b></td>
+</tr>
+<tr>
+  <td><code>priority</code></td>
+  <td>选择偏好，<b>数值越大越优先</b></td>
+  <td>映射成 sub2api 的桶号（数值越<b>小</b>越优先，方向相反）。
+      同一渠道同一域名的多个 KEY 会拿到<b>同一个桶号</b>，互为备份</td>
+</tr>
+<tr>
+  <td><code>weight</code></td>
+  <td>加权轮询份额。省略=1，<b>非正数=排除</b></td>
+  <td>sub2api 没有对应字段。默认策略是「降到队尾」（可逆），
+      而不是建成停用（不可逆）。见 4.3 的 <code>WEIGHT_ZERO_POLICY</code></td>
+</tr>
+<tr>
+  <td><code>prefix</code></td>
+  <td>模型命名空间前缀，如 <code>ANT/</code></td>
+  <td>只进备注（sub2api 侧靠分组区分渠道），不参与调度</td>
+</tr>
+<tr>
+  <td><code>models</code></td>
+  <td>该凭据提供的模型列表（含 <code>alias</code> 别名）</td>
+  <td>经「就高原则」筛成 sub2api 的 <code>model_mapping</code> 白名单，见 7.4</td>
+</tr>
+<tr>
+  <td><code>excluded-models</code></td>
+  <td>该凭据<b>排除</b>的模型</td>
+  <td>从白名单里减掉（sub2api 没有黑名单字段）。
+      减空了会写一个占位项，防止「空表=放行全部」的反向事故</td>
+</tr>
+<tr>
+  <td><code>headers</code></td>
+  <td>附加请求头</td>
+  <td>迁到 <code>credentials.header_overrides</code>。
+      <b>值以 <code>$</code> 开头的是动态头</b>（从下游请求复制同名头），
+      sub2api 只能存静态值，所以整条丢弃并记进「丢弃说明」。
+      另外黑名单（<code>authorization</code> / <code>x-api-key</code> / <code>cookie</code> 等 30 条）
+      里的头会被剔除——带了服务端会 400 拒掉整条账号</td>
+</tr>
+<tr>
+  <td><code>proxy-url</code></td>
+  <td>该凭据走哪个代理</td>
+  <td>迁到顶层 <code>proxy_id</code>（sub2api 的代理是独立实体，
+      本工具会按 URL 去重建/复用）。同域名的其它条目会自动跟进</td>
+</tr>
+<tr>
+  <td><code>request-scoped-errors</code></td>
+  <td>自定义上游错误分类规则（<code>status</code> / <code>match</code> / <code>action</code>）</td>
+  <td>迁到 <code>credentials.temp_unschedulable_rules</code>。
+      只有 <code>*-and-cooldown</code> 类 action 会建规则；
+      <code>match-regexr</code>（正则）无法迁移，因为 sub2api 只支持子串匹配</td>
+</tr>
+<tr>
+  <td><code>cloak</code></td>
+  <td>请求伪装（改 system 提示、注入计费头、混淆敏感词）</td>
+  <td>写入 <code>extra.cloak</code>，但 <b>sub2api 网关层没有消费逻辑</b>，
+      写了不生效。已在备注里标注</td>
+</tr>
+<tr>
+  <td><code>fingerprint-profile</code></td>
+  <td>选 Claude Code 请求指纹</td>
+  <td>只置 <code>extra.enable_tls_fingerprint=true</code>。
+      <b>模板绑定需要人工做</b>：sub2api 的 TLS 指纹只对 Anthropic OAuth /
+      setup-token 账号生效，而本工具导入的全是 api_key 账号</td>
+</tr>
+<tr>
+  <td><code>websockets</code></td>
+  <td>启用 Responses API websocket 传输</td>
+  <td>迁到 <code>extra.openai_ws_enabled</code></td>
+</tr>
+<tr>
+  <td><code>alpha-search</code></td>
+  <td>xAI 搜索能力</td>
+  <td>迁到 <code>credentials.openai_capabilities</code>（xai 段强制 false）</td>
+</tr>
+<tr>
+  <td><code>disabled</code></td>
+  <td>该 provider 是否关闭（只在 <code>openai-compatibility</code> 有）</td>
+  <td>建成 <code>status=inactive</code>。但<b>仍然会被探活</b>——
+      探活证明可用后会重新启用，见 4.3 的 <code>REVIVE_PROVEN_INACTIVE</code></td>
+</tr>
+<tr>
+  <td><code>api-key-entries</code></td>
+  <td>provider 下挂的多个 key（只在 <code>openai-compatibility</code> 有）</td>
+  <td>每个 entry 展成一条独立账号。
+      <b>entry 级只有 3 个字段</b>：<code>api-key</code> / <code>weight</code> / <code>proxy-url</code>
+      ——priority 是 provider 级的，所以同一 provider 下的所有 key 共用同一个桶号</td>
+</tr>
+<tr>
+  <td><code>rebuild-mid-system-message</code></td>
+  <td>把 role=system 的中途消息提到顶层</td>
+  <td>无 sub2api 等价物，只记进备注</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p><b>顶层全局字段</b>里，本工具真正会读的只有一处：</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>字段</th><th>本工具怎么用</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>routing.strategy</code></td>
+  <td>决定 <code>weight&lt;=0</code> 是否等于停用。
+      CPA 只在 <code>weighted-round-robin</code> 下排除零权重凭据；
+      其它策略（<code>round-robin</code> / <code>fill-first</code>）下零权重照常参与调度，
+      这时本工具<b>不会</b>降级它——否则等于凭空改变调度顺序</td>
+</tr>
+<tr>
+  <td>其余全局项（<code>port</code> / <code>tls</code> / <code>debug</code> / <code>cloak</code> 全局开关等）</td>
+  <td>本工具不读取、不迁移。它们作用于 CPA 自己那一侧的行为</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="box tip">
+  <b>最小可用的 config.yaml 长什么样</b>
+  只有两段是必须的：至少一个 <code>*-api-key</code> 段，每段里至少一个带
+  <code>api-key</code> 和 <code>base-url</code> 的条目。下面的骨架可以直接复制改。
+</div>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># CPA 的 config.yaml —— 最小可用骨架
+# 注意：这是 CPA 那边生成的配置，不是本工具的配置（本工具是 .env）
+
+port: 8317
+
+# 决定 weight&lt;=0 是否等于停用。本工具会读这一项。
+routing:
+  strategy: weighted-round-robin
+
+# ── Claude 渠道 ──────────────────────────────────────
+claude-api-key:
+  - api-key: "sk-ant-你的密钥"
+    base-url: "https://上游.example.com"
+    prefix: "ANT"
+    priority: 100          # 数值越大越优先（与 sub2api 相反，本工具会翻转）
+    weight: 1
+    models:
+      - name: "claude-opus-5"
+        alias: "claude-opus-5"
+    headers:
+      user-agent: "claude-cli/2.1.258 (external, cli)"
+      x-app: "cli"
+
+# ── Codex 渠道（走 Responses 协议）──────────────────
+codex-api-key:
+  - api-key: "sk-你的密钥"
+    base-url: "https://上游.example.com/v1"
+    prefix: "CDX"
+    priority: 100
+    models:
+      - name: "gpt-6-astra"
+        alias: "gpt-6-astra"
+
+# ── OpenAI 兼容渠道（provider 级 priority，key 挂在 entries 下）──
+openai-compatibility:
+  - name: "某聚合站"
+    base-url: "https://聚合站.example.com"
+    prefix: "CHMA"
+    priority: 100
+    models:
+      - name: "claude-opus-5"
+        alias: "claude-opus-5"
+    api-key-entries:
+      - api-key: "sk-密钥一"
+        weight: 1
+      - api-key: "sk-密钥二"
+        weight: 1
+        proxy-url: "http://mihomo:7890"   # 这个 key 单独走代理
+
+# ── Gemini 渠道 ─────────────────────────────────────
+gemini-api-key:
+  - api-key: "AIza...你的密钥"
+    base-url: "https://generativelanguage.googleapis.com"
+    prefix: "GLE"
+    priority: 100
+    models:
+      - name: "gemini-3.1-pro"
+        alias: "gemini-3.1-pro"
+</pre></div>
+
+<div class="box warn">
+  <b>容器里别把 config.yaml 目录挂进去</b>
+  如果宿主上那个路径是<b>目录</b>（比如 Docker 因为文件不存在而自动建了一个同名空目录），
+  <code>os.path.exists()</code> 会返回真，最后在读取时抛 <code>Is a directory</code>。
+  容器检查用 <code>[ ! -r ... ]</code> 也拦不住——目录是可读的。
+  两个办法：确认宿主上确实是<b>文件</b>；或者干脆不挂载，改用
+  <code>CPA_BASE_URL</code> 走管理接口在线拉取。
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -2089,6 +2333,243 @@ TZ=Asia/Shanghai</pre></div>
   环境变量 &gt; <code>设置.json</code> &gt; 内置默认值。
   容器部署请只用环境变量，不要混用 <code>设置.json</code> ——
   两份配置同时存在时排查会非常混乱。
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="s10">十、站方只认特定客户端：怎么让导入后的路由等价于直连</h2>
+
+<p>
+  这是需求第 2 条⑴要解决的核心问题，也是实际最常见的「明明能用却报错」：
+  <b>同一个上游，直接填进 cc-switch 能跑通，经 CPA / sub2api 中转就报
+  <code>503 No available accounts</code></b>（有时附带一句
+  <code>this group only allows ...</code>）。
+</p>
+
+<div class="box note">
+  <b>为什么直连可以、中转不行</b>
+  区别不在密钥、不在地址，在<b>请求头</b>。这类站点（多是中转/聚合站）
+  会校验客户端形态，只放行特定客户端的请求特征：
+  <code>User-Agent</code> 是不是 <code>claude-cli/…</code>、
+  有没有 <code>x-app: cli</code>、<code>anthropic-beta</code> 带的标记对不对。
+  cc-switch 直连时，这些头由 Claude Code / Codex 客户端自己发出去，所以正常；
+  一旦走中转，发出请求的变成了网关，头就没了。
+</div>
+
+<h3>10.1 本工具现在怎么做</h3>
+
+<p>
+  原来的实现是<b>纯被动搬运</b>：CPA 的 config.yaml 里写了 <code>headers</code> 就搬过去，
+  没写就什么都不带。问题在于——<b>靠 CPA 默认伪装跑通的站点，config.yaml 里往往根本没写这些头</b>，
+  于是导入 sub2api 后请求形态退化，站点就不认了。
+</p>
+
+<p>
+  现在改为「<b>搬运 + 补缺</b>」：把 CPA 里已有的头原样搬过去，
+  再把 CPA 没给、但客户端形态必需的头补齐。<b>只补缺，绝不覆盖你显式配的值。</b>
+</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>平台</th><th>补入的客户端头</th></tr></thead>
+<tbody>
+<tr><td>anthropic<br><span style="color:var(--fg2);font-size:.85rem">Claude 渠道</span></td>
+    <td><code>user-agent: claude-cli/2.1.258 (external, cli)</code>、<code>x-app: cli</code>、
+        <code>anthropic-dangerous-direct-browser-access: true</code>、
+        <code>x-stainless-*</code> 六项、<code>anthropic-beta</code></td></tr>
+<tr><td>openai<br><span style="color:var(--fg2);font-size:.85rem">Codex / OpenAI 渠道</span></td>
+    <td><code>user-agent: codex_cli_rs/…</code>、<code>originator: codex_cli_rs</code></td></tr>
+<tr><td>gemini</td>
+    <td><code>user-agent: GeminiCLI/…</code>、<code>x-goog-api-client</code>、<code>accept</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box tip">
+  <b>这套头的来源不是拍脑袋</b>
+  它照抄的是 sub2api <b>自己内置</b>的客户端伪装常量
+  （<code>backend/internal/pkg/claude/constants.go</code> 的 <code>DefaultHeaders</code>
+  与 beta 族）。所以补出来的形态与 sub2api 原生伪装<b>完全一致</b>，不会自相矛盾。
+</div>
+
+<div class="box warn">
+  <b>还补不上「站方要的是一个我们不知道的头」这种情况</b>
+  如果某个站点只认某个私有头，本工具无从推断。此时在 CPA 的 config.yaml 里
+  给该凭据显式写上 <code>headers</code>，本工具会原样搬过去。这是唯一可靠的途径。
+</div>
+
+<h3>10.2 怎么确认补上了</h3>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># 1) 看对照表里该账号的「请求头」列：显示"12(丢10)"表示 12 个头里保留了 2 个
+grep "你的域名" out/对照表.md | head -3
+
+# 2) 直接查 sub2api 库里落库的结果（把域名换成你的）
+docker exec sub2api-postgres psql -U sub2api -d sub2api -c "
+SELECT name, status, priority,
+       credentials->'header_overrides'->>'user-agent' AS ua,
+       credentials->'header_overrides'->>'x-app'      AS xapp
+FROM accounts
+WHERE credentials->>'base_url' LIKE '%你的域名%'
+LIMIT 5;"
+
+# 3) 确认有 header_overrides 的账号数
+docker exec sub2api-postgres psql -U sub2api -d sub2api -c "
+SELECT count(*) FILTER (WHERE credentials ? 'header_overrides') AS 有头,
+       count(*) AS 总数
+FROM accounts;"</pre></div>
+
+<h3>10.3 仍然报 503 时的分类排查</h3>
+
+<p><code>503</code> 不止一种成因，按错误原文分流：</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>错误原文特征</th><th>真实成因</th><th>本工具能做什么</th></tr></thead>
+<tbody>
+<tr>
+  <td>带 <code>this group only allows ...</code></td>
+  <td>站方按客户端形态拦。请求头没伪装到位</td>
+  <td>已尽力：自动补齐客户端形态头（见 10.1）。
+      仍不通说明站方要的是私有头 → 在 CPA 的 <code>headers</code> 里显式写</td>
+</tr>
+<tr>
+  <td>带 <code>request id</code>、<code>invalid codex request</code></td>
+  <td>凭据声明的模型列表里有上游没有的模型名，
+      或协议模式（Responses / Chat Completions）不匹配</td>
+  <td>属上游/CPA 侧配置问题，本工具不臆改。
+      检查该凭据的 <code>models</code> 是否与上游实际提供的一致</td>
+</tr>
+<tr>
+  <td>日志里全是同一个账号，<code>sticky_honored=true</code></td>
+  <td>凭据级错误被判为<b>非重试</b>，请求粘死在已耗尽的账号上，低优先级站一次都不试</td>
+  <td>已修：402「预算池耗尽」这类整站级错误会下发更长的域名级冷却规则，
+      让请求转到同桶的其它 KEY（见 7.3）</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="s11">十一、VPS 部署验收清单</h2>
+
+<p>
+  本地跑通不等于 VPS 跑通。<b>下面每一条都是实测踩过的</b>，
+  症状都是「本机一切正常、VPS 上一堆问题」。
+</p>
+
+<figure>
+<svg viewBox="0 0 900 340" role="img" aria-label="本机与 VPS 的差异来源示意">
+  <rect x="20" y="20" width="400" height="300" rx="12" fill="#0F131C" stroke="#38BDF8" stroke-width="1.5"/>
+  <text x="220" y="50" fill="#38BDF8" font-size="17" font-weight="bold" text-anchor="middle">本机（Docker Desktop）</text>
+  <text x="45" y="85" fill="#6EE7B7" font-size="13">· bind mount 权限位不生效（谁都能写）</text>
+  <text x="45" y="115" fill="#6EE7B7" font-size="13">· 通常只跑一两个 stack，网段空着</text>
+  <text x="45" y="145" fill="#6EE7B7" font-size="13">· SELinux 默认没有/宽松</text>
+  <text x="45" y="175" fill="#6EE7B7" font-size="13">· Docker Desktop 支持 host.docker.internal</text>
+  <text x="45" y="205" fill="#6EE7B7" font-size="13">· DNS 由宿主转发，很少被拦</text>
+  <text x="45" y="235" fill="#6EE7B7" font-size="13">· 先 build 再 up，天然是最新代码</text>
+  <text x="45" y="285" fill="#FBBF24" font-size="14" font-weight="bold">→ 全绿，看不到问题</text>
+
+  <rect x="480" y="20" width="400" height="300" rx="12" fill="#0F131C" stroke="#FB7185" stroke-width="1.5"/>
+  <text x="680" y="50" fill="#FB7185" font-size="17" font-weight="bold" text-anchor="middle">VPS（CentOS 9 + 只拉镜像）</text>
+  <text x="505" y="85" fill="#EF4444" font-size="13">· ./out 属 root，uid 1000 写不进去</text>
+  <text x="505" y="115" fill="#EF4444" font-size="13">· 已有容器占用 172.28/172.25 网段</text>
+  <text x="505" y="145" fill="#EF4444" font-size="13">· SELinux enforcing，缺 :Z 读不到</text>
+  <text x="505" y="175" fill="#EF4444" font-size="13">· 原生 Docker 没有 host.docker.internal</text>
+  <text x="505" y="205" fill="#EF4444" font-size="13">· 可能屏蔽 1.1.1.1 / 8.8.8.8 的 DoH</text>
+  <text x="505" y="235" fill="#EF4444" font-size="13">· up -d 不自动拉新镜像，会跑旧代码</text>
+  <text x="505" y="285" fill="#FBBF24" font-size="14" font-weight="bold">→ 需要下面这份清单逐条核对</text>
+
+  <line x1="425" y1="170" x2="475" y2="170" stroke="#6B7280" stroke-width="2" stroke-dasharray="5,4"/>
+</svg>
+<figcaption>图 17　「本机全绿、VPS 报错」的六类根因，全部来自环境差异而非代码差异</figcaption>
+</figure>
+
+<div class="tw">
+<table>
+<thead><tr><th>#</th><th>检查项</th><th>一条命令</th><th>不对时的症状</th></tr></thead>
+<tbody>
+<tr>
+  <td>1</td>
+  <td>镜像真的是最新的</td>
+  <td><code>docker compose pull cpa2sub2api &amp;&amp; docker compose up -d cpa2sub2api</code></td>
+  <td>改了代码、推了 CI，VPS 行为还是旧的。<br>
+      Docker 默认「本地没有才拉」，<code>up -d</code> 不会拉新。本仓库的 compose 已设 <code>pull_policy: always</code></td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><code>out</code> 目录可写</td>
+  <td><code>docker compose run --rm cpa2sub2api sh -c 'touch /app/out/t &amp;&amp; echo OK'</code></td>
+  <td><code>Permission denied: '/app/out/…'</code>，
+      import-plan.json / 对照表.md 全写不出来</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>SELinux 标签</td>
+  <td><code>getenforce</code>（enforcing 就需要挂载带 <code>:Z</code>）</td>
+  <td><code>Permission denied</code> 读不到 config.yaml</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td>子网不冲突</td>
+  <td><code>docker network ls</code> + 在 <code>.env</code> 设 <code>CPA2SUB2API_SUBNET=172.29.0.0/16</code></td>
+  <td><code>Pool overlaps with other one on this address space</code></td>
+</tr>
+<tr>
+  <td>5</td>
+  <td>sub2api 管理接口可达</td>
+  <td><code>docker compose run --rm cpa2sub2api python 一键导入.py --dry-run</code>，看 <code>[1/5]</code></td>
+  <td><code>401</code> 密钥不对 / <code>404</code> 地址不对 / <strong><code>423</code> 合规确认未做</strong>（见 11.1）</td>
+</tr>
+<tr>
+  <td>6</td>
+  <td>config.yaml 是文件不是目录</td>
+  <td><code>docker compose run --rm cpa2sub2api ls -l /app/config.yaml</code></td>
+  <td><code>[Errno 21] Is a directory: '/app/config.yaml'</code></td>
+</tr>
+<tr>
+  <td>7</td>
+  <td>mihomo 出口真的通</td>
+  <td><code>docker compose exec mihomo sh -c 'wget -q -Y off -T 5 -O /dev/null http://www.gstatic.com/generate_204 &amp;&amp; echo 直连OK'</code></td>
+  <td>容器报 <code>unhealthy</code>；所有上游 502/524</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h3>11.1 <code>423 Locked</code>：这<b>不是</b>密钥问题</h3>
+
+<div class="box danger">
+  <b>症状极具误导性</b>
+  密钥是对的、地址是对的、<code>docker compose ps</code> 一切正常，
+  但所有管理接口都返回 <code>423</code>。很容易误判成「密钥填错了」而去反复改密钥，
+  改了也没用。
+</div>
+
+<p>
+  真因：sub2api 给管理员加了<b>合规确认门禁</b>。管理员没有在面板上确认合规承诺之前，
+  所有 <code>/api/v1/admin/*</code> 都被中间件直接拦掉，返回
+  <code>423 Locked</code> + <code>ADMIN_COMPLIANCE_ACK_REQUIRED</code>。
+</p>
+
+<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
+<pre># 确认是不是这个原因（看 HTTP 状态码）
+docker compose run --rm cpa2sub2api python -c "
+import tool
+s = tool.load_settings()
+ok, msg = tool.Sub2Api(s).ping()
+print(msg)"
+
+# 修复：用管理员账号登录 sub2api 面板，按提示确认合规承诺。
+# 每个管理员各确认一次（确认记录是按 user_id 存的）。
+
+# 命令行确认（可选，把 ID 换成你的管理员 user id）：
+docker exec sub2api-postgres psql -U sub2api -d sub2api -c "
+SELECT id, email, role FROM users WHERE role='admin';"</pre></div>
+
+<div class="box tip">
+  <b>本工具会把这个状态翻译成人话</b>
+  <code>ping()</code> 认出 <code>423</code> 后会直接告诉你「这是合规确认门禁，
+  不是密钥问题」，并给出处理步骤，不用自己对着状态码猜。
 </div>
 
 <footer>

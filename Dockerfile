@@ -62,11 +62,16 @@ COPY --chown=app:app . .
 # mihomo 自举脚本与容器入口都必须以可执行的方式进镜像：
 #   · mihomo-init 容器用 bootstrap-mihomo.sh 当 entrypoint；
 #   · 本容器的 CMD 是 entrypoint.sh。
+#   · healthcheck.sh 是 **mihomo 容器**的健康检查脚本（纯 busybox shell，
+#     因为 metacubex/mihomo 镜像里没有 python3/curl）。它由
+#     bootstrap-mihomo.sh materialize 到命名卷，再被 compose 的
+#     healthcheck: sh /root/.config/mihomo/healthcheck.sh 调用。
 # 显式 chmod 一遍，不依赖宿主文件系统的执行位（Windows 上 checkout 出来的
 # 文件往往没有 x 位，靠 git 记录不可靠）。
 RUN chmod +x /app/entrypoint.sh \
              /app/mihomo-manager/*.sh \
-             /app/mihomo-manager/mihomo/healthcheck.py
+             /app/mihomo-manager/mihomo/healthcheck.py \
+             /app/mihomo-manager/mihomo/healthcheck.sh
 
 # 创建输出目录
 RUN mkdir -p /app/out && chown app:app /app/out
