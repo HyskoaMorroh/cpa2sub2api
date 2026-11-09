@@ -403,8 +403,11 @@ class AdminCalibrationTests(unittest.TestCase):
     def test_long_429_cooldown_is_not_shortened_to_budget(self):
         with fixture("limited") as server:
             origin = "http://127.0.0.1:%d" % server.server_address[1]
+            # Obtain the actual 429 even when interpreter startup is slow.
+            # Retry-After is still 60s, well beyond this request budget; the
+            # no-sleep and exactly-one-request assertions below stay intact.
             cfg = {"sub2api_base_url": origin, "sub2api_admin_key": "synthetic",
-                   "http_timeout": .35, "http_retries": 2}
+                   "http_timeout": 2, "http_retries": 2}
             api = tool.Sub2Api(cfg)
             start_calibration(api, cfg)
             with patch.object(tool.time, "sleep") as sleep, \

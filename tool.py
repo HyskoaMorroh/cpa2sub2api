@@ -1371,8 +1371,13 @@ class Sub2Api(object):
         建成 active），要停用只能建完再单独改一次。这是 sub2api 的既定行为，
         不是可以绕过的参数问题。
         """
-        return self._call("PUT", "/api/v1/admin/accounts/%d" % aid, patch,
-                          idem=idempotency_key({"id": aid, "patch": patch}))
+        wire = dict(patch)
+        if "proxy_id" in wire and wire["proxy_id"] is None:
+            # Native *int64 treats JSON null as omitted; explicit zero clears it.
+            # Keep desired/readback None and normalize only the outgoing DTO.
+            wire["proxy_id"] = 0
+        return self._call("PUT", "/api/v1/admin/accounts/%d" % aid, wire,
+                          idem=idempotency_key({"id": aid, "patch": wire}))
 
     def bulk_update_accounts(self, ids, patch):
         """POST /accounts/bulk-update。一次改多条账号。
@@ -1389,6 +1394,8 @@ class Sub2Api(object):
         """
         body = {"account_ids": list(ids)}
         body.update(patch)
+        if "proxy_id" in body and body["proxy_id"] is None:
+            body["proxy_id"] = 0
         return self._call("POST", "/api/v1/admin/accounts/bulk-update", body,
                           idem=idempotency_key(body))
 

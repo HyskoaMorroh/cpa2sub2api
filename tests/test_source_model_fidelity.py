@@ -552,6 +552,125 @@ class SourceModelFidelityTests(unittest.TestCase):
             {record["name"]: copy.deepcopy(row)}), (0, 1, []))
         self.assertEqual(len(writes), count)
 
+    def test_actual_put_and_bulk_wire_clear_proxy_with_zero_not_null(self):
+        rows = {31: {"proxy_id": 77}}
+        wires = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def send(self, value):
+                data = json.dumps(value).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                self.send({"data": rows[31]})
+
+            def change(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                wires.append((self.command, copy.deepcopy(body)))
+                # Native *int64 decoding: null and absent are both nil/no update.
+                if body.get("proxy_id") is not None:
+                    rows[31]["proxy_id"] = None if body["proxy_id"] == 0 else body["proxy_id"]
+                self.send({"data": {"success": True}})
+
+            do_PUT = change
+            do_POST = change
+
+            def log_message(self, *_):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        api = tool.Sub2Api(dict(tool.DEFAULTS, sub2api_base_url="http://127.0.0.1:%d" % server.server_port,
+                               sub2api_admin_key="synthetic-admin"))
+        for bulk in (False, True):
+            rows[31]["proxy_id"] = 77
+            patch = {"proxy_id": None}
+            if bulk:
+                api.bulk_update_accounts([31], patch)
+            else:
+                api.update_account(31, patch)
+            self.assertIsNone(rows[31]["proxy_id"])
+            self.assertEqual(wires[-1][1]["proxy_id"], 0)
+            self.assertIsNone(patch["proxy_id"])
+
+    def test_actual_sync_and_stopped_phase_readback_proxy_clear_stays_none(self):
+        records, _ = self.records()
+        record = records[0]
+        desired = self.account(record)
+        row = dict(copy.deepcopy(desired), id=31, status="active", schedulable=True, proxy_id=77)
+        wires = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def send(self, value):
+                data = json.dumps(value).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                self.send({"data": row})
+
+            def change(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                wires.append((self.command, copy.deepcopy(body)))
+                for key, value in body.items():
+                    if key == "account_ids":
+                        continue
+                    if key == "proxy_id":
+                        if value is not None:
+                            row[key] = None if value == 0 else value
+                    elif key == "schedulable" and self.command == "PUT":
+                        continue
+                    elif key in ("extra", "credentials") and self.command == "POST":
+                        row[key].update(copy.deepcopy(value))
+                    else:
+                        row[key] = copy.deepcopy(value)
+                self.send({"data": {"success": True}})
+
+            do_PUT = change
+            do_POST = change
+
+            def log_message(self, *_):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        settings = dict(tool.DEFAULTS, sub2api_base_url="http://127.0.0.1:%d" % server.server_port,
+                        sub2api_admin_key="synthetic-admin")
+        api = tool.Sub2Api(settings)
+        self.assertEqual(tool.sync_existing_accounts(api, records, settings, {"Codex": 1}, {},
+            {record["name"]: copy.deepcopy(row)}), (1, 0, []))
+        self.assertIsNone(row["proxy_id"])
+        self.assertEqual(wires[-1][1]["proxy_id"], 0)
+        self.assertIsNone(desired["proxy_id"])
+        # Force the source-stop multi-phase branch with notes and an old proxy.
+        row.update(proxy_id=88, status="inactive", schedulable=False)
+        row["extra"]["cpa2sub2api_source_disabled"] = True
+        row["notes"] += " old source stop"
+        before = len(wires)
+        self.assertEqual(tool.sync_existing_accounts(api, records, settings, {"Codex": 1}, {},
+            {record["name"]: copy.deepcopy(row)}), (1, 0, []))
+        self.assertIsNone(row["proxy_id"])
+        self.assertEqual((row["status"], row["schedulable"]), ("active", True))
+        phase = wires[before:]
+        self.assertEqual(phase[0][1]["schedulable"], False)
+        self.assertTrue(any(method == "PUT" and body.get("proxy_id") == 0 for method, body in phase))
+        self.assertEqual(phase[-1][1]["schedulable"], True)
+        count = len(wires)
+        self.assertEqual(tool.sync_existing_accounts(api, records, settings, {"Codex": 1}, {},
+            {record["name"]: copy.deepcopy(row)}), (0, 1, []))
+        self.assertEqual(len(wires), count)
+
 
 if __name__ == "__main__":
     unittest.main()
