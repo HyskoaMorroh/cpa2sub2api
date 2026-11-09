@@ -107,7 +107,8 @@ jobs:
   # ── 先测再构建。测试失败就不该产出镜像 ────────────────────────────
   test:
     needs: native
-    runs-on: ubuntu-latest
+    # Keep Python 3.9 on a runner with official tool-cache builds.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     strategy:
