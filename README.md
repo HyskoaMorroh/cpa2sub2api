@@ -234,7 +234,7 @@ sub2api API key 账号本身没有等价消费者的 CPA 行为，通过可选 `
 
 consumer 的来源记录位于 `/app/third_party/CLIProxyAPI.PROVENANCE.json`，包括固定上游 commit、构建镜像、二进制 SHA256、构建输入摘要、CGO、Go版本与架构。诊断功能标识为 `cpa2sub2api-diagnostic-no-redirect-v1`；它区分本项目派生 consumer 与原版上游镜像。relay 还要求实际可执行文件和来源记录同时证明 `automatic_output_cap: 16` 与 `automatic_output_header: X-CPA2SUB2API-Auto-Output-Cap`；旧二进制只有原诊断标识时不能就绪。自动请求在 CPA 的全部 payload 规则处理后、最后出站前限制输出为最多16；无法证明小输出的压缩、签名、thinking/reasoning 等配置受控跳过，不降低选定的真实最高模型。诊断入口选择精确 KEY、关闭重试并拒绝跟随重定向；relay 将诊断30x转换为受控非重定向错误，去掉 Location，避免下游客户端再次跟随。普通业务保留原传输行为；手工诊断不使用自动16输出额度，仍遵守诊断分支的禁止重定向和授权检查。不能把重试次数为0当作重定向已经关闭。
 
-原生周计划使用工具自动生成的 `aRID40-hash64` 自动诊断model标记；显式手工诊断使用 `dRID40-hash64`。两类标记都由当前route与实际model摘要组成，固定106个合法ASCII字符，并各自写入精确self-map，完整保留普通及通配模型映射。不要人工拼接 `dRID/model`，Gemini URL模型片段不允许斜线。relay在认证、当前route/model、双闸授权及自动周预算验证后才选内部诊断prefix；自动票据还绑定当前主机、KEY来源、模型和代际。不要手工改标记或把它当真实上游模型名。
+原生周计划使用工具自动生成的 `aRID40-hash58` 自动诊断model标记；显式手工诊断使用 `dRID40-hash58`。两类新标记都由当前route与实际model摘要组成，固定100个合法ASCII字符，符合当前原生计划DTO的model_id长度上限；旧106字符标记仅为已有state兼容读取保留，不用于新建计划，并各自写入精确self-map，完整保留普通及通配模型映射。不要人工拼接 `dRID/model`，Gemini URL模型片段不允许斜线。relay在认证、当前route/model、双闸授权及自动周预算验证后才选内部诊断prefix；自动票据还绑定当前主机、KEY来源、模型和代际。不要手工改标记或把它当真实上游模型名。
 
 公开模板默认 `REQUEST_RELAY_ENABLED=false`，保留可直接迁移输入的原行为。若预览提示该输入需要 relay，必须同时启用开关和 profile：
 
