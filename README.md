@@ -416,6 +416,8 @@ docker compose logs --tail 200 cpa2sub2api
 
 ## 本地开发与验证
 
+本地直连 CLI 和配置编译支持 Python 3.9+；request relay 需要 Python 3.10+，推荐使用镜像内 Python 3.11。
+
 ```bash
 pip install -r requirements.txt
 python run.py

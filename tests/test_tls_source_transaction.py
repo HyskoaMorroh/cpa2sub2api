@@ -6,6 +6,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+if __package__:
+    from ._test_compat import write_text_lf
+else:
+    from _test_compat import write_text_lf
+
 import tool
 import tls_diagnostic_transaction as tls
 from relay.config import RelayError, export_bundle, load_bundle, route_id
@@ -50,7 +55,7 @@ class TLSSourceTransactionTests(unittest.TestCase):
         self.settings = {"request_relay_state_dir": str(self.root), "request_relay_enabled": True,
             "request_relay_force_all_accounts": True, "model_probe_enabled": True,
             "online_probe_hosts": {"fixture.invalid": True}, "unrelated": {"secret": "fixture-only"}}
-        self.settings_path.write_text(json.dumps(self.settings), encoding="utf8", newline="\n")
+        write_text_lf(self.settings_path, json.dumps(self.settings), encoding="utf8")
         self.original = tls.state_snapshot(self.root, self.settings_path)
         self.record = self.records[0]
         self.binding = tls.source_binding(self.record, self.document, "gpt-fixture", ["gpt-fixture"], PROVENANCE)

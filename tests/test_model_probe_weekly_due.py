@@ -8,11 +8,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+if __package__:
+    from ._test_compat import CompatTestCase
+else:
+    from _test_compat import CompatTestCase
+
 import automatic_probe_budget as budget
 import model_probe
 
 
-class ModelWeeklyDueTests(unittest.TestCase):
+class ModelWeeklyDueTests(CompatTestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

@@ -8,13 +8,18 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+if __package__:
+    from ._test_compat import CompatTestCase
+else:
+    from _test_compat import CompatTestCase
+
 import model_probe
 import probe_policy
 import probe_web
 import tool
 
 
-class EnvironmentAuthorityTests(unittest.TestCase):
+class EnvironmentAuthorityTests(CompatTestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

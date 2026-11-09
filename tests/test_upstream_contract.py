@@ -11,6 +11,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+if __package__:
+    from ._test_compat import write_text_lf
+else:
+    from _test_compat import write_text_lf
+
 import tool
 
 try:
@@ -310,7 +315,7 @@ class UpstreamContractTests(unittest.TestCase):
             for rel in spec["files"]:
                 path = Path(roots[kind], *rel.split("/"))
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(self.text, encoding="utf8", newline="\n")
+                write_text_lf(path, self.text, encoding="utf8")
         settings = dict(tool.DEFAULTS, sub2api_src=roots["sub2api"], cpa_src=roots["cpa"])
         return specs, roots, settings
 

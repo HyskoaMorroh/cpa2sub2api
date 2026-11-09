@@ -5,12 +5,17 @@ import sys
 import unittest
 from unittest.mock import patch
 
+if __package__:
+    from ._test_compat import CompatTestCase
+else:
+    from _test_compat import CompatTestCase
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import tool
 import request_relay
 
 
-class ProbePolicyTests(unittest.TestCase):
+class ProbePolicyTests(CompatTestCase):
     def guarded_plan_fixture(self, model):
         document = {"openai-compatibility": [{"name": "fixture", "base-url": "https://upstream.example",
             "api-key-entries": [{"api-key": "synthetic-source-key"}], "models": [{"name": model}]}]}

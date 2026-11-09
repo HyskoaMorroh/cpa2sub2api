@@ -9,6 +9,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+if __package__:
+    from ._test_compat import CompatTestCase, write_text_lf
+else:
+    from _test_compat import CompatTestCase, write_text_lf
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("consumer_patch", ROOT / "third_party/patches/apply_consumer_patch.py")
@@ -16,7 +21,7 @@ consumer_patch = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(consumer_patch)
 
 
-class ConsumerSourceIntegrityTests(unittest.TestCase):
+class ConsumerSourceIntegrityTests(CompatTestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -34,7 +39,7 @@ class ConsumerSourceIntegrityTests(unittest.TestCase):
         for relative, content in files.items():
             path = self.source / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, newline="\n")
+            write_text_lf(path, content)
         self.git("init", "-q")
         self.git("config", "core.autocrlf", "false")
         self.git("config", "user.name", "Fixture")
@@ -135,7 +140,7 @@ class ConsumerSourceIntegrityTests(unittest.TestCase):
 
     def test_export_ignore_cannot_hide_changed_committed_source(self):
         attributes = self.source / ".git/info/attributes"
-        attributes.write_text("cmd/server/main.go export-ignore\n", newline="\n")
+        write_text_lf(attributes, "cmd/server/main.go export-ignore\n")
         self.git("update-index", "--assume-unchanged", "cmd/server/main.go")
         self.change("cmd/server/main.go")
         with self.assertRaisesRegex(ValueError, "source byte digest mismatch"):

@@ -265,7 +265,7 @@ class ProbeHttpTests(unittest.TestCase):
                                 "Origin: https://evil.example\r\nContent-Type: application/json\r\n"
                                 "Content-Length: %d\r\n\r\n" % (self.port, len(body))).encode("ascii"))
             connection.settimeout(0.05)
-            with self.assertRaises(TimeoutError):
+            with self.assertRaises(socket.timeout):
                 connection.recv(1)
             connection.settimeout(2)
             connection.sendall(body)
