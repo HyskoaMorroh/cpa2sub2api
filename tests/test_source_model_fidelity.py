@@ -450,6 +450,108 @@ class SourceModelFidelityTests(unittest.TestCase):
         self.assertEqual(row["credentials"]["api_key"], "synthetic-key-0")
         self.assertEqual(writes[0], ("BULK", {"status": "inactive", "schedulable": False}))
 
+    def test_native_stripped_billing_false_is_same_disabled_state_and_sync_noop(self):
+        records, _ = self.records()
+        record = records[0]
+        desired = self.account(record)
+        native = dict(copy.deepcopy(desired), id=31, status="active", schedulable=True)
+        for key in ("upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled"):
+            native["extra"].pop(key)
+        native["extra"]["openai_long_context_billing_enabled"] = False
+        native["credentials"].update(pool_mode=True, pool_mode_retry_count=2)
+        self.assertEqual(tool.diff_account_fields(native, desired), {})
+
+        class Api:
+            def _call(self, method, path):
+                return copy.deepcopy(native)
+
+            def update_account(self, *args):
+                raise AssertionError("native-equivalent billing defaults must be a no-op")
+
+            def bulk_update_accounts(self, *args):
+                raise AssertionError("native-equivalent billing defaults must be a no-op")
+
+        self.assertEqual(tool.sync_existing_accounts(Api(), records, dict(tool.DEFAULTS), {"Codex": 1}, {},
+                         {record["name"]: native}), (0, 1, []))
+
+    def test_native_finalizer_readback_strips_only_system_billing_false(self):
+        records, _ = self.records(excluded=["*"])
+        record = records[0]
+        desired = self.account(record)
+        row = dict(tool._source_create_payload(desired), id=31, status="active", schedulable=True)
+        for key in ("upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled"):
+            row["extra"].pop(key)
+        row["extra"]["openai_long_context_billing_enabled"] = False
+        row["credentials"].update(pool_mode=True, pool_mode_retry_count=2)
+
+        class Api:
+            def _call(self, method, path):
+                return copy.deepcopy(row)
+
+            def bulk_update_accounts(self, ids, change):
+                if ids != [31]:
+                    raise AssertionError("must update one exact owned ID")
+                for key, value in change.items():
+                    if key in ("extra", "credentials"):
+                        row[key].update(copy.deepcopy(value))
+                    else:
+                        row[key] = copy.deepcopy(value)
+                for key in ("upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled"):
+                    row["extra"].pop(key, None)
+
+        tool._finalize_source_stopped_account(Api(), 31, desired)
+        self.assertEqual((row["status"], row["schedulable"]), ("inactive", False))
+        self.assertEqual(row["credentials"]["model_mapping"], {})
+        self.assertIs(row["extra"]["openai_long_context_billing_enabled"], False)
+
+    def test_billing_true_and_other_missing_managed_fields_are_not_normalized_away(self):
+        records, _ = self.records()
+        desired = self.account(records[0])
+        for key in ("upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled"):
+            current = copy.deepcopy(desired)
+            current["extra"][key] = True
+            patch = tool.diff_account_fields(current, desired)
+            self.assertIn(key, patch)
+            self.assertIs(patch[key], False)
+            self.assertIs(patch["extra"][key], False)
+        current = copy.deepcopy(desired)
+        current["extra"].pop("openai_passthrough")
+        self.assertIn("extra", tool.diff_account_fields(current, desired))
+
+    def test_native_stripped_billing_during_notes_only_restore_stays_idempotent(self):
+        records, _ = self.records()
+        record = records[0]
+        desired = self.account(record)
+        row = dict(copy.deepcopy(desired), id=31, status="inactive", schedulable=False)
+        row["extra"]["cpa2sub2api_source_disabled"] = True
+        row["notes"] += " previous source stop"
+        for key in ("upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled"):
+            row["extra"].pop(key)
+        writes = []
+
+        class Api:
+            def _call(self, method, path):
+                return copy.deepcopy(row)
+
+            def update_account(self, aid, change):
+                writes.append(("PUT", copy.deepcopy(change)))
+                row.update(copy.deepcopy(change))
+                for key in ("upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled"):
+                    row["extra"].pop(key, None)
+
+            def bulk_update_accounts(self, ids, change):
+                self.update_account(ids[0], change)
+
+        api = Api()
+        cfg = dict(tool.DEFAULTS)
+        self.assertEqual(tool.sync_existing_accounts(api, records, cfg, {"Codex": 1}, {},
+            {record["name"]: copy.deepcopy(row)}), (1, 0, []))
+        self.assertEqual((row["status"], row["schedulable"]), ("active", True))
+        count = len(writes)
+        self.assertEqual(tool.sync_existing_accounts(api, records, cfg, {"Codex": 1}, {},
+            {record["name"]: copy.deepcopy(row)}), (0, 1, []))
+        self.assertEqual(len(writes), count)
+
 
 if __name__ == "__main__":
     unittest.main()

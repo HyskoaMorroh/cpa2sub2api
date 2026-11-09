@@ -5129,6 +5129,19 @@ MANAGED_EXTRA_FIELDS = frozenset({
 })
 
 
+def _billing_extra_comparison(extra):
+    """Native typed billing switches may omit disabled false entries.
+
+    These two readers default absence to false. Other managed fields and true
+    values remain exact; this is not a blanket missing-field normalization.
+    """
+    result = dict(extra or {})
+    for key in ("upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled"):
+        if result.get(key) is False:
+            result.pop(key)
+    return result
+
+
 def diff_account_fields(existing, desired):
     """算出已存在账号需要更新的字段。返回 {字段: 新值}，空 dict 表示无需更新。
 
@@ -5148,7 +5161,8 @@ def diff_account_fields(existing, desired):
     patch = {}
     for field in ("upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled"):
         if field in desired:
-            value = existing.get(field, (existing.get("extra") or {}).get(field, False))
+            value = (existing.get(field, False)
+                     or (existing.get("extra") or {}).get(field, False))
             if _truthy(value) != _truthy(desired[field]):
                 patch[field] = bool(desired[field])
 
@@ -5200,7 +5214,7 @@ def diff_account_fields(existing, desired):
             old_extra = {}
         new_extra = {k: v for k, v in old_extra.items() if k not in MANAGED_EXTRA_FIELDS}
         new_extra.update(desired.get("extra") or {})
-        if old_extra != new_extra:
+        if _billing_extra_comparison(old_extra) != _billing_extra_comparison(new_extra):
             patch["extra"] = new_extra
 
     if desired.get("notes") and existing.get("notes") != desired["notes"]:
@@ -5612,6 +5626,8 @@ def _write_source_state_patch(api, current, change, cfg, record):
         expected_updated["_cpa2sub2api_raw_credentials"] = copy.deepcopy(ordinary["credentials"])
     expected_snapshot = json.loads(_recovery_snapshot(expected_updated))
     actual_snapshot = json.loads(_recovery_snapshot(updated))
+    expected_snapshot["extra"] = _billing_extra_comparison(expected_snapshot.get("extra"))
+    actual_snapshot["extra"] = _billing_extra_comparison(actual_snapshot.get("extra"))
     if "_cpa2sub2api_raw_credentials" in expected_updated:
         expected_snapshot["credentials"] = expected_updated["_cpa2sub2api_raw_credentials"]
     if "_cpa2sub2api_raw_credentials" in updated:
