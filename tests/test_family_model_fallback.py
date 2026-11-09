@@ -164,6 +164,9 @@ class FamilyPlanTests(unittest.TestCase):
              patch.object(tool, "OUT_DIR", directory), \
              patch.object(tool, "fetch_cpa_text", return_value=(tool._yaml().safe_dump(source), "synthetic")), \
              patch.object(tool, "_http", side_effect=http), contextlib.redirect_stdout(io.StringIO()):
+            # Automatic weekly admission is durable independently of OUT_DIR.
+            # A test must not consume a real or previous run's site budget.
+            settings["request_relay_state_dir"] = str(pathlib.Path(directory) / "relay")
             plan = tool.build_plan(settings)[0]
         self.assertEqual(len(plan["accounts_raw"]), 2)
         first, second = plan["accounts_raw"]

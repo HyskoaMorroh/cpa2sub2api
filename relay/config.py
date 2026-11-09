@@ -143,6 +143,10 @@ def requires_relay(record, source_config):
 
 def relay_model_mapping(record, mapping):
     """Keep supported duplicate-alias pools at the real CPA consumer boundary."""
+    if record.get("_models_explicit"):
+        # Sub forwards the client alias unchanged; CPA owns alias-to-upstream and
+        # force-mapping response restoration, including duplicate-alias pools.
+        return {alias: alias for alias in mapping}
     result = copy.deepcopy(mapping)
     aliases = {}
     for model in record.get("models_raw") or []:
@@ -200,7 +204,7 @@ def _source_entry(record, source_config):
 
 
 def _model_list(entry, record):
-    """Retain declared aliases and add direct-name aliases used by sub2api mappings."""
+    """Keep source aliases; generated defaults may register selected identities."""
     original = entry.get("models") or []
     if not isinstance(original, list):
         raise RelayError("invalid_route_models")
@@ -217,7 +221,7 @@ def _model_list(entry, record):
         if not any(existing.get("name") == name and existing.get("alias") == item["alias"] for existing in models):
             models.append(item)
             aliases.add(item["alias"])
-        if name not in aliases:
+        if name not in aliases and not record.get("_models_explicit"):
             models.append(dict(item, alias=name))
             aliases.add(name)
     # Dynamic models selected by the importing tool must be explicitly registered.
@@ -225,7 +229,7 @@ def _model_list(entry, record):
         if not isinstance(name, str) or not name.strip():
             raise RelayError("invalid_selected_model")
         name = name.strip()
-        if name not in aliases:
+        if name not in aliases and not record.get("_models_explicit"):
             models.append({"name": name, "alias": name})
             aliases.add(name)
     if not models:
@@ -643,4 +647,13 @@ def adapt_account(account, record, bundle, relay_base_url):
         result["credentials"].pop(field, None)
     result["proxy_id"] = None
     result.setdefault("extra", {})[RELAY_METADATA] = copy.deepcopy(route["original_source"])
+    if record.get("_source_fidelity"):
+        # The authenticated route enforces the declared model allowlist before
+        # the original CPA consumer handles body/alias/header/session semantics.
+        # Native passthrough bypasses its own mapping filter, so it is safe only
+        # at this fixed consumer boundary, never on a direct provider account.
+        if result.get("platform") == "openai":
+            result["extra"]["openai_passthrough"] = True
+        elif result.get("platform") == "anthropic":
+            result["extra"]["anthropic_passthrough"] = True
     return result

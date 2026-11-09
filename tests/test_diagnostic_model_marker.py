@@ -62,7 +62,10 @@ class DiagnosticModelMarkerTests(unittest.TestCase):
     def simple_source(self):
         document = {"openai-compatibility": [{"name": "fixture", "base-url": "https://allowed.example",
             "api-key-entries": [{"api-key": "synthetic-key"}],
-            "models": [{"name": "gpt-6.1", "alias": "*"}]}]}
+            # Both IDs are deliberately declared. Fidelity conversion no longer
+            # invents a raw-name public alias for an alias-only source.
+            "models": [{"name": "gpt-6.1", "alias": "*"},
+                       {"name": "gpt-6.1", "alias": "gpt-6.1"}]}]}
         records, _ = tool.collect(document)
         for record in records:
             record["_source_scope"] = "default"
@@ -103,7 +106,8 @@ class DiagnosticModelMarkerTests(unittest.TestCase):
             direct, relayed, settings, bundle = self.guarded_fixture(root)
             self.assertEqual(relayed["name"], direct["name"])
             self.assertEqual(relayed["group_ids"], direct["group_ids"])
-            self.assertEqual(relayed["credentials"]["model_mapping"]["*"], direct["credentials"]["model_mapping"]["*"])
+            self.assertEqual(direct["credentials"]["model_mapping"]["*"], "gpt-6.1")
+            self.assertEqual(relayed["credentials"]["model_mapping"]["*"], "*")
             self.assertEqual(direct["credentials"]["base_url"], "https://allowed.example")
             self.assertTrue(relayed["credentials"]["base_url"].startswith("http://relay.example:8380/r/"))
             route = next(iter(bundle["routes"].values()))

@@ -842,7 +842,8 @@ def _bound_probe_authority(url, headers, settings, authority_url):
 
 def _http(method, url, headers=None, body=None, timeout=None, retries=None,
           proxy=None, _allow_proxy_fallback=True, probe_settings=None, _admin_request=False,
-          probe_authority_url=None):
+          probe_authority_url=None, _admin_deadline=None, _admin_origin=None,
+          _admin_progress=None):
     """发一个 HTTP 请求，对**瞬时**网络故障自动重试。
 
     timeout / retries 传 None 表示"用配置里的值"：读 设置.json 与环境变量
@@ -897,6 +898,13 @@ def _http(method, url, headers=None, body=None, timeout=None, retries=None,
                 retries = 3
             if retries <= 0:
                 retries = 1
+    if _admin_deadline is not None:
+        if not _admin_request or probe_settings is not None or probe_authority_url is not None:
+            raise ApiError(0, "管理传输边界不能承载上游探测", "<redacted>")
+        headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
+        headers.setdefault("Accept", "application/json, text/plain, */*")
+        return _bounded_admin_http(method, url, headers, body, timeout, retries,
+                                   _admin_deadline, _admin_origin, _admin_progress)
     data = None
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -1087,6 +1095,98 @@ def admin_retry_wait(value, now=None):
             return 60.0
 
 
+def _admin_failure(error):
+    reasons = {
+        "deadline": "管理网络操作截止，结果未验证",
+        "network": "管理网络连接失败，结果未验证",
+        "worker": "管理传输进程失败，结果未验证",
+        "response_too_large": "管理响应超过大小上限，结果未验证",
+        "boundary": "管理请求越界，未发送",
+        "redirect": "管理接口重定向已拒绝，未转发",
+        "calibration_stopped": "管理校准已停止，剩余操作未执行",
+    }
+    reason = ("管理接口 HTTP %s，结果未验证" % error.status
+              if error.kind == "http" else reasons.get(error.kind, "管理请求失败，结果未验证"))
+    failure = ApiError(error.status, reason, "<redacted>")
+    failure.admin_kind = error.kind
+    failure.retry_after = error.retry_after
+    return failure
+
+
+def _start_admin_calibration(api, cfg, label, total=0):
+    import admin_io
+    calibration = getattr(api, "_admin_calibration", None)
+    if calibration is None:
+        try:
+            seconds = float(cfg.get("http_timeout") or 30)
+        except (TypeError, ValueError):
+            seconds = 30
+        calibration = admin_io.Calibration(getattr(api, "base", ""), seconds)
+        api._admin_calibration = calibration
+    calibration.phase(label, total)
+    return calibration
+
+
+@contextmanager
+def _admin_calibration_scope(api, cfg, label, total):
+    owned = getattr(api, "_admin_calibration", None) is None
+    calibration = _start_admin_calibration(api, cfg, label, total)
+    try:
+        yield calibration
+    finally:
+        if owned:
+            del api._admin_calibration
+
+
+def _calibration_failure_reason(error, fallback):
+    status = getattr(error, "status", None)
+    if status:
+        return "管理接口 HTTP %s，结果未验证" % status
+    if status == 0:
+        return "管理网络请求失败或截止，结果未验证"
+    return fallback
+
+
+def _bounded_admin_http(method, url, headers, body, timeout, retries,
+                        deadline, origin, progress):
+    import admin_io
+    attempts = min(2, max(1, int(retries or 1)))
+    for attempt in range(attempts):
+        # Never outsource ownership/consent checks to the transport child.
+        _check_admin_write_guard(method)
+        try:
+            return admin_io.request(method, url, headers, body, timeout,
+                                    deadline, origin, progress)
+        except admin_io.Failure as error:
+            transient = error.kind in ("network", "worker") or error.status in (500, 502, 503, 504)
+            wait = 1.5 * (attempt + 1)
+            if transient and attempt < attempts - 1 and time.monotonic() + wait < deadline:
+                if progress:
+                    progress("管理请求暂时失败，按同一幂等身份顺序重试")
+                time.sleep(wait)
+                continue
+            raise _admin_failure(error) from None
+
+
+def _with_import_calibration_cleanup(function):
+    from functools import wraps
+
+    @wraps(function)
+    def run(api, *args, **kwargs):
+        previous = getattr(api, "_admin_calibration", None)
+        try:
+            return function(api, *args, **kwargs)
+        finally:
+            current = getattr(api, "_admin_calibration", None)
+            if current is not previous:
+                if previous is None:
+                    if current is not None:
+                        del api._admin_calibration
+                else:
+                    api._admin_calibration = previous
+    return run
+
+
 class Sub2Api(object):
     def __init__(self, s):
         # 地址为空时立刻报错，不要等到发请求才炸。
@@ -1131,20 +1231,62 @@ class Sub2Api(object):
             raise ApiError(st, "非 JSON 返回：" + raw[:300], path)
 
     def _request(self, method, path, headers, body=None, timeout=None):
-        for attempt in range(3):
-            _check_admin_write_guard(method)
-            try:
-                return _http(method, self.base + path, headers, body,
-                             timeout=timeout or self.timeout, _allow_proxy_fallback=False,
-                             _admin_request=True)
-            except ApiError as error:
-                if error.status != 429 or attempt == 2:
-                    raise
-                wait = admin_retry_wait(getattr(error, "retry_after", None))
-                if wait > 120:
-                    raise  # Never shorten a longer server cooldown to fit a local budget.
-                print("    管理API限流，等待 %.1f 秒后重试（%d/2）。" % (wait, attempt + 1))
-                time.sleep(wait)
+        import admin_io
+        calibration = getattr(self, "_admin_calibration", None)
+        deadline = None
+        deadline_token = None
+        try:
+            deadline = calibration.request_deadline() if calibration is not None else None
+            if deadline is not None:
+                deadline_token = admin_io.REQUEST_DEADLINE.set(deadline)
+            for attempt in range(3):
+                if calibration is not None:
+                    calibration.check()
+                _check_admin_write_guard(method)
+                try:
+                    bounded = ({"_admin_deadline": deadline, "_admin_origin": self.base,
+                                "_admin_progress": calibration.progress}
+                               if calibration is not None else {})
+                    result = _http(method, self.base + path, headers, body,
+                                   timeout=timeout or self.timeout, _allow_proxy_fallback=False,
+                                   _admin_request=True, **bounded)
+                    if calibration is not None:
+                        if time.monotonic() >= deadline:
+                            raise _admin_failure(admin_io.Failure("deadline"))
+                        calibration.check()
+                        # A guard/detail GET is only part of a calibration item.
+                        # Reset consecutive failures after its final readback,
+                        # not before a later plan/read/write can still fail.
+                    return result
+                except ApiError as error:
+                    if error.status != 429 or attempt == 2:
+                        raise
+                    wait = admin_retry_wait(getattr(error, "retry_after", None))
+                    if wait > 120 or deadline is not None and time.monotonic() + wait >= deadline:
+                        raise  # Never shorten a server cooldown to fit a local budget.
+                    print("    管理API限流，等待 %.1f 秒后重试（%d/2）。" % (wait, attempt + 1), flush=True)
+                    remaining = wait
+                    while remaining > 0:
+                        interval = min(5.0, remaining) if calibration is not None else remaining
+                        time.sleep(interval)
+                        remaining -= interval
+                        if calibration is not None:
+                            calibration.check()
+                            if remaining > 0:
+                                calibration.progress("正在遵守管理接口冷却时间")
+        except admin_io.Failure as failure:
+            error = _admin_failure(failure)
+            if calibration is not None:
+                calibration.record_error(error)
+            raise error from None
+        except ApiError as error:
+            if calibration is not None:
+                calibration.record_error(error)
+            raise
+        finally:
+            if deadline_token is not None:
+                admin_io.REQUEST_DEADLINE.reset(deadline_token)
+
 
     def ping(self):
         try:
@@ -1689,17 +1831,17 @@ def _match_excluded(name, patterns):
 
 
 def build_model_mapping(models, excluded=None, platform=None, source_section=None,
-                        probe=None):
+                        probe=None, preserve_declared=False):
     """CPA models[] -> sub2api credentials.model_mapping。
 
     关键语义：model_mapping 非空即**白名单**（account.go:841-861）。不在表里的
     模型会让整个账号被踢出调度候选集，网关直接报"无可用账号"，不是简单的改名
     失效。所以每个要放行的模型都必须出现在表里。
 
-    两个后果：
-      1. 有 alias 的模型必须同时写入 alias 和原名，否则按原名请求会被挡；
-      2. CPA 的 excluded-models 可以借这个白名单表达——把命中排除规则的模型
-         从表里减掉即可。sub2api 没有模型黑名单字段，这是唯一的等价实现。
+    显式配置 preserve_declared 时，仅注册源声明的客户端 alias，不把未暴露的
+    原名添加为另一条公开入口，也不重新按代际裁剪用户已验证的列表。
+    excluded-models 与 CPA 一致，匹配注册后的 alias。非显式列表保留既有
+    代际回退选择。sub2api 没有模型黑名单字段，通过白名单减法表达排除。
 
     Args:
         models: list of {"name": str, "alias": str}
@@ -1711,9 +1853,10 @@ def build_model_mapping(models, excluded=None, platform=None, source_section=Non
         probe: 该 (段, 域名) 的连通性探测结果 {"latest":bool,"prev":bool}，
             由 model_probe 产出。需求④：最新代探测不通、次最新代连通时，
             两代都保留。**传 None 时行为与不带探测完全一致**。
+        preserve_declared: 已在源配置中明确声明的 models[] 是权威列表。
     """
     # Step 1: 应用就高原则过滤
-    if platform and MODEL_SELECTION_AVAILABLE and models:
+    if platform and MODEL_SELECTION_AVAILABLE and models and not preserve_declared:
         # select_highest_models 期望 list[dict]，直接传入
         models = select_highest_models(models, platform,
                                        source_section=source_section,
@@ -1725,15 +1868,25 @@ def build_model_mapping(models, excluded=None, platform=None, source_section=Non
     for m in models or []:
         if not isinstance(m, dict) or not m.get("name"):
             continue
-        name = str(m["name"])
-        if _match_excluded(name, excluded):
+        name = str(m["name"]).strip()
+        alias = str(m.get("alias") or name).strip()
+        # CPA registers ModelInfo.ID=alias, then applies exclusions to that ID.
+        exposed = alias if preserve_declared else name
+        if _match_excluded(exposed, excluded):
             continue
-        alias = str(m.get("alias") or name)
         out[alias] = name
         # 补全同名映射：否则客户端按上游原名请求会被白名单挡掉
-        if alias != name:
+        if alias != name and not preserve_declared:
             out.setdefault(name, name)
     return out
+
+
+def record_model_mapping(record, excluded=True):
+    """Configured models are authoritative; generated defaults retain selection."""
+    return build_model_mapping(record.get("models_raw"),
+        record.get("excluded") if excluded else None, record.get("platform"),
+        source_section=record.get("source_section") or record.get("section"),
+        probe=record.get("_probe"), preserve_declared=record.get("_models_explicit", False))
 
 
 def account_fingerprint(r):
@@ -1884,17 +2037,11 @@ def serves_nothing(r):
     （service_models.go:108-115），且 matchWildcard("*", 任意) 恒为真，
     所以 excluded-models: ["*"] 会让这条凭据注册零个模型、完全不参与调度。
     """
-    _pb = r.get("_probe")
-    all_m = build_model_mapping(r.get("models_raw"), platform=r.get("platform"),
-                                source_section=r.get("source_section") or r.get("section"),
-                                probe=_pb)
+    all_m = record_model_mapping(r, excluded=False)
     if not all_m:
         # An explicit list filtered to nothing must never turn into allow-all.
         return bool(r.get("models_raw"))
-    return not build_model_mapping(r.get("models_raw"), r.get("excluded"),
-                                   r.get("platform"),
-                                   source_section=r.get("source_section") or r.get("section"),
-                                   probe=_pb)
+    return not record_model_mapping(r)
 
 
 def _apply_client_profile(headers, platform, source=""):
@@ -2134,6 +2281,8 @@ def collect(cfg_dict):
                 "priority": entry.get("priority"), "proxy_url": entry.get("proxy-url") or "",
                 "headers": headers,
                 "models_raw": entry.get("models") or [],
+                "_models_explicit": isinstance(entry.get("models"), list) and bool(entry["models"]),
+                "_source_fidelity": True,
                 "rse": entry.get("request-scoped-errors") or [],
                 "excluded": entry.get("excluded-models") or [],
                 "websockets": bool(entry.get("websockets")), "alpha_search": alpha,
@@ -2234,6 +2383,20 @@ def remap_priority(recs):
     前三个排序键完全并列，用前缀等于顺序由输入位置决定。这里仍保留稳定排序，
     但它只影响 rank 字段（对照表展示用），不再影响 new_priority。
     """
+    if recs and all(r.get("_source_fidelity") for r in recs):
+        # A tested CPA config is authoritative, including ties across domains.
+        values = sorted({r["priority"] if _is_int(r.get("priority")) else 0
+                         for r in recs}, reverse=True)
+        buckets = {value: (index + 1) * 10 for index, value in enumerate(values)}
+        for record in recs:
+            value = record["priority"] if _is_int(record.get("priority")) else 0
+            record["new_priority"] = buckets[value]
+        for rank, record in enumerate(sorted(recs, key=lambda r: (
+                r["new_priority"], str(r.get("group")), str(r.get("base_url")),
+                account_fingerprint(r))), 1):
+            record["rank"] = rank
+        return
+
     # ---- 第一步：建立全局的 CPA priority -> sub2api priority 映射表 ----
     # 分桶序位不直接用单条记录的 priority，而是用"该(渠道,域名)组内的最高
     # priority"，见 _host_tier_of 的说明：同一个上游域名下的多个 KEY 必须落在
@@ -2405,6 +2568,8 @@ def health_rerank_priority(recs, have_map, cfg):
 
     返回 (重排的域名单元数, 说明文本) 或 (0, 原因) —— 后者表示跳过。
     """
+    # Source-fidelity records retain their declared scheduling order below;
+    # health_score still controls their load_factor within the selected tier.
     if not cfg.get("health_rerank_enabled", True):
         return 0, "health_rerank_enabled=false，按配置跳过健康度重排"
     if not have_map:
@@ -2475,7 +2640,8 @@ def health_rerank_priority(recs, have_map, cfg):
         b = bucket_of[k]
         for r in recs:
             if _host_key(r) == k:
-                r["new_priority"] = b
+                if not r.get("_source_fidelity"):
+                    r["new_priority"] = b
                 r["health_score"] = round(health[k], 4)
         ranked += 1
 
@@ -2597,6 +2763,8 @@ def needs_inactive(r, cfg):
     # 此时拦流量靠 to_account 写的 model_mapping 白名单哨兵，而不靠 status，
     # 这样 CPA 以后放开 excluded-models 时只要重跑一次同步就能自动生效。
     if serves_nothing(r):
+        if r.get("_source_fidelity"):
+            return True
         return cfg.get("zero_model_policy", "inactive") != "active"
     if not cfg.get("respect_weight_zero", True):
         return False
@@ -2649,15 +2817,14 @@ def to_account(r, cfg, group_id_map, proxy_id_map, proxy_need_map):
     # excluded-models 通过从白名单里减掉来实现：sub2api 没有模型黑名单字段
     # probe：需求 2⑵④ 的连通性探测结果，由 build_plan 写进记录。
     # 没有它时 build_model_mapping 退回纯静态的就高逻辑。
-    mm = build_model_mapping(r["models_raw"], r.get("excluded"), r.get("platform"),
-                             source_section=r.get("source_section") or r.get("section"),
-                             probe=r.get("_probe"))
+    mm = record_model_mapping(r)
     if mm:
         creds["model_mapping"] = mm
     elif serves_nothing(r):
         # 全部模型都被排除。空表在 sub2api 里等于放行全部，必须放占位项，
         # 否则这条在 CPA 已被完全禁用的凭据会在 sub2api 上接管所有流量。
-        creds["model_mapping"] = {BLOCK_ALL_SENTINEL: BLOCK_ALL_SENTINEL}
+        creds["model_mapping"] = ({} if r.get("_source_fidelity") else
+                                  {BLOCK_ALL_SENTINEL: BLOCK_ALL_SENTINEL})
     hdrs, dropped = build_header_overrides(r["headers"], r["platform"])
     if hdrs:
         creds["header_override_enabled"] = True
@@ -2685,6 +2852,9 @@ def to_account(r, cfg, group_id_map, proxy_id_map, proxy_need_map):
     extra = {"upstream_billing_probe_enabled": False,
              "upstream_billing_rate_sync_enabled": False,
              "cpa2sub2api_source": _record_source_metadata(r, cfg)}
+    if r.get("_source_fidelity"):
+        extra.update(openai_passthrough=False, anthropic_passthrough=False,
+                     cpa2sub2api_source_disabled=needs_inactive(r, cfg))
     if r["responses_mode"]:
         extra["openai_responses_mode"] = r["responses_mode"]
     if r["websockets"]:
@@ -2717,6 +2887,10 @@ def to_account(r, cfg, group_id_map, proxy_id_map, proxy_need_map):
     # Always disable them; authorized diagnostics run only through weekly plans.
     acc["upstream_billing_probe_enabled"] = False
     acc["upstream_billing_rate_sync_enabled"] = False
+    if r.get("_source_fidelity") and needs_inactive(r, cfg):
+        # Desired persisted state. Native creation is protected separately because
+        # CreateAccountRequest ignores status and always starts accounts active.
+        acc.update(status="inactive", schedulable=False)
 
     # load_factor：sub2api 的负载因子（account_handler.go CreateAccountRequest
     # LoadFactor *int）。值越大该账号越容易被选中承载流量，用于在同桶内
@@ -3302,9 +3476,7 @@ def _export_request_relay(records, source_config, settings):
                 "force_all_accounts": force_all}
     for record in selected:
         record["_request_relay_required"] = True
-        mapping = build_model_mapping(record["models_raw"], record.get("excluded"), record.get("platform"),
-                                      source_section=record.get("source_section") or record.get("section"),
-                                      probe=record.get("_probe"))
+        mapping = record_model_mapping(record)
         mapping = request_relay.relay_model_mapping(record, mapping)
         record["_relay_models"] = sorted(set(mapping.values()))
         if (_truthy(settings.get("model_probe_enabled", False))
@@ -3698,7 +3870,8 @@ def build_plan(s):
     strategy = str(routing.get("strategy") or "round-robin").strip().lower()
 
     # 启用智能优先级：优先从 sub2api 实际运行状态计算健康分数
-    use_smart_priority = s.get("health_rerank_enabled", True)
+    use_smart_priority = (s.get("health_rerank_enabled", True)
+                          and not all(r.get("_source_fidelity") for r in recs))
     if use_smart_priority and SMART_PRIORITY_AVAILABLE and s.get("sub2api_admin_key"):
         try:
             api = Sub2Api(s)
@@ -3887,14 +4060,8 @@ def write_plan_files(plan, text, s):
                 # "未经就高过滤、未经 excluded 裁剪"的原始模型集合，而真正写进
                 # sub2api 的是过滤后的白名单。用户导入前抽查对照表，
                 # 会看到一个与线上实际生效不同的模型集合。
-                _sec = r.get("source_section") or r.get("section")
-                _pb = r.get("_probe")
-                mm = build_model_mapping(r["models_raw"], r.get("excluded"),
-                                         r.get("platform"), source_section=_sec,
-                                         probe=_pb)
-                all_m = build_model_mapping(r["models_raw"], None,
-                                            r.get("platform"), source_section=_sec,
-                                            probe=_pb)
+                mm = record_model_mapping(r)
+                all_m = record_model_mapping(r, excluded=False)
                 rules, _lost = build_temp_unschedulable(r["rse"])
                 st = "停用" if needs_inactive(r, cfg) else "启用"
                 # 把 excluded-models 的原文直接打出来。只写个数字的话，
@@ -3981,9 +4148,7 @@ def act_generate(s):
     md = write_plan_files(plan, text, s)
 
     nh = sum(1 for r in recs if build_header_overrides(r["headers"], r["platform"])[0])
-    nm = sum(1 for r in recs if build_model_mapping(
-        r["models_raw"], r.get("excluded"), r.get("platform"),
-        source_section=r.get("source_section") or r.get("section")))
+    nm = sum(1 for r in recs if record_model_mapping(r))
     nex = sum(1 for r in recs if r.get("excluded"))
     ncd = sum(1 for r in recs if build_temp_unschedulable(r["rse"])[0])
     noff = sum(1 for r in recs if needs_inactive(r, cfg))
@@ -4170,6 +4335,44 @@ def resolve_probe_policy(config):
     return current_probe_policy(config) if config.get("_live_probe_policy") else config
 
 
+def _source_create_payload(desired):
+    """Shield native active-by-default creation until stopped state is verified."""
+    payload = copy.deepcopy(desired)
+    if desired.get("status") == "inactive" and desired.get("schedulable") is False:
+        payload["credentials"]["model_mapping"] = {BLOCK_ALL_SENTINEL: BLOCK_ALL_SENTINEL}
+        payload.setdefault("extra", {}).update(openai_passthrough=False, anthropic_passthrough=False)
+    payload.pop("status", None)
+    payload.pop("schedulable", None)
+    return payload
+
+
+def _finalize_source_stopped_account(api, aid, desired, record=None, cfg=None):
+    """Remove the transient fake model only in the same write that stops routing."""
+    before = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+    if (before.get("id") != aid or before.get("name") != desired.get("name")
+            or not _is_migrated(before)
+            or (before.get("extra") or {}).get("cpa2sub2api_source")
+            != (desired.get("extra") or {}).get("cpa2sub2api_source")):
+        raise ValueError("created stopped source identity mismatch")
+    patch = {"status": "inactive", "schedulable": False,
+             "credentials": copy.deepcopy(desired["credentials"]),
+             "extra": copy.deepcopy(desired.get("extra") or {})}
+    before = _with_source_credentials(api, before)
+    guard = _account_probe_write_guard(api, before, cfg, require_consent=False, record=record)
+    with _guarded_admin_write(guard):
+        api.bulk_update_accounts([aid], patch)
+    actual = _with_source_credentials(api, _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid)))
+    if (actual.get("id") != aid or actual.get("status") != "inactive"
+            or actual.get("schedulable") is not False
+            or actual.get("name") != desired.get("name") or not _is_migrated(actual)
+            or (actual.get("extra") or {}).get("cpa2sub2api_source")
+            != (desired.get("extra") or {}).get("cpa2sub2api_source")
+            or _visible_source_key(actual) != desired["credentials"].get("api_key")
+            or diff_account_fields(actual, desired)):
+        raise ValueError("stopped source account readback mismatch")
+
+
+@_with_import_calibration_cleanup
 def do_import(api, plan, ask=None):
     """唯一的导入实现。菜单和一键导入共用，避免两份逻辑各自漂移。
 
@@ -4352,7 +4555,7 @@ def do_import(api, plan, ask=None):
         batch_ids = {}
 
         try:
-            resp = api.batch_accounts(payloads)
+            resp = api.batch_accounts([_source_create_payload(p) for p in payloads])
             data = resp.get("data")
             results = (data or {}).get("results") if isinstance(data, dict) else None
             results = results or []
@@ -4368,6 +4571,17 @@ def do_import(api, plan, ask=None):
                 nm = res.get("name", "?")
                 seen.add(nm)
                 if res.get("success"):
+                    desired = next((p for p in payloads if p["name"] == nm), None)
+                    if desired is not None and desired.get("status") == "inactive":
+                        try:
+                            aid = res.get("id")
+                            if not _is_int(aid) or aid <= 0:
+                                raise ValueError("missing created stopped source id")
+                            record = next(r for r in batch_recs if r["name"] == nm)
+                            _finalize_source_stopped_account(api, aid, desired, record, cfg)
+                        except Exception:
+                            batch_failed.append((nm, "源配置停用状态或模型清理未通过读回，未计成功"))
+                            continue
                     batch_success.append(nm)
                     if res.get("id"):
                         batch_ids[nm] = res["id"]
@@ -4451,7 +4665,8 @@ def do_import(api, plan, ask=None):
     # 而 bulk-update 一次就能带走一批（服务端语义相同）。
     print("\n [4/6] 处理需要停用的账号...")
     want_off = [n for n in success
-                if n in name_to_rec and needs_inactive(name_to_rec[n], cfg)]
+                if n in name_to_rec and needs_inactive(name_to_rec[n], cfg)
+                and not name_to_rec[n].get("_source_fidelity")]
     off_ok, off_fail = 0, []
     off_ids, off_names = [], []
     for nm in want_off:
@@ -4483,6 +4698,7 @@ def do_import(api, plan, ask=None):
 
     # --- 5. Reconcile plans, including revoked/disabled sites ---
     print("\n [5/6] 校准每周探活计划及关闭站点...")
+    admin_calibration = _start_admin_calibration(api, cfg, "计划快照")
     recovery_evidence = {}
     target_rows, target_error = _fetch_all_accounts(api)
     if selected_hosts is not None and not target_error:
@@ -4498,8 +4714,9 @@ def do_import(api, plan, ask=None):
         plan_ok, plan_fail = 0, [("snapshot", "读取不完整，探活计划未校准")]
     else:
         plan_ok, plan_fail = ensure_test_plans(api, targets, cfg,
-                                              section_by_name=section_by_name)
-        if _truthy(cfg.get("auto_recover_enabled", True)):
+                                              section_by_name=section_by_name,
+                                              account_snapshot=target_rows)
+        if not admin_calibration.stopped and _truthy(cfg.get("auto_recover_enabled", True)):
             recovery_evidence, recovery_failures = probe_import_recovery(
                 api, targets, cfg, section_by_name=section_by_name)
             print("    本轮授权恢复测试成功 %d 条，跳过或失败 %d 条"
@@ -4511,6 +4728,7 @@ def do_import(api, plan, ask=None):
     # 补 sub2api 的恢复缺口：ClearError 只还 status 不还 schedulable，
     # 账号会永久卡在 active + 不可调度。详见 reclaim_schedulable。
     print("\n [6/6] 回收被关闭的调度开关...")
+    _start_admin_calibration(api, cfg, "恢复校准")
     rec_done, rec_total, rec_err = reclaim_schedulable(api, evidence=recovery_evidence)
     if rec_err:
         print("    ! 回收失败：%s" % rec_err)
@@ -4546,6 +4764,7 @@ def do_import(api, plan, ask=None):
             for row in unclaimed[:10]:
                 print("      id=%s %s" % (row["id"], row["name"]))
     prune_options = {"hosts": selected_hosts} if selected_hosts is not None else {}
+    _start_admin_calibration(api, cfg, "旧账号校准")
     stale, stale_err = find_stale_accounts(api, source_recs, **prune_options)
     pruned, prune_fail = [], []
     prune_safe = (not failed and not sync_fail and not off_fail and not gfailed and not plan_fail
@@ -4577,6 +4796,7 @@ def do_import(api, plan, ask=None):
     stage2 = {"ran": False, "ranked": 0, "updated": 0, "msg": ""}
     if success and cfg.get("health_rerank_enabled", True):
         print("\n [第二阶段] 用新建账号的实测状态重排优先级...")
+        _start_admin_calibration(api, cfg, "健康快照")
         have2, hm2_err = existing_accounts_by_name(api)
         if hm2_err:
             stage2["msg"] = "读取账号详情失败：%s" % hm2_err
@@ -4612,6 +4832,8 @@ def do_import(api, plan, ask=None):
         "synced_existing": sync_ok,
         "sync_unchanged": sync_same,
         "sync_failed": sync_fail,
+        "calibration_failed": [(admin_calibration.stop_phase, admin_calibration.stop_reason)] if admin_calibration.stopped else [],
+        "calibration_unverified": dict(admin_calibration.unverified),
         "test_plans_created": plan_ok,
         "test_plan_failed": plan_fail,
         "fallback_chain": fb_chain,
@@ -4659,8 +4881,10 @@ def print_import_summary(stat):
           % (len(succ), len(fail), len(skip), total))
     print("=" * 64)
 
-    required_failures = [key for key in ("sync_failed", "deactivate_failed", "test_plan_failed", "prune_failed")
+    required_failures = [key for key in ("sync_failed", "deactivate_failed", "test_plan_failed", "prune_failed", "calibration_failed")
                          if stat.get(key)]
+    if (stat.get("stage2_rerank") or {}).get("failed"):
+        required_failures.append("stage2_rerank")
     if required_failures:
         print(" ! 必要同步/计划/删除校准存在失败：%s；本次未完成。" % ", ".join(required_failures))
         return 1
@@ -4897,18 +5121,21 @@ SENSITIVE_CREDENTIAL_FIELDS = frozenset({
 })
 MANAGED_EXTRA_FIELDS = frozenset({
     "openai_responses_mode", "openai_ws_enabled", "enable_tls_fingerprint", "cloak",
+    "openai_passthrough", "openai_oauth_passthrough", "anthropic_passthrough",
     "upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled",
     "cpa2sub2api_original_source",
     "cpa2sub2api_source",
+    "cpa2sub2api_source_disabled",
 })
 
 
 def diff_account_fields(existing, desired):
     """算出已存在账号需要更新的字段。返回 {字段: 新值}，空 dict 表示无需更新。
 
-    只比对本工具真正负责的字段，**不碰** sub2api 侧的运行时状态
+    通常只比对本工具真正负责的字段，**不碰** sub2api 侧的运行时状态
     （status / schedulable / error_message / temp_unschedulable_until 等）：
-    那些由网关自己或运维手工掌管，导入工具覆盖它们等于把人家的运维操作冲掉。
+    那些由网关自己或运维手工掌管。唯一例外是明确源停用/排除全部的原子
+    关闭，以及本工具来源标记、精确停用状态和无运行时错误共同证明的解除。
 
     credentials 是整体替换语义（PUT 会覆盖整个 map），所以只要其中任一项
     有差异就整包重发；这也正是 model_mapping 能跟着 CPA 的 excluded-models
@@ -4929,7 +5156,7 @@ def diff_account_fields(existing, desired):
     # load_factor 参与比对：健康度变化后同桶内的分担比例要跟着变，
     # 不同步等于把负载分配冻结在首次导入那一刻（见 build_account_body 的说明）。
     for key in ("name", "type", "priority", "concurrency", "auto_pause_on_expired", "proxy_id",
-                "load_factor", "group_ids", "rate_multiplier"):
+                "load_factor", "group_ids", "rate_multiplier", "status", "schedulable"):
         if key not in desired:
             continue
         new = desired[key]
@@ -4988,91 +5215,116 @@ def sync_health_ranking(api, recs, have_map, dry_run=False):
     dry_run 返回拟更新数，不发请求。读回缺字段、缺账号或不一致都算失败；
     错误正文可能含凭据，因此这里只报告固定的失败原因。
     """
-    import math
+    with _admin_calibration_scope(api, {}, '健康重排校准', len(recs)) as calibration:
+        import math
 
-    ok, same, fail = 0, 0, []
-    planned, seen = [], set()
-    records_by_name = {r["name"]: r for r in recs}
-    for r in recs:
-        name = r["name"]
-        cur = have_map.get(name)
-        if not cur:
-            continue
-        if "_source_scope" in r:
-            try:
-                if not account_matches_source(cur, r):
-                    raise ValueError("source mismatch")
-            except (ValueError, RuntimeError):
-                fail.append((name, "来源归属无法确认，未重排"))
+        ok, same, fail = 0, 0, []
+        planned, seen = [], set()
+        records_by_name = {r["name"]: r for r in recs}
+        for r in recs:
+            name = r["name"]
+            cur = have_map.get(name)
+            if not cur:
                 continue
-        aid = cur.get("id")
-        if not isinstance(aid, int) or isinstance(aid, bool) or aid <= 0:
-            fail.append((name, "已有账号没有有效 id，无法重排"))
-            continue
-        if aid in seen:
-            # 在开始写入前拒绝全部计划，避免同一个 ID 被多个名字覆盖。
-            return 0, 0, [(name, "重排账号 id 重复，未执行写入")]
-        seen.add(aid)
-        priority = r.get("new_priority")
-        if not isinstance(priority, int) or isinstance(priority, bool):
-            fail.append((name, "重排优先级无效，未更新"))
-            continue
-        desired = {"priority": priority}
-        if r.get("health_score") is not None:
-            try:
-                hs = float(r["health_score"])
-                if not math.isfinite(hs) or not 0 <= hs <= 1:
-                    raise ValueError("invalid health score")
-                desired["load_factor"] = 8 if hs >= .9 else 6 if hs >= .7 else 4 if hs >= .5 else 2
-            except (TypeError, ValueError, OverflowError):
-                fail.append((name, "健康分无效，未更新"))
+            if "_source_scope" in r:
+                try:
+                    if not account_matches_source(cur, r):
+                        raise ValueError("source mismatch")
+                except (ValueError, RuntimeError):
+                    fail.append((name, "来源归属无法确认，未重排"))
+                    continue
+            aid = cur.get("id")
+            if not isinstance(aid, int) or isinstance(aid, bool) or aid <= 0:
+                fail.append((name, "已有账号没有有效 id，无法重排"))
                 continue
-        patch = {key: value for key, value in desired.items() if cur.get(key) != value}
-        if not patch:
-            same += 1
-        else:
-            planned.append((name, aid, patch))
-    if dry_run:
-        return len(planned), same, fail
-    pending = []
-    for name, aid, patch in planned:
-        try:
-            if "_source_scope" in records_by_name[name]:
-                fresh = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
-                if fresh.get("id") != aid or not account_matches_source(fresh, records_by_name[name]):
-                    raise ValueError("source changed")
-                scope = records_by_name[name]["_source_scope"]
-                policy = {"_live_probe_policy": True, "source_scope": scope}
-                with _guarded_admin_write(_account_probe_write_guard(
-                        api, fresh, policy, require_consent=False, record=records_by_name[name])):
-                    api.update_account(aid, patch)
+            if aid in seen:
+                # 在开始写入前拒绝全部计划，避免同一个 ID 被多个名字覆盖。
+                return 0, 0, [(name, "重排账号 id 重复，未执行写入")]
+            seen.add(aid)
+            priority = r.get("new_priority")
+            if not isinstance(priority, int) or isinstance(priority, bool):
+                fail.append((name, "重排优先级无效，未更新"))
+                continue
+            desired = {"priority": priority}
+            if r.get("health_score") is not None:
+                try:
+                    hs = float(r["health_score"])
+                    if not math.isfinite(hs) or not 0 <= hs <= 1:
+                        raise ValueError("invalid health score")
+                    desired["load_factor"] = 8 if hs >= .9 else 6 if hs >= .7 else 4 if hs >= .5 else 2
+                except (TypeError, ValueError, OverflowError):
+                    fail.append((name, "健康分无效，未更新"))
+                    continue
+            patch = {key: value for key, value in desired.items() if cur.get(key) != value}
+            if not patch:
+                same += 1
             else:
-                api.update_account(aid, patch)
-            pending.append((name, aid, patch))
-        except Exception:
-            fail.append((name, "重排写入请求失败，结果未验证"))
-    if not pending:
+                planned.append((name, aid, patch))
+        if dry_run:
+            return len(planned), same, fail
+        pending = []
+        for index, (name, aid, patch) in enumerate(planned, 1):
+            calibration.item(index, len(planned), aid)
+            try:
+                calibration.check()
+                if "_source_scope" in records_by_name[name]:
+                    fresh = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+                    if fresh.get("id") != aid or not account_matches_source(fresh, records_by_name[name]):
+                        raise ValueError("source changed")
+                    scope = records_by_name[name]["_source_scope"]
+                    policy = {"_live_probe_policy": True, "source_scope": scope}
+                    with _guarded_admin_write(_account_probe_write_guard(
+                            api, fresh, policy, require_consent=False, record=records_by_name[name])):
+                        api.update_account(aid, patch)
+                else:
+                    api.update_account(aid, patch)
+                pending.append((name, aid, patch))
+                calibration.progress("写入已发送，等待批量读回核对")
+            except Exception as error:
+                calibration.record_error(error)
+                reason = _calibration_failure_reason(error, "重排写入请求失败，结果未验证")
+                fail.append((name, reason))
+                calibration.add_unverified(1)
+                calibration.progress("失败：" + reason)
+                if calibration.stopped:
+                    remaining = planned[index:]
+                    fail.extend((name, calibration.stop_reason + "；未校准") for name, _, _ in remaining)
+                    calibration.add_unverified(len(remaining))
+                    calibration.progress("已停止，剩余 %d 项未校准" % len(remaining))
+                    break
+        if calibration.stopped:
+            fail.extend((name, "已发送的重排尚未读回，结果未验证") for name, _, _ in pending)
+            calibration.add_unverified(len(pending))
+            return ok, same, fail
+        if not pending:
+            return ok, same, fail
+        try:
+            calibration.progress("批量读取重排结果并核对字段")
+            calibration.check()
+            rows, error = _fetch_all_accounts(api)
+            if error:
+                raise ValueError("incomplete readback")
+            by_id = {}
+            for row in rows:
+                aid = row.get("id")
+                if aid in by_id:
+                    raise ValueError("duplicate readback id")
+                by_id[aid] = row
+        except Exception as error:
+            calibration.record_error(error)
+            reason = _calibration_failure_reason(error, "重排写后读取失败，结果未验证")
+            fail.extend((name, reason) for name, _, _ in pending)
+            calibration.add_unverified(len(pending))
+            calibration.progress("失败：" + reason)
+            return ok, same, fail
+        for name, aid, patch in pending:
+            actual = by_id.get(aid, {})
+            if all(key in actual and actual[key] == value for key, value in patch.items()):
+                ok += 1
+                calibration.record_success()
+            else:
+                fail.append((name, "重排写后字段不一致或缺失，结果未验证"))
         return ok, same, fail
-    try:
-        rows, error = _fetch_all_accounts(api)
-        if error:
-            raise ValueError("incomplete readback")
-        by_id = {}
-        for row in rows:
-            aid = row.get("id")
-            if aid in by_id:
-                raise ValueError("duplicate readback id")
-            by_id[aid] = row
-    except Exception:
-        fail.extend((name, "重排写后读取失败，结果未验证") for name, _, _ in pending)
-        return ok, same, fail
-    for name, aid, patch in pending:
-        actual = by_id.get(aid, {})
-        if all(key in actual and actual[key] == value for key, value in patch.items()):
-            ok += 1
-        else:
-            fail.append((name, "重排写后字段不一致或缺失，结果未验证"))
-    return ok, same, fail
 
 
 def _migration_write_guard(api, account, record, cfg, replacement=False):
@@ -5149,6 +5401,9 @@ def _replace_owned_account(api, current, record, desired, cfg):
     payload["credentials"]["model_mapping"] = {BLOCK_ALL_SENTINEL: BLOCK_ALL_SENTINEL}
     payload["extra"] = dict({k: v for k, v in (current.get("extra") or {}).items()
                               if k not in MANAGED_EXTRA_FIELDS}, **payload.get("extra", {}))
+    # Native OpenAI passthrough bypasses model_mapping. Keep the temporary
+    # quarantine shield effective even when the final account uses a relay.
+    payload["extra"].update(openai_passthrough=False, anthropic_passthrough=False)
     # Native buildAccountForCreate removes these two system-managed defaults.
     # Keep top-level billing off; final Update/readback still verifies its full
     # desired extra map. No other missing field is accepted at factory readback.
@@ -5269,6 +5524,110 @@ def _replace_owned_account(api, current, record, desired, cfg):
         raise
 
 
+def _source_stop_healthy(account):
+    """Only the exact tool stop may be undone; runtime/manual holds remain."""
+    return (not account.get("error_message") and not account.get("temp_unschedulable_reason")
+            and all(account.get(key) in (None, "") for key in (
+                "temp_unschedulable_until", "rate_limit_reset_at", "rate_limited_at", "overload_until"))
+            and not (account.get("extra") or {}).get("model_rate_limits")
+            and not (account.get("extra") or {}).get("antigravity_quota_scopes"))
+
+
+def _source_stop_transition(current, desired, record):
+    """Bind reversible source stops to verified source metadata and exact state."""
+    result = copy.deepcopy(desired)
+    if not record.get("_source_fidelity"):
+        return result
+    try:
+        bound = _strong_source_binding(current, record)
+    except (ValueError, RuntimeError, TypeError):
+        bound = False
+    marker = bound and (current.get("extra") or {}).get("cpa2sub2api_source_disabled") is True
+    clean = _source_stop_healthy(current)
+    stopped = current.get("status") == "inactive" and current.get("schedulable") is False
+    if result.get("status") == "inactive":
+        was_running = current.get("status") == "active" and current.get("schedulable") is True
+        result["extra"]["cpa2sub2api_source_disabled"] = bound and clean and (was_running or marker and stopped)
+    elif marker:
+        if stopped and clean:
+            result.update(status="active", schedulable=True)
+        result["extra"]["cpa2sub2api_source_disabled"] = False
+    return result
+
+
+SOURCE_BULK_FIELDS = frozenset({
+    "name", "proxy_id", "concurrency", "priority", "rate_multiplier", "load_factor",
+    "status", "schedulable", "group_ids", "credentials", "extra",
+    "upstream_billing_probe_enabled", "confirm_mixed_channel_risk",
+})
+
+
+def _write_source_state_patch(api, current, change, cfg, record):
+    """Use the real single-ID bulk DTO for schedulable; unsupported fields stay PUT.
+
+    If the complete transition cannot fit bulk, freeze routing first, update the
+    other parameters while stopped, then publish only the exact desired state.
+    Every boundary rereads ownership and the previous verified snapshot.
+    """
+    aid = current["id"]
+
+    def write(snapshot, patch, bulk):
+        guard = _account_probe_write_guard(api, snapshot, cfg, require_consent=False, record=record)
+        def checked():
+            guard()
+            if "type" in patch:
+                _require_no_shadow_dependencies(api, snapshot)
+        with _guarded_admin_write(checked):
+            if bulk:
+                api.bulk_update_accounts([aid], patch)
+            else:
+                api.update_account(aid, patch)
+
+    removes_map_fields = any(
+        field in change and set((current.get("_cpa2sub2api_raw_credentials", current.get(field))
+                                 if field == "credentials" else current.get(field)) or {})
+        - set(change[field] or {}) for field in ("credentials", "extra"))
+    source_state_fields = {"status", "schedulable", "credentials", "extra"}
+    if not set(change) - source_state_fields and not removes_map_fields:
+        write(current, change, True)
+        return
+    write(current, {"status": "inactive", "schedulable": False}, True)
+    stopped = _with_source_credentials(api, _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid)))
+    expected = copy.deepcopy(current)
+    expected.update(status="inactive", schedulable=False)
+    before_snapshot = json.loads(_recovery_snapshot(expected))
+    stopped_snapshot = json.loads(_recovery_snapshot(stopped))
+    before_snapshot.pop("updated_at", None)
+    stopped_snapshot.pop("updated_at", None)
+    if (before_snapshot != stopped_snapshot
+            or current.get("_cpa2sub2api_raw_credentials") != stopped.get("_cpa2sub2api_raw_credentials")):
+        raise ValueError("source freeze readback changed outside stopped state")
+    ordinary = {key: value for key, value in change.items() if key not in ("status", "schedulable")}
+    if ordinary:
+        write(stopped, ordinary, False)
+    updated = _with_source_credentials(api, _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid)))
+    expected_updated = copy.deepcopy(stopped)
+    expected_updated.update(copy.deepcopy(ordinary))
+    if "credentials" in ordinary and "_cpa2sub2api_raw_credentials" in expected_updated:
+        expected_updated["_cpa2sub2api_raw_credentials"] = copy.deepcopy(ordinary["credentials"])
+    expected_snapshot = json.loads(_recovery_snapshot(expected_updated))
+    actual_snapshot = json.loads(_recovery_snapshot(updated))
+    if "_cpa2sub2api_raw_credentials" in expected_updated:
+        expected_snapshot["credentials"] = expected_updated["_cpa2sub2api_raw_credentials"]
+    if "_cpa2sub2api_raw_credentials" in updated:
+        actual_snapshot["credentials"] = updated["_cpa2sub2api_raw_credentials"]
+    expected_snapshot.pop("updated_at", None)
+    actual_snapshot.pop("updated_at", None)
+    if (updated.get("status") != "inactive" or updated.get("schedulable") is not False
+            or not account_matches_source(updated, record)
+            or expected_snapshot != actual_snapshot
+            or expected_updated.get("_cpa2sub2api_raw_credentials") != updated.get("_cpa2sub2api_raw_credentials")
+            or diff_account_fields(updated, expected_updated)):
+        raise ValueError("source stopped parameter readback mismatch")
+    write(updated, {"status": change.get("status", current.get("status")),
+                    "schedulable": change.get("schedulable", current.get("schedulable"))}, True)
+
+
 def sync_existing_accounts(api, recs, cfg, gmap, pmap, have_map, dry_run=False):
     """Update managed configuration, retaining unknown upstream runtime metadata."""
     if _truthy((cfg.get("request_relay") or {}).get("enabled")) and not cfg.get("_request_relay_bundle"):
@@ -5320,6 +5679,7 @@ def sync_existing_accounts(api, recs, cfg, gmap, pmap, have_map, dry_run=False):
             continue
         for key in ("platform", "confirm_mixed_channel_risk"):
             desired.pop(key, None)
+        desired = _source_stop_transition(current, desired, record)
         change = diff_account_fields(current, desired)
         if not change:
             same += 1
@@ -5336,6 +5696,15 @@ def sync_existing_accounts(api, recs, cfg, gmap, pmap, have_map, dry_run=False):
             fresh = _with_source_credentials(api, fresh)
             if "_source_scope" in record and not account_matches_source(fresh, record):
                 raise ValueError("revealed source identity changed")
+            # A manual/error hold can appear after the initial list read.
+            source_desired = to_account(record, cfg, gmap, pmap, proxy_need)
+            desired = _source_stop_transition(fresh, source_desired, record)
+            for key in ("platform", "confirm_mixed_channel_risk"):
+                desired.pop(key, None)
+            if not strong_identity:
+                desired["credentials"].pop("api_key", None)
+                desired["extra"]["cpa2sub2api_source"] = _legacy_claim_metadata(
+                    fresh, record, record.get("_source_scope", _source_scope(cfg)))
             change = diff_account_fields(fresh, desired)
             if not change:
                 same += 1
@@ -5348,7 +5717,9 @@ def sync_existing_accounts(api, recs, cfg, gmap, pmap, have_map, dry_run=False):
                     raise ValueError("unsafe OpenAI migration mode")
                 change["extra"] = dict({k: v for k, v in (fresh.get("extra") or {}).items()
                                         if k not in MANAGED_EXTRA_FIELDS}, **desired["extra"])
-            if "_source_scope" in record:
+            if "schedulable" in change:
+                _write_source_state_patch(api, fresh, change, cfg, record)
+            elif "_source_scope" in record:
                 base_guard = _account_probe_write_guard(api, fresh, cfg, require_consent=False, record=record)
                 def guard():
                     base_guard()
@@ -5466,8 +5837,7 @@ def _current_error_recovery_record(account, cfg):
     if (str((document.get("routing") or {}).get("strategy") or "").lower() == "weighted-round-robin"
             and _is_int(weight) and weight <= 0):
         raise ValueError("current source excludes zero-weight credentials")
-    mapping = build_model_mapping(record.get("models_raw"), record.get("excluded"), record.get("platform"),
-                                  source_section=record.get("source_section") or record.get("section"))
+    mapping = record_model_mapping(record)
     if "cpa2sub2api_original_source" in (account.get("extra") or {}):
         import request_relay
         mapping = request_relay.relay_model_mapping(record, mapping)
@@ -5940,104 +6310,148 @@ def _strict_test_plans(response):
     return response
 
 
-def ensure_test_plans(api, name_to_id, cfg, dry_run=False, section_by_name=None):
+def _ordered_plan_targets(name_to_id, cfg, account_snapshot):
+    # Snapshot data changes order only; every account and sensitive write stays fresh.
+    rows = {row.get("id"): row for row in (account_snapshot or [])
+            if isinstance(row, dict) and row.get("id")}
+    try:
+        live = resolve_probe_policy(cfg)
+    except Exception:
+        live = None  # Unknown policy cannot authorize anything through ordering.
+
+    def key(item):
+        name, aid = item
+        rank = 2
+        row = rows.get(aid)
+        if row is not None:
+            try:
+                base = account_probe_base_url(row)
+                if probe_policy.normalize_host(base):
+                    if probe_policy.permanently_denied(base):
+                        rank = 0
+                    elif live is not None:
+                        rank = (3 if _truthy(live.get("auto_recover_enabled", True))
+                                and probe_policy.probe_allowed(base, live) else 1)
+            except (ValueError, RuntimeError):
+                pass
+        return rank, str(name), str(aid)
+
+    return sorted(((name, aid) for name, aid in name_to_id.items() if aid), key=key)
+
+
+def ensure_test_plans(api, name_to_id, cfg, dry_run=False, section_by_name=None,
+                      account_snapshot=None):
     """Reconcile managed plans offline: explicit consent, weekly schedule, readback.
 
     Admin API reads/writes do not call the upstream. Revoked sites have existing
     plans disabled even when the global switch or auto recovery is off.
     """
-    failures, reconciled = [], 0
-    for name, aid in sorted(name_to_id.items()):
-        if not aid:
-            continue
-        try:
-            account = _unwrap_one(api._call("GET", f"/api/v1/admin/accounts/{aid}"))
-            if account.get("id") != aid or not _is_migrated(account):
-                raise ValueError("unmanaged account")
-            credentials = account.get("credentials") or {}
-            live = resolve_probe_policy(cfg)
-            scope = _source_scope(live)
-            if (scope is not None and account_source_scope(account) != scope
-                    and _truthy(live.get("model_probe_enabled", False))):
-                continue
-            allowed = (_truthy(live.get("auto_recover_enabled", True))
-                       and probe_policy.probe_allowed(account_probe_base_url(account), live))
-            model = _pick_probe_model(credentials.get("model_mapping"),
-                                      account.get("platform"),
-                                      (section_by_name or {}).get(name)) if allowed else None
-            allowed = bool(allowed and model)
-            diagnostic_problem = None
-            if allowed:
-                try:
-                    model = _native_scheduled_diagnostic_model(account, model, live)
-                except (ValueError, OSError) as error:
-                    allowed = False
-                    model = None
-                    diagnostic_problem = str(error)
-            offset = int(hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:4], 16)
-            desired = {"enabled": allowed, "auto_recover": allowed,
-                       "cron_expression": probe_policy.weekly_cron(
-                           cfg.get("auto_recover_cron"), offset)}
-            if model:
-                desired["model_id"] = model
-            plans = _strict_test_plans(api.list_test_plans(aid))
-            if not isinstance(plans, list) or any(not isinstance(p, dict) or not p.get("id")
-                                                  for p in plans):
-                raise ValueError("invalid plans")
-            if diagnostic_problem:
-                failures.append((name, "原生周检测需已启用并同步的安全 relay：" + diagnostic_problem))
-            if dry_run:
-                reconciled += int(bool(plans or allowed))
-                continue
-            if not plans and allowed:
-                try:
-                    with _guarded_admin_write(_account_probe_write_guard(api, account, cfg, require_auto_recover=True)):
-                        api.create_test_plan(dict(desired, account_id=aid))
-                except ProbeAuthorityRevoked:
-                    continue
-                except ApiError as ex:
-                    if ex.status != 409:
-                        raise
-                # Creation conflict is not success: discover then reconcile.
-                plans = _strict_test_plans(api.list_test_plans(aid))
-                if not plans:
-                    raise ValueError("creation not verified")
-            for plan in plans:
-                if not plan.get("id"):
-                    raise ValueError("plan id missing")
+    with _admin_calibration_scope(api, cfg, '计划校准', len(name_to_id)) as calibration:
+        failures, reconciled = [], 0
+        work = _ordered_plan_targets(name_to_id, cfg, account_snapshot)
+        for index, (name, aid) in enumerate(work, 1):
+            calibration.item(index, len(work), aid)
+            try:
+                calibration.check()
+                account = _unwrap_one(api._call("GET", f"/api/v1/admin/accounts/{aid}"))
+                if account.get("id") != aid or not _is_migrated(account):
+                    raise ValueError("unmanaged account")
+                credentials = account.get("credentials") or {}
                 live = resolve_probe_policy(cfg)
-                if not (_truthy(live.get("auto_recover_enabled", True))
-                        and probe_policy.probe_allowed(account_probe_base_url(account), live)
-                        and (scope is None or (live.get("_current_source_scope", _policy_source_scope(live)) == scope
-                                               and account_source_scope(account) == scope))):
-                    desired.update(enabled=False, auto_recover=False)
-                patch = {key: val for key, val in desired.items() if plan.get(key) != val}
-                if patch:
-                    path = "/api/v1/admin/scheduled-test-plans/%d" % plan["id"]
-                    if desired["enabled"] or desired["auto_recover"]:
-                        try:
-                            with _guarded_admin_write(_account_probe_write_guard(
-                                    api, account, cfg, require_auto_recover=True, plan_id=plan["id"])):
-                                api._call("PUT", path, patch)
-                        except ProbeAuthorityRevoked:
-                            # A delayed enable may have been accepted despite a
-                            # retryable response. Reconcile it to the safe state.
-                            desired.update(enabled=False, auto_recover=False)
+                scope = _source_scope(live)
+                if (scope is not None and account_source_scope(account) != scope
+                        and _truthy(live.get("model_probe_enabled", False))):
+                    continue
+                allowed = (_truthy(live.get("auto_recover_enabled", True))
+                           and probe_policy.probe_allowed(account_probe_base_url(account), live))
+                model = _pick_probe_model(credentials.get("model_mapping"),
+                                          account.get("platform"),
+                                          (section_by_name or {}).get(name)) if allowed else None
+                allowed = bool(allowed and model)
+                diagnostic_problem = None
+                if allowed:
+                    try:
+                        model = _native_scheduled_diagnostic_model(account, model, live)
+                    except (ValueError, OSError) as error:
+                        allowed = False
+                        model = None
+                        diagnostic_problem = str(error)
+                offset = int(hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:4], 16)
+                desired = {"enabled": allowed, "auto_recover": allowed,
+                           "cron_expression": probe_policy.weekly_cron(
+                               cfg.get("auto_recover_cron"), offset)}
+                if model:
+                    desired["model_id"] = model
+                plans = _strict_test_plans(api.list_test_plans(aid))
+                if not isinstance(plans, list) or any(not isinstance(p, dict) or not p.get("id")
+                                                      for p in plans):
+                    raise ValueError("invalid plans")
+                if diagnostic_problem:
+                    failures.append((name, "原生周检测需已启用并同步的安全 relay：" + diagnostic_problem))
+                if dry_run:
+                    reconciled += int(bool(plans or allowed))
+                    continue
+                if not plans and allowed:
+                    try:
+                        with _guarded_admin_write(_account_probe_write_guard(api, account, cfg, require_auto_recover=True)):
+                            api.create_test_plan(dict(desired, account_id=aid))
+                    except ProbeAuthorityRevoked:
+                        continue
+                    except ApiError as ex:
+                        if ex.status != 409:
+                            raise
+                    # Creation conflict is not success: discover then reconcile.
+                    plans = _strict_test_plans(api.list_test_plans(aid))
+                    if not plans:
+                        raise ValueError("creation not verified")
+                for plan in plans:
+                    if not plan.get("id"):
+                        raise ValueError("plan id missing")
+                    live = resolve_probe_policy(cfg)
+                    if not (_truthy(live.get("auto_recover_enabled", True))
+                            and probe_policy.probe_allowed(account_probe_base_url(account), live)
+                            and (scope is None or (live.get("_current_source_scope", _policy_source_scope(live)) == scope
+                                                   and account_source_scope(account) == scope))):
+                        desired.update(enabled=False, auto_recover=False)
+                    patch = {key: val for key, val in desired.items() if plan.get(key) != val}
+                    if patch:
+                        path = "/api/v1/admin/scheduled-test-plans/%d" % plan["id"]
+                        if desired["enabled"] or desired["auto_recover"]:
+                            try:
+                                with _guarded_admin_write(_account_probe_write_guard(
+                                        api, account, cfg, require_auto_recover=True, plan_id=plan["id"])):
+                                    api._call("PUT", path, patch)
+                            except ProbeAuthorityRevoked:
+                                # A delayed enable may have been accepted despite a
+                                # retryable response. Reconcile it to the safe state.
+                                desired.update(enabled=False, auto_recover=False)
+                                with _guarded_admin_write(_account_probe_write_guard(api, account, plan_id=plan["id"])):
+                                    api._call("PUT", path, {"enabled": False, "auto_recover": False})
+                        else:
                             with _guarded_admin_write(_account_probe_write_guard(api, account, plan_id=plan["id"])):
-                                api._call("PUT", path, {"enabled": False, "auto_recover": False})
-                    else:
-                        with _guarded_admin_write(_account_probe_write_guard(api, account, plan_id=plan["id"])):
-                            api._call("PUT", path, patch)
-            if plans:
-                checked = _strict_test_plans(api.list_test_plans(aid))
-                by_id = {p.get("id"): p for p in checked if isinstance(p, dict)}
-                if any(any(by_id.get(p["id"], {}).get(k) != v for k, v in desired.items())
-                       for p in plans):
-                    raise ValueError("plan readback mismatch")
-                reconciled += 1
-        except Exception:
-            failures.append((name, "探活计划校准失败，未能核实停用或周频状态"))
-    return reconciled, failures
+                                api._call("PUT", path, patch)
+                if plans:
+                    checked = _strict_test_plans(api.list_test_plans(aid))
+                    by_id = {p.get("id"): p for p in checked if isinstance(p, dict)}
+                    if any(any(by_id.get(p["id"], {}).get(k) != v for k, v in desired.items())
+                           for p in plans):
+                        raise ValueError("plan readback mismatch")
+                    reconciled += 1
+                calibration.record_success()
+                calibration.progress("本项核查完成")
+            except Exception as error:
+                calibration.record_error(error)
+                reason = _calibration_failure_reason(error, "探活计划校准失败，未能核实停用或周频状态")
+                failures.append((name, reason))
+                calibration.add_unverified(1)
+                calibration.progress("失败：" + reason)
+                if calibration.stopped:
+                    remaining = work[index:]
+                    failures.extend((name, calibration.stop_reason + "；未校准") for name, _ in remaining)
+                    calibration.add_unverified(len(remaining))
+                    calibration.progress("已停止，剩余 %d 项未校准" % len(remaining))
+                    break
+        return reconciled, failures
 
 
 def plan_fallback_chain(recs, groups):
@@ -6959,8 +7373,7 @@ def _apply_learned_source_tls(records, document, settings, bundle=None, provenan
                 continue
             models = route["models"]
         else:
-            mapping = build_model_mapping(record.get("models_raw"), record.get("excluded"),
-                record.get("platform"), source_section=record.get("source_section") or record.get("section"))
+            mapping = record_model_mapping(record)
             models = sorted(set(mapping.values()))
         profile = tls.learned_profile(record, document, settings, models, provenance)
         if profile is not None:
@@ -7142,7 +7555,7 @@ def probe_cli(arguments):
             print("账号列表不完整，未校准计划")
             return 1
         targets = managed_plan_targets(rows)
-        count, failures = ensure_test_plans(api, targets, settings)
+        count, failures = ensure_test_plans(api, targets, settings, account_snapshot=rows)
         print("已校准 %d 个受管账号计划，失败 %d" % (count, len(failures)))
         return int(bool(failures))
     if args.action == "master":

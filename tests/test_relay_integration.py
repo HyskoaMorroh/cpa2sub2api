@@ -270,6 +270,9 @@ class RelayIntegrationTests(unittest.TestCase):
 
     def test_relay_alias_pool_mapping_is_preserved_without_reintroducing_lower_tier(self):
         record = copy.deepcopy(self.records[0])
+        # This checks generated/fallback selection. Explicit configured pools
+        # retain all source members and CPA itself chooses the actual member.
+        record["_models_explicit"] = False
         record["models_raw"] = [{"name": "claude-opus-9-a", "alias": "pooled"},
                                 {"name": "claude-opus-9-b", "alias": "pooled"}]
         mapping = {"pooled": "claude-opus-9-b", "claude-opus-9-a": "claude-opus-9-a",

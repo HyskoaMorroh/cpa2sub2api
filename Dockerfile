@@ -171,7 +171,7 @@ RUN chmod +x /usr/local/bin/mihomo /usr/local/bin/cpa-consumer
 # 复制应用代码
 # Only runtime sources enter the image. Private deployment files, screenshots,
 # local reports and tutorials cannot be included by an accidental new file.
-COPY --chown=app:app tool.py run.py extract.py pricing.py model_selection.py upstream_contract.py tls_diagnostic_transaction.py automatic_probe_budget.py \
+COPY --chown=app:app tool.py admin_io.py run.py extract.py pricing.py model_selection.py upstream_contract.py tls_diagnostic_transaction.py automatic_probe_budget.py \
      model_probe.py probe_policy.py new_remap_priority.py 一键导入.py entrypoint.sh ./
 COPY --chown=app:app mihomo-manager/bootstrap-mihomo.sh \
      mihomo-manager/update-mihomo-subscriptions.sh ./mihomo-manager/

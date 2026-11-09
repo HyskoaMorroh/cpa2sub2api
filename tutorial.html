@@ -345,16 +345,16 @@
     <p>credentials、priority、concurrency、auto_pause_on_expired、proxy_id、请求头、冷却规则、Websockets、模型白名单等一次性迁移。</p>
   </div>
   <div class="card">
-    <h3 class="doc-subheading">按域名分桶</h3>
-    <p>同一上游的多个 KEY 互为备份、落进同一优先级桶；只有整桶不可用才降级到下一个域名。</p>
+    <h3 class="doc-subheading">保留来源排序</h3>
+    <p>每条凭据的显式 priority 保留顺序与并列关系，再转换为 sub2api 的小值优先；健康分不覆盖来源意图。</p>
   </div>
   <div class="card">
-    <h3 class="doc-subheading">健康度重排 <span class="bd bd-new">已修</span></h3>
-    <p>按 sub2api 实测的可调度率 60% + 活跃率 40% 重排优先级，分组内桶号唯一。</p>
+    <h3 class="doc-subheading">健康辅助参数 <span class="bd bd-new">已核对</span></h3>
+    <p>已有健康状态用于辅助负载分配，不重新改写显式来源 priority，也不把未检测账号标成可用。</p>
   </div>
   <div class="card">
-    <h3 class="doc-subheading">模型就高原则 <span class="bd bd-fix">已修</span></h3>
-    <p>codex 与 openai 分开处理，代际门槛从上游源码反推，不写死版本号。</p>
+    <h3 class="doc-subheading">模型与别名保真 <span class="bd bd-fix">已核对</span></h3>
+    <p>显式模型列表完整保留 name/alias 和后缀；仅未配置列表时，按来源家族执行模型回退。</p>
   </div>
   <div class="card">
     <h3 class="doc-subheading">并发导入</h3>
@@ -691,7 +691,8 @@ docker compose ps -a cpa2sub2api</pre></div>
 <p>默认 <code>RUN_INTERVAL_SECONDS=0</code>，导入完成即退出。退出码0代表作业完成；退出码非0需排查。配置同步不等于模型探活，不必为了周频探活增加另一个宿主cron或循环。</p>
 <p>授权站的恢复计划由 sub2api 调度，默认每周一次。每次修改授权或停用总闸后执行 <code>probes reconcile</code>，核对旧计划已停用或迁移。不要让宿主cron、容器循环、旧半小时计划重复运行。</p>
 <p>自动检测还有按规范化主机共享的 <b>604800 秒周预算</b>：正常导入的自动批次与 sub2api 原生周计划共用同一账本，更换 KEY、模型或运行代际不会重新放行。预算在请求前持久化，失败或中断也计入该周；未到期受控跳过，上游请求数为零，不把健康账号改成错误。<code>MODEL_PROBE_CACHE_TTL=604800</code> 只管理结果缓存，缓存过期或最高模型上次失败都不能绕过周预算。显式 <code>diagnose</code> / <code>recover</code> 使用独立手工诊断路径，不占自动周预算，仍逐次核对总闸、站授权和永久禁探规则。</p>
-<div class="box warn"><b>同步会校正已有字段</b>本工具会按当前输入与管理策略重算受管账号的模型、优先级等字段。你在sub2api手工调整的受管参数可能被覆盖；先预览，保留目标数据库及私有配置备份。</div>
+<div class="box warn"><b>同步会校正已有字段</b>本工具会按当前输入校正受管参数。显式模型列表、alias、排除规则及每条来源 priority 是权威输入；优先级只反向映射为目标数值，不被健康分覆盖。你在 sub2api 手工调整的受管参数可能被同步覆盖；先预览并保留目标数据与私有配置备份。</div>
+<div class="box note"><b>等待有明确截止</b>计划、恢复、旧账号及健康校准逐项显示进度，等待管理接口时每 5 秒提示一次。单请求最多 30 秒、单阶段最多 10 分钟、整个校准最多 15 分钟；配置中的更短 HTTP 超时仍有效。连续三项管理网络失败或收到 401/403 时停止，剩余项标为未校准并返回失败。子步骤成功不掩盖整项失败；限流冷却不会为赶截止而缩短。该过程只操作 Sub 管理数据，不额外探活上游。</div>
 
 <h3 class="doc-subheading">临时/手动执行（可选）</h3>
 <p>不想重新起整个栈时，也可以单独跑一次：</p>
@@ -750,7 +751,7 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 <table>
   <thead><tr><th>变量</th><th>默认</th><th>作用</th></tr></thead>
   <tbody>
-    <tr><td><code>HEALTH_RERANK_ENABLED</code></td><td>true</td><td>按实测健康度重排优先级</td></tr>
+    <tr><td><code>HEALTH_RERANK_ENABLED</code></td><td>true</td><td>读取已有健康状态形成辅助负载参数；不覆盖显式来源 priority</td></tr>
     <tr><td><code>SYNC_EXISTING_ACCOUNTS</code></td><td>true</td><td>已存在的账号也同步最新参数</td></tr>
     <tr><td><code>RESPECT_WEIGHT_ZERO</code></td><td>true</td><td>weight=0 降级而非停用</td></tr>
     <tr><td><code>POOL_MODE_ENABLED</code></td><td>true</td><td>同账号重试瞬时抖动</td></tr>
@@ -840,8 +841,7 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 <tr>
   <td><code>priority</code></td>
   <td>选择偏好，<b>数值越大越优先</b></td>
-  <td>映射成 sub2api 的桶号（数值越<b>小</b>越优先，方向相反）。
-      同一渠道同一域名的多个 KEY 会拿到<b>同一个桶号</b>，互为备份</td>
+  <td>每条显式来源值按全局反向 dense rank 映射为 sub2api 的小值优先。相同值保留并列，不因域名或健康分重新分组</td>
 </tr>
 <tr>
   <td><code>weight</code></td>
@@ -856,13 +856,12 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 <tr>
   <td><code>models</code></td>
   <td>该凭据提供的模型列表（含 <code>alias</code> 别名）</td>
-  <td>经「就高原则」筛成 sub2api 的 <code>model_mapping</code> 白名单，见 7.4</td>
+  <td>显式列表完整保留 <code>name/alias</code> 关系；客户端按 alias 请求。只在缺少列表时使用家族回退，见 7.4</td>
 </tr>
 <tr>
   <td><code>excluded-models</code></td>
   <td>该凭据<b>排除</b>的模型</td>
-  <td>从白名单里减掉（sub2api 没有黑名单字段）。
-      减空了会写一个占位项，防止「空表=放行全部」的反向事故</td>
+  <td>按客户端 alias 从放行列表中排除。全部排除时原子停用并关闭调度，最终映射清空；内部创建保护项不作为可用模型展示</td>
 </tr>
 <tr>
   <td><code>headers</code></td>
@@ -1388,7 +1387,7 @@ docker compose run --rm cpa2sub2api python tool.py import --host upstream.exampl
 
   <text x="30" y="124" fill="#94A3B8" font-size="12" font-family="monospace">[3/6]</text>
   <rect x="90" y="110" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
-  <text x="106" y="130" fill="#E5E7EB" font-size="12.5">去重、健康度重排、批量建号</text>
+  <text x="106" y="130" fill="#E5E7EB" font-size="12.5">去重、保留来源排序、批量建号</text>
 
   <text x="30" y="172" fill="#94A3B8" font-size="12" font-family="monospace">[4/6]</text>
   <rect x="90" y="158" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
@@ -1406,23 +1405,23 @@ docker compose run --rm cpa2sub2api python tool.py import --host upstream.exampl
   <rect x="90" y="308" width="700" height="46" rx="7" fill="url(#gS2)"
         stroke="#A78BFA" stroke-opacity=".6" stroke-width="1.5"/>
   <text x="106" y="330" fill="#E5E7EB" font-size="12.5" font-weight="700">
-    [第二阶段] 用新建账号的真实状态再重排一次优先级
+    [第二阶段] 读取已有状态，校准辅助负载参数
   </text>
   <text x="106" y="347" fill="#A78BFA" font-size="11">
-    首次导入时 sub2api 里还没有任何账号，健康度无从算起 → 新建完成后立刻重排，一次到位
+    来源 priority 保持不变；新建完成后可读取状态形成辅助负载参数
   </text>
 
   <path d="M790 284 L830 284 L830 331 L800 331" stroke="#A78BFA" stroke-width="1.6"
         fill="none" stroke-dasharray="4 3"/>
   <text x="450" y="392" fill="#94A3B8" font-size="11" text-anchor="middle">
-    第二阶段只在本轮真的新建过账号时执行；没新建就说明是第二次以后的运行，跳过
+    显式来源顺序与并列关系始终保留；健康信息不能代替模型调用成功证据
   </text>
   <text x="450" y="410" fill="#94A3B8" font-size="11" text-anchor="middle">
-    这一层解决了「必须手工跑第二遍才能应用智能优先级」的冷启动问题
+    单次作业完成参数校准；失败项明确报告，不把已发送当成已核实
   </text>
 </svg>
 <figcaption>
-  <b>图 5</b>　导入的六个阶段<b>加上第二阶段重排</b>。
+  <b>图 5</b>　导入的六个阶段<b>加上辅助参数校准</b>。
   恢复账号仍需明确ID授权和即时证据；冷启动排序不自动恢复手工禁用。
 </figcaption>
 </figure>
@@ -1481,6 +1480,9 @@ docker compose run --rm cpa2sub2api python tool.py import --yes --host upstream.
 docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes diagnose upstream.example</pre></div>
 <p>先测当前真实源传输参数，失败后才试一个明确TLS预设，每账号最多两个模型请求。有效输出、实时授权、账号/来源快照及完整state校验通过，才在 <code>request_relay_learned_tls_profiles</code> 保存绑定来源、KEY、实际模型和consumer二进制摘要的参数，来源或版本变化后旧结果失效。它不试写sub2api账号TLS布尔字段。失败、取消、撤权或并发修改均保留主设置、CURRENT、secrets及其他路由；中断事务由journal恢复。普通导入使用有效学习参数，不隐式诊断；源级成功不代表原生客户端或所有模型兼容。</p>
 
+<h3>来源停用、全排除与恢复</h3>
+<p>显式来源停用或排除全部模型时，账号会原子写为 <code>inactive + schedulable=false</code>，最终模型映射清空，不把内部保护项当作可用模型显示。新建阶段只使用瞬时保护；最终写入与每次重试均核对归属和完整受管字段。</p>
+<p><code>extra.cpa2sub2api_source_disabled</code> 只记录本工具在强来源绑定下设置的停用。已有手工停用、错误、冷却或模型限额不会被推断为本工具停用。来源重新放开后，只有该标记、相同来源、当前停用状态和无错误/冷却/模型限额等条件全部满足，才原子恢复并清除标记；其他运行状态保留。</p>
 <h3>明确选择账号恢复</h3>
 <p>普通导入不会复活来源不明的手工inactive或单独 <code>schedulable=false</code>。需要恢复时明确指定你核实过的受管账号ID；这条命令也会向上游发送实际测试，仍受双闸、永久禁探、归属与429/临时冷却约束。</p>
 <div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
@@ -1813,27 +1815,28 @@ docker compose ps -a mihomo-init mihomo-policy-init mihomo</pre></div>
 
   <line x1="40" y1="162" x2="860" y2="162" stroke="#1E2636" stroke-width="2"/>
   <text x="450" y="184" fill="#FB7185" font-size="11.5" text-anchor="middle">
-    ⚠ 同一分组内桶号必须唯一。若两个域名撞进同一桶，它们会被混着轮循，
+    显式来源 priority 相同则保留并列；不同值保持原来的先后顺序。
   </text>
   <text x="450" y="204" fill="#FB7185" font-size="11.5" text-anchor="middle">
-    「整桶挂掉才降级」的容灾特性就失效了
+    不因域名不同或健康分变化，擅自拆开已确认的来源并列关系。
   </text>
   <text x="450" y="230" fill="#94A3B8" font-size="11" text-anchor="middle">
     方向相反：CPA 里数值大者优先，sub2api 里数值小者优先 —— 本工具负责转换
   </text>
 </svg>
 <figcaption>
-  <b>图 6</b>　分桶调度。同域名多 KEY 同桶是<b>硬性要求</b> ——
-  拆开就等于把「多 KEY 冗余」退化成「单 KEY 单点」。
+  <b>图 6</b>　分桶调度示意。来源配置决定每条凭据的顺序与并列；
+  本工具将 CPA 的大值优先反向映射为 sub2api 的小值优先。
 </figcaption>
 </figure>
 
-<h3>7.2 健康度重排</h3>
+<h3>7.2 健康辅助与来源排序</h3>
+<p>来源配置导入路径完整保留每条 priority 的顺序和并列关系，采用全局反向 dense rank 映射。下面的健康评分用于辅助负载参数，不覆盖显式 priority；旧的手工记录兼容入口另有原健康排序行为。</p>
 
 <figure>
-<svg viewBox="0 0 900 300" role="img" aria-label="健康分到桶号的映射">
+<svg viewBox="0 0 900 300" role="img" aria-label="健康评分与辅助负载参数">
   <text x="450" y="22" fill="#94A3B8" font-size="12" text-anchor="middle" font-family="monospace">
-    健康分 → 桶号
+    健康分 → 辅助负载
   </text>
 
   <!-- 公式 -->
@@ -1851,10 +1854,10 @@ docker compose ps -a mihomo-init mihomo-policy-init mihomo</pre></div>
   <!-- 分档 -->
   <rect x="470" y="42" width="390" height="58" rx="10" fill="url(#gB)" stroke="#A78BFA" stroke-opacity=".45"/>
   <text x="665" y="66" fill="#E5E7EB" font-size="12.5" text-anchor="middle">
-    按健康分降序分配桶号（分高 → 桶号小 → 优先调度）
+    健康分辅助负载；来源 priority 保持原顺序
   </text>
   <text x="665" y="87" fill="#9CA3AF" font-size="10.5" text-anchor="middle">
-    分组内唯一 · 步长 10 · 每组各自从 10 起
+    按来源值全局反向映射 · 相同值保留并列
   </text>
 
   <!-- load_factor -->
@@ -1877,18 +1880,18 @@ docker compose ps -a mihomo-init mihomo-policy-init mihomo</pre></div>
   <text x="540" y="186" fill="#E5E7EB" font-size="12" text-anchor="middle" font-family="monospace">lf = 2</text>
 
   <text x="450" y="228" fill="#9CA3AF" font-size="11.5" text-anchor="middle">
-    为什么「可调度」权重更高：sub2api 出错时会同时关掉 status 和 schedulable，
+    可调度比例与活跃比例分别观察；状态不一致时需要单独核查，
   </text>
   <text x="450" y="248" fill="#9CA3AF" font-size="11.5" text-anchor="middle">
-    而恢复路径只还 status、不还 schedulable。
+    不能只凭某个状态字段，就认定账号已经恢复。
   </text>
   <text x="450" y="272" fill="#A78BFA" font-size="11.5" text-anchor="middle">
-    → 所以 schedulable=false 往往意味着「这个 KEY 栽过跟头且没人管过它」
+    → 手工停用、冷却与错误健康状态均应保留来源和证据边界
   </text>
 </svg>
 <figcaption>
-  <b>图 7</b>　健康度重排。优先级不照搬 CPA 的静态配置，
-  而是按 sub2api 的<b>实测状态</b>重算。
+  <b>图 7</b>　健康辅助参数。来源排序保留显式 CPA priority，
+  评分仅用于辅助负载，不代表本轮模型检测成功。
 </figcaption>
 </figure>
 
@@ -2067,8 +2070,19 @@ docker compose ps -a mihomo-init mihomo-policy-init mihomo</pre></div>
 </figcaption>
 </figure>
 
-<h3>7.4 模型「就高原则」 <span class="bd bd-fix">已修</span></h3>
-<p>下列型号用于说明家族和版本比较，不代表当前市场最新目录。实际选择以本次获取的可信模型目录、来源类型和日志为准；未检测不标实测可用。</p>
+<h3>7.4 显式模型保真与缺省回退 <span class="bd bd-fix">已核对</span></h3>
+<div class="box tip"><b>先区分显式列表与缺省回退</b>已经配置的 <code>models</code> 是权威输入，完整保留名称、后缀和 <code>name/alias</code> 配对，不因看起来较旧或包含某个词而截断。客户端按 alias 请求；relay 保留该 alias，由 CPA 按原配对选择真正上游模型，不额外暴露未配置的原名。<code>excluded-models</code> 按 alias 匹配。</div>
+<p>以下图表只说明没有显式列表时的家族回退，示例型号不代表当前市场最新目录；未检测不能标成实测可用。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0"># 字段示意：放入你自己的来源条目，不是完整配置
+base-url: https://upstream.example.invalid/v1
+models:
+  - name: vendor-model-v9
+    alias: work-model
+  - name: vendor-model-v9-extended
+    alias: work-model-extended
+excluded-models:
+  - work-legacy-*</pre></div>
+<p>此示例只向客户端暴露 <code>work-model</code> 与 <code>work-model-extended</code>；名字不同的两个 alias 不会被合并。排除规则作用于 alias，真实源模型名由 CPA 消费，不需要为同一个原名额外添加一个未配置的对外身份。</p>
 
 <figure>
 <svg viewBox="0 0 900 330" role="img" aria-label="模型选择分流">
@@ -2081,7 +2095,7 @@ docker compose ps -a mihomo-init mihomo-policy-init mihomo</pre></div>
 
   <rect x="330" y="16" width="240" height="42" rx="9" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".45"/>
   <text x="450" y="43" fill="#E5E7EB" font-size="12.5" text-anchor="middle">
-    CPA config.yaml 的某一条凭据
+    未显式配置 models 的凭据
   </text>
 
   <line x1="450" y1="58" x2="450" y2="84" stroke="#94A3B8" stroke-width="1.7" marker-end="url(#ar6)"/>
@@ -2124,14 +2138,14 @@ docker compose ps -a mihomo-init mihomo-policy-init mihomo</pre></div>
 
   <rect x="30" y="262" width="840" height="52" rx="9" fill="rgba(110,231,183,.09)" stroke="#6EE7B7" stroke-opacity=".4"/>
   <text x="50" y="283" fill="#6EE7B7" font-size="11.5">
-    代际门槛不写死：由上游源码里出现过的真实模型名反推，每次启动刷新。
+    缺省回退按可信目录与来源家族比较；显式列表不进入此筛选。
   </text>
   <text x="50" y="302" fill="#E5E7EB" font-size="11.5">
-    上游从 6 代走到 7 代时门槛自动前移；反推失败则用「列表里观测到的最高代」，不会砍错。
+    目录版本证据按缓存策略刷新；缺少证据时明确报告，不猜测新型号。
   </text>
 </svg>
 <figcaption>
-  <b>图 10</b>　模型选择按<b>来源段</b>分流，而不是靠「有没有 gpt-6」猜。
+  <b>图 10</b>　未显式配置模型时按<b>来源段</b>回退。显式列表完整保留。
 </figcaption>
 </figure>
 
@@ -2149,13 +2163,13 @@ docker compose ps -a mihomo-init mihomo-policy-init mihomo</pre></div>
 </div>
 
 <div class="note note-warn" tabindex="0" role="group" aria-label="可横向滚动的说明">
-  <b>低档模型一律不勾选</b>
+  <b>缺省回退中的低档过滤</b>
   <p>名字里带 <code>mini</code> / <code>flash</code> / <code>fast</code> 的排除，
-  四条路径（gemini / claude / codex / openai）统一执行。过滤后一个不剩时应从可信目录补齐该类型最高系列，或明确记录无法确定；不能把被排除的低档模型静默加回，也不能把空名单假报成功。</p>
+  只在没有显式模型列表的家族回退路径执行。已经配置的列表与 alias 不会被这组关键词再次筛掉。回退过滤后为空时保持阻断并明确报告，不能把空名单假报成功。</p>
   <p>注意 claude 的 <code>haiku</code> <b>不因档位名称被排除</b>：完整数值版本相同时，opus / sonnet / haiku及其他有效后缀都保留；较低版本仍按就高规则处理。低档关键词判据只认前述三个词。</p>
 </div>
 
-<h4>连通性探测：最新代打不通时的兜底</h4>
+<h4>缺省家族的授权诊断与次新回退</h4>
 
 <p>上游声明了 <code>gpt-6</code> 不等于真的能调。模型目录是站方自己填的，
 常有「列了但调不通」的情况。开启探测后按<b>代际</b>实发请求验证，据结果分三种处理。</p>
@@ -2549,7 +2563,7 @@ CPA2SUB_LOG_LEVEL=DEBUG CPA2SUB_LOG_TO_FILE=1 python 一键导入.py</pre></div>
   <li><b>分组内唯一桶号</b>：保证「整桶挂掉才降级」真的能降级。
       编号范围是分组内 —— sub2api 选号按 <code>group_id</code> 取候选，
       跨分组的桶号之间没有可比性，所以各组都从 <code>10</code> 起。</li>
-  <li><b>桶内冗余</b>：同域名多 KEY 同桶轮循，一个被冷却后请求轮到同桶其它 KEY。</li>
+  <li><b>桶内冗余</b>：来源配置中同优先级的 KEY 保持并列；一个被冷却后，可尝试同桶的其他合格 KEY。</li>
 </ol>
 
 <h3>8.3 报 <code>503 No available accounts</code> 且提示分组权限</h3>
@@ -3232,7 +3246,7 @@ SELECT id, email, role FROM users WHERE role='admin';"</pre></div>
 
 <footer>
   <p>
-    本教程更新于2026年11月9日。所有示例域名均为占位符，
+    本教程更新于2026年11月10日。所有示例域名均为占位符，
     界面插图均为<b>脱敏的自绘示意图</b>，不含任何真实数据。
   </p>
   <p>
