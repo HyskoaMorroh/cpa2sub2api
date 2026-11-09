@@ -8,16 +8,24 @@
 依赖：Python 3 + PyYAML（cmd 会自动装）。其余全用标准库。
 """
 import hashlib
+import copy
+import errno
 import io
 import json
 import logging
+import math
 import os
 import re
+import stat
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+import upstream_contract
 from collections import Counter, defaultdict
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 try:
     from urllib.parse import urlparse
@@ -95,6 +103,8 @@ try:
 except ImportError:
     MODEL_PROBE_AVAILABLE = False
 
+import probe_policy
+
 
 def _truthy(v):
     """把配置里的真值写法统一成 bool。
@@ -116,7 +126,7 @@ DEFAULT_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                       "Chrome/131.0.0.0 Safari/537.36")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SETTINGS_PATH = os.path.join(HERE, "设置.json")
+SETTINGS_PATH = os.environ.get("SETTINGS_PATH") or os.path.join(HERE, "设置.json")
 CONFIG_YAML = os.path.join(HERE, "config.yaml")
 OUT_DIR = os.path.join(HERE, "out")
 PLAN_PATH = os.path.join(OUT_DIR, "import-plan.json")
@@ -263,7 +273,7 @@ NOTE_SENTINEL = "[cpa2sub2api]"
 # 每一级都会明确告警（不再静默降级）。
 #
 # 默认按"与本项目并列存放"推断，不写死任何人的家目录：产品代码里出现
-# C:\Users\<某人>\... 既暴露作者环境，也让其他人拿到手必须先改代码。
+# 个人绝对路径会暴露环境；源码仅按项目相对位置查找。
 # 目录名沿用两个上游仓库 GitHub 下载解压后的默认名。
 _SIBLING = os.path.dirname(HERE)
 SUB2API_SRC = os.environ.get(
@@ -316,7 +326,7 @@ DEFAULTS = {
     "log_to_file": False,
     # 导入后自动挂定时探活计划（auto_recover=true），用 sub2api 自带机制恢复。
     "auto_recover_enabled": True,
-    "auto_recover_cron": "*/30 * * * *",
+    "auto_recover_cron": "0 3 * * 0",
     # 停用账号也要挂探活计划。需求第 2 条⑴要求"原先 config.yaml 里已关闭的
     # 上游，检测可用也要重新打开"——不探测就永远不知道它恢复没有。
     "probe_inactive": True,
@@ -329,7 +339,9 @@ DEFAULTS = {
     # 这正是"原配置关闭的上游永远起不来"的另一半成因。
     #
     # 只动本工具导入的账号（notes 带 NOTE_SENTINEL），且必须有
-    # success/ok/passed 的探活记录才启用，不会放开用户手工停用的账号。
+    # 本轮针对精确账号 ID 的即时 SSE 测试成功，且配置快照未变才启用。
+    # 历史计划结果不作为恢复依据。导入标记无法区分后续手工停用；
+    # 若需保留这些账号的停用状态，应关闭 revive_proven_inactive。
     "revive_proven_inactive": True,
     # 每次运行是否把已存在账号的 model_mapping / 优先级等同步成 config.yaml 的最新值。
     # 关掉就退回"只建新号"的一次性快照行为（CPA 改了排除规则这边不会跟上）。
@@ -352,8 +364,9 @@ DEFAULTS = {
     # 就直接读；本地没有（比如你把源码目录删了）就按下面的 GitHub 地址在线取，
     # 取回的文件缓存在 out/upstream-cache/，之后离线也能用。
     # 三级降级：本地源码 > 在线抓取 > 内置兜底值（会明确告警）。
-    "sub2api_repo": "https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/backend",
-    "cpa_repo": "https://raw.githubusercontent.com/router-for-me/CLIProxyAPI/main",
+    "sub2api_repo": "https://raw.githubusercontent.com/Wei-Shaw/sub2api/v0.2.20/backend",
+    "cpa_repo": "https://raw.githubusercontent.com/router-for-me/CLIProxyAPI/v8.0.60",
+    "upstream_cache_ttl_seconds": upstream_contract.CACHE_TTL,
     # 在线抓取开关。设为 false 则只用本地源码，取不到就直接降级到内置值。
     "fetch_upstream_src": True,
     # 三个数据文件（*.mhtml / pri.txt / model.txt）已随项目存放在本目录，
@@ -373,9 +386,21 @@ DEFAULTS = {
     # "最新代不通但次最新代连通时，两代都保留"。
     # 按 (段, 域名) 去重后每单元最多 2 个请求，8 并发，结果缓存 6 小时。
     # 关掉则完全按静态的就高逻辑走（与加这个功能之前一致）。
-    "model_probe_enabled": True,
+    "model_probe_enabled": False,
+    "model_probe_hard_disabled": False,
+    "online_probe_hosts": {},
+    "detected_tls_fingerprint_hosts": [],
+    "prune_stale_accounts": True,
     "model_probe_workers": 8,
     "model_probe_cache_ttl": 21600,
+    "request_relay_enabled": False,
+    "request_relay_base_url": "http://request-relay:8380",
+    "request_relay_state_dir": os.path.join(HERE, "state", "relay"),
+    "request_relay_source_scope": "default",
+    "request_relay_weighted_bucket": False,
+    "request_relay_force_all_accounts": False,
+    "request_relay_tls_profiles": {},
+    "request_relay_learned_tls_profiles": {},
 }
 
 # 浮点差分阈值。价格经 JSON 往返会有末位误差，用 == 比会永远认为有变化、
@@ -386,14 +411,142 @@ FLOAT_EPSILON = 1e-9
 # =============================================================================
 # 设置读写
 # =============================================================================
+class SettingsError(RuntimeError):
+    """Settings I/O or lock failure; callers must not overwrite as recovery."""
+
+
+class SettingsFormatError(SettingsError):
+    """The saved file is not a valid JSON object."""
+
+
+class SettingsLockTimeout(SettingsError, TimeoutError):
+    """Another process held the settings transaction beyond its deadline."""
+
+
+def _read_saved_settings(path):
+    def reject_constant(value):
+        raise ValueError("non-finite JSON number")
+    try:
+        with io.open(path, encoding="utf-8-sig") as stream:
+            saved = json.load(stream, parse_constant=reject_constant)
+    except FileNotFoundError:
+        return {}
+    except (ValueError, UnicodeError) as ex:
+        raise SettingsFormatError("设置文件必须是有效的 JSON 对象；原文件未更改") from ex
+    except OSError as ex:
+        raise SettingsError("无法读取设置文件；原文件未更改") from ex
+    if not isinstance(saved, dict):
+        raise SettingsFormatError("设置文件必须是 JSON 对象；原文件未更改")
+    return saved
+
+
+def _settings_os_lock(fd, unlock=False):
+    os.lseek(fd, 0, os.SEEK_SET)
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_UNLCK if unlock else msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN if unlock else fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@contextmanager
+def _settings_lock(path, timeout):
+    timeout = float(timeout)
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("settings lock timeout must be finite and nonnegative")
+    fd = None
+    acquired = False
+    try:
+        try:
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            fd = os.open(path + ".lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise SettingsError("设置锁不是普通文件；未更改设置")
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    _settings_os_lock(fd)
+                    acquired = True
+                    break
+                except OSError as ex:
+                    if ex.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise SettingsLockTimeout("等待设置锁超时；未更改设置") from ex
+                    time.sleep(min(0.025, remaining))
+            os.lseek(fd, 0, os.SEEK_SET)
+            marker = os.read(fd, 2)
+            if not marker:
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.write(fd, b"\0")
+                os.fsync(fd)
+            elif marker != b"\0":
+                raise SettingsError("设置锁文件已损坏；未更改设置或锁文件")
+        except SettingsError:
+            raise
+        except OSError as ex:
+            raise SettingsError("无法打开或使用设置锁；未更改设置") from ex
+        yield
+    finally:
+        if fd is not None:
+            try:
+                if acquired:
+                    _settings_os_lock(fd, unlock=True)
+            finally:
+                os.close(fd)
+
+
+def _write_settings_atomic(path, saved):
+    # Serialize before creating a temporary file, so caller mistakes leave no debris.
+    payload = json.dumps(saved, ensure_ascii=False, indent=2, allow_nan=False)
+    temporary = None
+    try:
+        fd, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", suffix=".tmp",
+                                         dir=os.path.dirname(path))
+        with io.open(fd, "w", encoding="utf-8", closefd=True) as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    except OSError as ex:
+        raise SettingsError("无法原子保存设置；原文件未更改") from ex
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
+
+
+def update_saved_settings(mutator, *, timeout=5.0):
+    """Atomically mutate raw saved JSON under SETTINGS_PATH + '.lock'.
+
+    Missing files start as {}. The mutator receives a deep copy and must return
+    a dict; its exceptions propagate without writing. Defaults and environment
+    values are never merged here. Invalid saved JSON and unusable/corrupt locks
+    fail explicitly. Callers must not call save_settings while holding this lock.
+    """
+    path = os.path.abspath(SETTINGS_PATH)
+    with _settings_lock(path, timeout):
+        saved = mutator(copy.deepcopy(_read_saved_settings(path)))
+        if not isinstance(saved, dict):
+            raise TypeError("settings mutator must return a dict")
+        saved = copy.deepcopy(saved)
+        _write_settings_atomic(path, saved)
+        return copy.deepcopy(saved)
+
+
 def load_settings():
     s = dict(DEFAULTS)
+    saved = {}
+    saved_invalid = False
     # 1. 读取设置.json（低优先级）
     if os.path.exists(SETTINGS_PATH):
         try:
-            with io.open(SETTINGS_PATH, encoding="utf-8-sig") as f:
-                s.update(json.load(f))
+            saved = _read_saved_settings(SETTINGS_PATH)
+            s.update(saved)
         except Exception as ex:
+            saved_invalid = True
             # 这条**必须出声**（需求第 8 条）：设置.json 是用户唯一手写的配置，
             # 它坏了却静默退回默认值的话，表现是"我明明配了 / 改了，为什么不生效"——
             # 而且改的是密钥、地址这类最要紧的字段时特别难查。
@@ -436,6 +589,7 @@ def load_settings():
         "SYNC_EXISTING_ACCOUNTS": "sync_existing_accounts",
         "RESPECT_WEIGHT_ZERO": "respect_weight_zero",
         "FETCH_UPSTREAM_SRC": "fetch_upstream_src",
+        "UPSTREAM_CACHE_TTL_SECONDS": "upstream_cache_ttl_seconds",
         "POOL_MODE_ENABLED": "pool_mode_enabled",
 
         # 源码路径
@@ -460,13 +614,35 @@ def load_settings():
 
         # 模型代际连通性探测
         "MODEL_PROBE_ENABLED": "model_probe_enabled",
+        "MODEL_PROBE_HARD_DISABLED": "model_probe_hard_disabled",
+        "PRUNE_STALE_ACCOUNTS": "prune_stale_accounts",
         "MODEL_PROBE_WORKERS": "model_probe_workers",
         "MODEL_PROBE_CACHE_TTL": "model_probe_cache_ttl",
+        "REQUEST_RELAY_ENABLED": "request_relay_enabled",
+        "REQUEST_RELAY_BASE_URL": "request_relay_base_url",
+        "REQUEST_RELAY_STATE_DIR": "request_relay_state_dir",
+        "REQUEST_RELAY_SOURCE_SCOPE": "request_relay_source_scope",
+        "REQUEST_RELAY_WEIGHTED_BUCKET": "request_relay_weighted_bucket",
+        "REQUEST_RELAY_FORCE_ALL_ACCOUNTS": "request_relay_force_all_accounts",
+        "REQUEST_RELAY_TLS_PROFILES": "request_relay_tls_profiles",
     }
 
     for env_key, setting_key in env_mappings.items():
         val = os.environ.get(env_key)
         if val:
+            if setting_key == "model_probe_enabled" and setting_key in saved:
+                # The environment supplies an initial default, never replaces
+                # an explicit saved grant or revocation.
+                continue
+            if setting_key == "request_relay_tls_profiles":
+                try:
+                    profiles = json.loads(val)
+                    if not isinstance(profiles, dict):
+                        raise ValueError("not a mapping")
+                except (ValueError, TypeError) as ex:
+                    raise SettingsFormatError("REQUEST_RELAY_TLS_PROFILES 必须是显式域名到 TLS preset 配置的 JSON 对象") from ex
+                s[setting_key] = profiles
+                continue
             # 数值字段转换
             if setting_key in ("import_workers", "test_plan_workers", "pricing_workers",
                               "default_concurrency", "batch_size", "pool_mode_retry_count",
@@ -476,7 +652,7 @@ def load_settings():
                               # 但 settings 里存字符串意味着任何新调用点漏了 int()
                               # 就会 TypeError —— 而且只在设了这两个变量时才出现。
                               # 统一在这里转成整数，消掉这个埋着的坑。
-                              "http_timeout", "http_retries"):
+                              "http_timeout", "http_retries", "upstream_cache_ttl_seconds"):
                 try:
                     s[setting_key] = int(val)
                 except ValueError:
@@ -490,8 +666,10 @@ def load_settings():
             elif setting_key in ("auto_recover_enabled", "health_rerank_enabled",
                                 "sync_existing_accounts", "respect_weight_zero",
                                 "fetch_upstream_src", "pool_mode_enabled", "auto_pause_on_expired",
-                                "model_probe_enabled", "probe_inactive",
-                                "revive_proven_inactive", "log_to_file"):
+                                "model_probe_enabled", "model_probe_hard_disabled", "probe_inactive", "prune_stale_accounts",
+                                "revive_proven_inactive", "log_to_file",
+                                "request_relay_enabled", "request_relay_weighted_bucket",
+                                "request_relay_force_all_accounts"):
                 s[setting_key] = val.lower() in ("true", "1", "yes", "on")
             # 字符串字段
             else:
@@ -502,13 +680,36 @@ def load_settings():
     # 顺手刷新兜底代理的缓存。_http 是热路径、不带 settings 参数，
     # 它调 _fallback_proxy() 时只能吃缓存；而不刷新的话，第一次读到的
     # 永远是进程启动时的旧值（甚至 None），环境变量改了也不生效。
+    # Saved master decisions are authoritative. The separately named operator
+    # veto remains effective across UI, stale plans and explicit caller config.
+    if "model_probe_enabled" in saved:
+        s["model_probe_enabled"] = _truthy(saved["model_probe_enabled"])
+    s["model_probe_hard_disabled"] = probe_policy.hard_disabled(saved)
+    if s["model_probe_hard_disabled"]:
+        s["model_probe_enabled"] = False
+    if os.environ.get("ONLINE_PROBE_HOSTS", "").strip():
+        environment_hosts = probe_policy.site_switches({
+            "online_probe_hosts": os.environ["ONLINE_PROBE_HOSTS"]})
+        saved_hosts = probe_policy.site_switches(saved)
+        s["online_probe_hosts"] = {
+            host: bool(environment_hosts.get(host, False) and saved_hosts.get(host, True))
+            for host in environment_hosts.keys() | saved_hosts.keys()}
+    if saved_invalid:
+        s["model_probe_enabled"] = False
+    s["auto_recover_cron"] = probe_policy.weekly_cron(s.get("auto_recover_cron"))
+    s["_live_probe_policy"] = True
     _fallback_proxy(s)
     return s
 
 
 def save_settings(s):
-    with io.open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(s, f, ensure_ascii=False, indent=2)
+    # Preserve the historical full-replacement API. Product settings edits use
+    # update_saved_settings so a stale loaded dict cannot restore old consent.
+    if not isinstance(s, dict):
+        raise TypeError("settings must be a dict")
+    path = os.path.abspath(SETTINGS_PATH)
+    with _settings_lock(path, 5.0):
+        _write_settings_atomic(path, copy.deepcopy(s))
 
 
 def mask(v):
@@ -527,8 +728,121 @@ class ApiError(Exception):
         super(ApiError, self).__init__("HTTP %s %s" % (status, url))
 
 
+class ProbeAuthorityRevoked(RuntimeError):
+    """A sensitive write lost consent, ownership, or its proven account snapshot."""
+
+
+_ADMIN_WRITE_GUARD = ContextVar("admin_write_guard", default=None)
+
+
+def _check_admin_write_guard(method):
+    guard = _ADMIN_WRITE_GUARD.get()
+    if guard is not None and method.upper() in ("POST", "PUT", "PATCH", "DELETE"):
+        guard()
+
+
+@contextmanager
+def _guarded_admin_write(guard):
+    token = _ADMIN_WRITE_GUARD.set(guard)
+    try:
+        guard()  # Fake/in-process APIs use the same final boundary.
+        yield
+    finally:
+        _ADMIN_WRITE_GUARD.reset(token)
+
+
+def _account_probe_write_guard(api, account, cfg=None, require_auto_recover=False,
+                               plan_id=None, require_consent=True, record=None, require_clear_runtime=False):
+    expected = _recovery_snapshot(account)
+    expected_scope = _policy_source_scope(cfg) if cfg is not None else None
+    def guard():
+        if plan_id is not None:
+            plans = _strict_test_plans(api.list_test_plans(account["id"]))
+            if not any(p.get("id") == plan_id for p in plans):
+                raise ProbeAuthorityRevoked("plan ownership changed before sensitive write")
+        # The GET can itself block or retry. Resolve policy after it finishes.
+        current = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % account["id"]))
+        if (current.get("id") != account["id"] or not _is_migrated(current)
+                or _recovery_snapshot(current) != expected):
+            raise ProbeAuthorityRevoked("account changed before sensitive write")
+        if "_cpa2sub2api_raw_credentials" in account:
+            if (not hasattr(api, "reveal_account_credentials")
+                    or api.reveal_account_credentials(current) != account["_cpa2sub2api_raw_credentials"]):
+                raise ProbeAuthorityRevoked("credential identity changed before sensitive write")
+        if require_clear_runtime and _recovery_runtime_block(current):
+            raise ProbeAuthorityRevoked("account has an active or unknown runtime block")
+        owned_scope = account_source_scope(current)
+        if record is not None and not account_matches_source(current, record):
+            raise ProbeAuthorityRevoked("record source ownership changed before write")
+        if cfg is None:
+            return
+        reference = cfg.get("request_relay") or {}
+        if _truthy(reference.get("enabled")) and "cpa2sub2api_original_source" in (current.get("extra") or {}):
+            import request_relay
+            bundle = request_relay.load_bundle(reference["state_dir"])
+            if bundle["generation"] != reference["generation"] or bundle["source_scope"] != reference["source_scope"]:
+                raise ProbeAuthorityRevoked("relay generation changed after diagnostic")
+        live = resolve_probe_policy(cfg)
+        if _truthy(reference.get("enabled")) and "cpa2sub2api_original_source" in (current.get("extra") or {}):
+            try:
+                _validate_request_relay_authority(reference, bundle, live)
+            except (ValueError, KeyError, OSError):
+                raise ProbeAuthorityRevoked("relay runtime authority changed after diagnostic") from None
+        live_scope = live.get("_current_source_scope", _policy_source_scope(live))
+        if (expected_scope is not None and (live_scope != expected_scope
+                                           or owned_scope != expected_scope and record is None)
+                or require_consent and not probe_policy.probe_allowed(account_probe_base_url(current), live)
+                or require_auto_recover and not _truthy(live.get("auto_recover_enabled", True))):
+            raise ProbeAuthorityRevoked("probe consent or source authority revoked")
+    return guard
+
+
+def _validate_request_relay_authority(reference, bundle, settings):
+    """The same live relay contract gates both model I/O and consuming its proof."""
+    if not settings.get("_live_probe_policy"):
+        return
+    import request_relay
+    if not _truthy(settings.get("request_relay_enabled", False)):
+        raise ValueError("relay disabled")
+    expected = _request_relay_reference(settings, bundle)
+    if any(reference.get(key) != expected.get(key) for key in (
+            "source_scope", "generation", "state_dir", "base_url", "weighted_bucket")):
+        raise ValueError("relay runtime authority changed")
+    if bool(reference.get("force_all_accounts", False)) != bool(expected.get("force_all_accounts", False)):
+        raise ValueError("relay account selection authority changed")
+    current = request_relay.load_bundle(expected["state_dir"])
+    if current["generation"] != bundle.get("generation"):
+        raise ValueError("relay generation changed")
+
+
+def _bound_probe_authority(url, headers, settings, authority_url):
+    """An authority override is valid only for a token-bound immutable relay route."""
+    if authority_url is None:
+        return url
+    reference = settings.get("request_relay") or {}
+    bundle = settings.get("_request_relay_bundle") or {}
+    if settings.get("_live_probe_policy"):
+        try:
+            _validate_request_relay_authority(reference, bundle, settings)
+        except (ValueError, KeyError, OSError):
+            raise ApiError(0, "relay probe runtime authority revoked", "<redacted>") from None
+    if (not _truthy(reference.get("enabled")) or not reference.get("generation")
+            or bundle.get("generation") != reference["generation"]
+            or bundle.get("source_scope") != reference.get("source_scope")
+            or {k.lower(): v for k, v in headers.items()}.get("x-relay-generation") != bundle.get("generation")):
+        raise ApiError(0, "unbound relay probe authority", "<redacted>")
+    import request_relay
+    for route in bundle.get("routes", {}).values():
+        prefix = reference["base_url"].rstrip("/") + "/r/" + route["id"] + "/"
+        if (url.startswith(prefix) and route["original_source"]["base_url"] == authority_url
+                and request_relay.authorized(headers, route["token"])):
+            return authority_url
+    raise ApiError(0, "relay probe authority mismatch", "<redacted>")
+
+
 def _http(method, url, headers=None, body=None, timeout=None, retries=None,
-          proxy=None, _allow_proxy_fallback=True):
+          proxy=None, _allow_proxy_fallback=True, probe_settings=None, _admin_request=False,
+          probe_authority_url=None):
     """发一个 HTTP 请求，对**瞬时**网络故障自动重试。
 
     timeout / retries 传 None 表示"用配置里的值"：读 设置.json 与环境变量
@@ -558,6 +872,10 @@ def _http(method, url, headers=None, body=None, timeout=None, retries=None,
     同样会失败，白等一轮。proxy 参数显式指定时不再二次兜底（避免递归）。
     """
     headers = dict(headers or {})
+    if probe_authority_url is not None:
+        if probe_settings is None or proxy:
+            raise ApiError(0, "relay probe requires bound consent and direct internal transport", "<redacted>")
+        _allow_proxy_fallback = False
     # timeout / retries 取配置值。放在这里而不是函数签名默认值里，
     # 是因为默认值在**函数定义时**就求值了，那时 settings 还没加载完。
     if timeout is None or retries is None:
@@ -611,9 +929,29 @@ def _http(method, url, headers=None, body=None, timeout=None, retries=None,
     else:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+    if probe_settings is not None:
+        probe_settings = resolve_probe_policy(probe_settings)
+        authority = _bound_probe_authority(url, headers, probe_settings, probe_authority_url)
+        if not probe_policy.probe_allowed(authority, probe_settings):
+            raise ApiError(0, "upstream probe not authorized", "<redacted>")
+        class ConsentRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                # A diagnostic endpoint is declarative. Never forward its key,
+                # even to a same-host redirect on another port or scheme.
+                raise ApiError(0, "probe redirect rejected", "<redacted>")
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}),
+            ConsentRedirect())
+
     attempts = max(1, int(retries or 1))
     last = None
     for i in range(attempts):
+        if probe_settings is not None:
+            probe_settings = resolve_probe_policy(probe_settings)
+            authority = _bound_probe_authority(url, headers, probe_settings, probe_authority_url)
+            if not probe_policy.probe_allowed(authority, probe_settings):
+                raise ApiError(0, "upstream probe authority revoked", "<redacted>")
+        _check_admin_write_guard(method)
         req = urllib.request.Request(url, data=data, headers=headers,
                                      method=method)
         try:
@@ -621,6 +959,10 @@ def _http(method, url, headers=None, body=None, timeout=None, retries=None,
                 return r.status, r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as ex:
             body_txt = ex.read().decode("utf-8", "replace")
+            if ex.code == 429 and _admin_request:
+                error = ApiError(ex.code, "管理接口限流", "<redacted>")
+                error.retry_after = ex.headers.get("Retry-After") if ex.headers else None
+                raise error
             # 把 CF 的拦截翻译成人能看懂的话，否则只会看到一句 "error code: 1010"
             if ex.code == 403 and "1010" in body_txt:
                 raise ApiError(ex.code,
@@ -659,7 +1001,8 @@ def _http(method, url, headers=None, body=None, timeout=None, retries=None,
             try:
                 st, txt = _http(method, url, headers=headers, body=body,
                                 timeout=timeout, retries=1, proxy=fb,
-                                _allow_proxy_fallback=False)
+                                _allow_proxy_fallback=False, probe_settings=probe_settings,
+                                probe_authority_url=probe_authority_url, _admin_request=_admin_request)
                 print("    [代理兜底] 直连失败，经代理成功：%s" % url)
                 return st, txt
             except Exception as ex:
@@ -718,15 +1061,30 @@ _FALLBACK_PROXY_CACHE = _UNSET
 
 
 def idempotency_key(payload):
-    """按请求体内容算一个稳定的幂等键。
+    """One opaque identity per logical write, retained for that write's retries.
 
-    sub2api 的写接口是 RequireKey=true（idempotency_helper.go:47），当前只因
-    ObserveOnly 默认为真才容忍不带；运维一旦关掉 observe_only，不带这个头的
-    创建请求会全部 400。内容派生还有第二个好处：批次超时后原样重发是安全的，
-    服务端会识别为同一请求而不是再建一遍。
+    Identical payloads after a delete or an operator edit are new write intents.
+    A permanent payload hash would replay a cached deleted ID or stale success.
+    Callers create this key once; _request and _http reuse its headers unchanged.
+    Explicit _call(idem=...) may resume an intentionally retained logical intent.
     """
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+    return hashlib.sha256(os.urandom(32) + b"\x00" + raw).hexdigest()
+
+
+def admin_retry_wait(value, now=None):
+    """Honor server seconds/HTTP-date; missing metadata uses a full minute."""
+    from email.utils import parsedate_to_datetime
+    if value is None or not str(value).strip():
+        return 60.0
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        try:
+            instant = parsedate_to_datetime(str(value)).timestamp()
+            return max(0.0, instant - (time.time() if now is None else now))
+        except (TypeError, ValueError, OverflowError):
+            return 60.0
 
 
 class Sub2Api(object):
@@ -761,15 +1119,32 @@ class Sub2Api(object):
         self.user_agent = (s.get("user_agent") or "").strip() or DEFAULT_USER_AGENT
 
     def _call(self, method, path, body=None, timeout=None, idem=None):
+        if not idem and method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+            idem = idempotency_key({"method": method.upper(), "path": path, "body": body})
         headers = {"x-api-key": self.key, "User-Agent": self.user_agent}
         if idem:
             headers["Idempotency-Key"] = idem
-        st, raw = _http(method, self.base + path, headers, body,
-                        timeout or self.timeout)
+        st, raw = self._request(method, path, headers, body, timeout)
         try:
             return json.loads(raw) if raw.strip() else {}
         except ValueError:
             raise ApiError(st, "非 JSON 返回：" + raw[:300], path)
+
+    def _request(self, method, path, headers, body=None, timeout=None):
+        for attempt in range(3):
+            _check_admin_write_guard(method)
+            try:
+                return _http(method, self.base + path, headers, body,
+                             timeout=timeout or self.timeout, _allow_proxy_fallback=False,
+                             _admin_request=True)
+            except ApiError as error:
+                if error.status != 429 or attempt == 2:
+                    raise
+                wait = admin_retry_wait(getattr(error, "retry_after", None))
+                if wait > 120:
+                    raise  # Never shorten a longer server cooldown to fit a local budget.
+                print("    管理API限流，等待 %.1f 秒后重试（%d/2）。" % (wait, attempt + 1))
+                time.sleep(wait)
 
     def ping(self):
         try:
@@ -781,7 +1156,9 @@ class Sub2Api(object):
                                "        必须是 x-api-key 那一个（admin- 开头的管理密钥），\n"
                                "        不是面板登录密码、也不是用户的 API Key。")
             if ex.status == 403:
-                return False, "密钥权限不足（403）。请用 admin- 开头的管理密钥。"
+                return False, ("管理接口请求被拒绝（403），原因尚未确认。"
+                               "请核对部署端的管理接口权限与访问策略；"
+                               "仅凭状态码无法判断是否为密钥问题。")
             if ex.status == 404:
                 return False, "接口 404。检查 sub2api 地址是否正确。"
             if ex.status == 423:
@@ -890,8 +1267,18 @@ class Sub2Api(object):
 
     def list_test_plans(self, aid):
         """GET /accounts/:id/scheduled-test-plans。查某账号已有的探活计划。"""
-        return self._call("GET",
-                          "/api/v1/admin/accounts/%d/scheduled-test-plans" % aid)
+        path = "/api/v1/admin/accounts/%d/scheduled-test-plans" % aid
+        status, raw = self._request("GET", path,
+                                   {"x-api-key": self.key, "User-Agent": self.user_agent})
+        if status != 200:
+            raise ApiError(status, "探活计划列表请求失败", path)
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            raise ApiError(status, "探活计划列表返回非JSON数据", path)
+        # v0.2.20 uses a literal JSON null for an empty native list. Only
+        # this successful transport response is normalized; errors stay errors.
+        return [] if parsed is None and raw.strip() == "null" else parsed
 
     def list_test_results(self, plan_id):
         """GET /scheduled-test-plans/:id/results。查某探活计划的历史结果。
@@ -905,9 +1292,34 @@ class Sub2Api(object):
             "GET", "/api/v1/admin/scheduled-test-plans/%d/results" % plan_id)
 
     def list_accounts(self, page=1, size=100):
-        # lite=true 只取调度必需字段，避免每页拖回几十个用不到的胖字段
+        # Synchronization and deletion guards require full credentials/extra.
         return self._call(
-            "GET", "/api/v1/admin/accounts?page=%d&page_size=%d&lite=true" % (page, size))
+            "GET", "/api/v1/admin/accounts?page=%d&page_size=%d" % (page, size))
+
+    def reveal_account_credentials(self, account):
+        """Explicit one-ID admin export; never persist or print credential data."""
+        aid = account["id"]
+        if not _is_int(aid) or aid <= 0 or account.get("parent_account_id") is not None:
+            raise ValueError("ordinary exact account id required")
+        payload = _unwrap_one(self._call(
+            "GET", "/api/v1/admin/accounts/data?ids=%d&include_proxies=false" % aid))
+        items = payload.get("accounts") if isinstance(payload, dict) else None
+        if (not isinstance(items, list) or len(items) != 1 or payload.get("skipped_shadows", 0)
+                or not isinstance(items[0], dict)):
+            raise ValueError("exact credential export unavailable")
+        exported = items[0]
+        if any(exported.get(k) != account.get(k) for k in ("name", "platform", "type", "notes")):
+            raise ValueError("exported identity differs from requested account")
+        credentials = exported.get("credentials")
+        if not isinstance(credentials, dict):
+            raise ValueError("credential export unavailable")
+        if any(v != credentials.get(k) for k, v in (account.get("credentials") or {}).items()
+               if k not in SENSITIVE_CREDENTIAL_FIELDS):
+            raise ValueError("exported credential parameters changed")
+        fresh = _unwrap_one(self._call("GET", "/api/v1/admin/accounts/%d" % aid))
+        if fresh.get("id") != aid or _recovery_snapshot(fresh) != _recovery_snapshot(account):
+            raise ValueError("account changed while reading its credentials")
+        return copy.deepcopy(credentials)
 
     def delete_account(self, aid):
         return self._call("DELETE", "/api/v1/admin/accounts/%d" % aid)
@@ -1049,37 +1461,14 @@ PRICING_PER_TOKEN = True         # 定价单位是每 token 的 USD，换算要�
 # 也不会把新一代模型砍掉。见 model_selection.select_highest_models。
 MODEL_SERIES = {"anthropic": 5, "openai": 6}
 
-# 按错误码分档的冷却时长（分钟）。
-#
-# 为什么要分档：CPA 对所有 *-and-cooldown 规则用同一个硬编码的 1 分钟
-# （transientErrorCooldown），因为在 CPA 的模型里"冷却"只是"这次别用它，
-# 过一会儿再试"，代价很低。但迁到 sub2api 之后代价不一样了——sub2api 的
-# temp_unschedulable 期间该账号完全退出调度，而且 sub2api 还有独立的
-# 自动置错逻辑（SetError 会连带关掉调度开关，且恢复路径不还 schedulable，
-# 见 reclaim_schedulable）。对"限流类"错误用 1 分钟是对的，反复重试很快
-# 就能恢复；但对"凭据坏死类"错误（401 鉴权失败、403 无权限），1 分钟一到
-# 就又把请求打上去、再失败、再冷却，既拖慢整体成功率，也更容易触发上游的
-# 风控。这类错误应该退避得更久。
-#
-# 分档依据（吸收 done-hub controller/common.go:76-111 的思路：区分
-# "限流/暂时不可用"和"凭据/权限坏死"，前者绝不永久封禁、后者退避要长）：
-#   · 429 / 503 / 529 = 限流或过载，上游自己会恢复 -> 沿用 CPA 的 1 分钟
-#   · 408 / 504 = 超时，多半是网络抖动 -> 短冷却
-#   · 401 / 403 = 凭据或权限问题，一分钟内不可能自愈 -> 长冷却
-#   · 402 = 余额不足，需要人工充值 -> 更长冷却
-# 没列出的错误码一律回落到 DEFAULT_COOLDOWN_MINUTES，保持与 CPA 一致。
-#
-# 注意这**不是**推翻 CPA 的语义：CPA 的 1 分钟针对的是"是否参与本次请求的
-# 重试"，而这里写的是 sub2api 的"退出调度多久"，两者量纲不同。对限流类
-# 保持 1 分钟就是为了不偏离 CPA 的行为；只有在 CPA 没有区分、而 sub2api
-# 的代价明显更高的地方才加长。
-#
-# 服务端只校验 duration_minutes<=0（ratelimit_service.go:2652），没有上限，
-# 所以这里的值不会被静默截断。
+# 按修改要求P8分档：401=30分钟，402=15分钟，400/403=1分钟。
+# 余额充值可能很快完成，域名/预算池规则也必须遵守同一15分钟期限。
+# 这里只配置本工具下发的临时不可调度规则，不清除或缩短上游真实429、
+# Retry-After或运维手工设置的运行时冷却。未列错误码沿用1分钟默认。
 COOLDOWN_MINUTES_BY_CODE = {
     401: 30,   # unauthorized：key 失效/被撤销
-    402: 60,   # payment required：余额耗尽，1小时后重试（可能配额已重置）
-    403: 30,   # forbidden：无权限/被封
+    402: 15,   # payment required：按修改要求，充值后最多等待15分钟
+    403: 1,    # forbidden：按修改要求，暂时权限错误1分钟重试
     408: 2,    # request timeout
     429: 1,    # too many requests：上游限流，很快恢复
     503: 1,    # service unavailable
@@ -1139,7 +1528,7 @@ EXTRA_COOLDOWN_RULES = [
         "keywords": ["budget pool quota", "quota has been exhausted",
                      "insufficient balance", "payment required",
                      "余额不足", "配额已用完", "额度已耗尽"],
-        "description": "本工具补充：402 配额耗尽，1小时后重试（配额可能已重置）",
+        "description": "本工具补充：402 配额耗尽，15分钟后重试",
     },
 ]
 
@@ -1187,7 +1576,7 @@ def cooldown_minutes_for(status):
 # 请求会轮到同桶的其它 KEY；等它们也各自命中并冷却，整桶才真正退出，
 # 请求自然降级到下一个域名。这正是文档第 5 条要的三层防护。
 DOMAIN_SCOPED_COOLDOWN_CODES = {
-    402: 180,   # payment required：预算池耗尽，3 小时内不重试
+    402: 15,   # payment required：预算池规则同样遵守15分钟上限
 }
 
 
@@ -1360,6 +1749,126 @@ def account_fingerprint(r):
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
 
 
+# Fixed official consumer v8.0.60, config_types.go SHA256 below. New fields
+# require an adapter review; reading a newer model directory is not support.
+CPA_CAPABILITY_SNAPSHOT = {
+    "consumer_version": "v8.0.60",
+    "consumer_commit": upstream_contract.PINNED["cpa"]["commit"],
+    "verified_at": upstream_contract.VERIFIED_AT,
+    "config_types_sha256": "a234c8850ae30b8124f17613abdbe56f8bd0e3dd5e6cbc9ebc0e809c4f3ceb53",
+}
+_CPA_COMMON_FIELDS = frozenset({"api-key", "priority", "weight", "prefix", "base-url", "proxy-url",
+    "connection-pool", "models", "headers", "excluded-models", "disable-cooling", "request-retry", "request-scoped-errors"})
+CPA_MANAGED_FIELDS = {
+    "claude-api-key": _CPA_COMMON_FIELDS | {"rebuild-mid-system-message", "native-tool-search", "cloak", "fingerprint-profile", "experimental-cch-signing"},
+    "codex-api-key": _CPA_COMMON_FIELDS | {"websockets", "alpha-search", "disable-codex-cloaking"},
+    "gemini-api-key": _CPA_COMMON_FIELDS,
+    "interactions-api-key": _CPA_COMMON_FIELDS,
+    "xai-api-key": _CPA_COMMON_FIELDS | {"websockets", "alpha-search", "disable-codex-cloaking"},
+    "openai-compatibility": frozenset({"name", "priority", "disabled", "prefix", "base-url", "api-key-entries",
+        "connection-pool", "models", "headers", "support-prompt-cache-key", "disable-cooling", "request-retry", "request-scoped-errors"}),
+}
+_CPA_NESTED_FIELDS = {
+    "connection-pool": {"enabled", "idle-conn-timeout", "max-idle-conns-per-host"},
+    "request-scoped-errors": {"status", "match", "match-regexr", "action"},
+    "cloak": {"mode", "strict-mode", "sensitive-words", "cache-user-id"},
+    "thinking": {"min", "max", "zero-allowed", "dynamic-allowed", "disable-type", "levels"},
+    "api-key-entries": {"api-key", "weight", "proxy-url", "connection-pool"},
+    "request-relay-tls": {"impersonate", "ca-bundle"},
+}
+
+
+def cpa_capability_issues(document, settings):
+    errors = []
+    def validate(value, known, path):
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                validate(item, known, "%s[%d]" % (path, index))
+            return
+        if not isinstance(value, dict):
+            return  # Existing shape checks handle scalar/list mistakes separately.
+        for key, item in value.items():
+            if key not in known:
+                errors.append(path + "." + str(key))
+            elif key in _CPA_NESTED_FIELDS:
+                validate(item, _CPA_NESTED_FIELDS[key], path + "." + key)
+    for section, known in CPA_MANAGED_FIELDS.items():
+        for index, entry in enumerate(document.get(section) or []):
+            if not isinstance(entry, dict):
+                continue
+            path = "%s[%d]" % (section, index)
+            validate(entry, known | {"disabled", "request-relay-tls"}, path)
+            models = {"name", "alias", "display-name", "max-context-length", "force-mapping", "is-compat", "thinking"}
+            if section in ("codex-api-key", "xai-api-key"):
+                models |= {"support-configuration-update"}
+            if section == "openai-compatibility":
+                models |= {"image", "input-modalities", "output-modalities", "use-max-completion-tokens"}
+            validate(entry.get("models"), models, path + ".models")
+    drift = []
+    source_root = settings.get("_runtime_cpa_src") or settings.get("cpa_src") or CPA_SRC
+    source = os.path.join(source_root, "internal", "config", "config_types.go") if source_root else ""
+    if source and os.path.isfile(source):
+        with open(source, "rb") as stream:
+            digest = hashlib.sha256(stream.read()).hexdigest()
+        if (digest != CPA_CAPABILITY_SNAPSHOT["config_types_sha256"]
+                and upstream_contract.reviewed_source_equivalence(
+                    "cpa", "internal/config/config_types.go", digest) is None):
+            drift.append("CPA 配置结构源码与已核对的 v8.0.60 能力快照不同；须复核递归字段及消费者语义，禁止导入写入和自动删除")
+    elif source_root and os.path.isdir(source_root):
+        drift.append("CPA 源码目录缺少配置结构合同；禁止导入写入和自动删除，先修复来源或明确使用内置固定合同")
+    drift.extend(settings.get("_upstream_contract_errors") or [])
+    return sorted(set(errors)), drift
+
+
+def _upstream_source_contract(settings):
+    configured = {"sub2api": settings.get("sub2api_src") or SUB2API_SRC,
+                  "cpa": settings.get("cpa_src") or CPA_SRC}
+    runtime = {"sub2api": settings.get("_runtime_sub2api_src") or configured["sub2api"],
+               "cpa": settings.get("_runtime_cpa_src") or configured["cpa"]}
+    def canonical(roots):
+        return {kind: os.path.normcase(os.path.realpath(os.path.abspath(path))) for kind, path in roots.items()}
+    configured, runtime = canonical(configured), canonical(runtime)
+    binding = {"configured_roots": configured, "runtime_roots": runtime}
+    digest = hashlib.sha256(json.dumps(binding, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+    return dict(binding, binding_sha256=digest,
+                evidence={kind: upstream_contract.source_evidence(path, kind) for kind, path in runtime.items()})
+
+
+def _validate_upstream_source_contract(plan, settings):
+    """Rehash both actual source roots before consuming a saved import plan."""
+    contract = plan.get("source_contract")
+    if contract is None:
+        if plan.get("capability_snapshot"):
+            raise ValueError("source contract provenance missing; regenerate the import plan")
+        return  # Internal legacy fixtures without a saved capability snapshot.
+    if not isinstance(contract, dict):
+        raise ValueError("invalid upstream source contract")
+    binding = {key: contract.get(key) for key in ("configured_roots", "runtime_roots")}
+    for roots in binding.values():
+        if (not isinstance(roots, dict) or set(roots) != {"sub2api", "cpa"}
+                or any(not isinstance(path, str) or not os.path.isabs(path) for path in roots.values())):
+            raise ValueError("invalid upstream source root binding")
+    digest = hashlib.sha256(json.dumps(binding, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+    if digest != contract.get("binding_sha256"):
+        raise ValueError("upstream runtime source roots changed; regenerate the import plan")
+    current = _upstream_source_contract(settings)
+    if current["configured_roots"] != contract["configured_roots"]:
+        raise ValueError("upstream configured source roots changed; regenerate the import plan")
+    for kind in ("cpa", "sub2api"):
+        expected = (contract.get("evidence") or {}).get(kind)
+        observed = upstream_contract.source_evidence(contract["runtime_roots"][kind], kind)
+        if (not isinstance(expected, dict) or observed["status"] == "review_required"
+                or observed != expected):
+            raise ValueError("current %s upstream contract drift; regenerate and review the import plan" % kind)
+        # A configured root may appear or change while a pinned cache was used.
+        configured = upstream_contract.source_evidence(current["configured_roots"][kind], kind)
+        if configured["status"] == "review_required":
+            raise ValueError("current configured %s upstream contract drift" % kind)
+        marker = "_runtime_sub2api_src" if kind == "sub2api" else "_runtime_cpa_src"
+        if settings.get(marker) and current["runtime_roots"][kind] != contract["runtime_roots"][kind]:
+            raise ValueError("current runtime %s source root changed" % kind)
+
+
 # 白名单被 excluded-models 清空时占位用的假模型名。
 # 不能留空表：sub2api 里空的 model_mapping 等于"放行全部模型"
 # （account.go:854 的 len(mapping)==0 分支直接 return true），
@@ -1380,7 +1889,8 @@ def serves_nothing(r):
                                 source_section=r.get("source_section") or r.get("section"),
                                 probe=_pb)
     if not all_m:
-        return False  # 本来就没配模型，属于"不限制"，不是"全禁"
+        # An explicit list filtered to nothing must never turn into allow-all.
+        return bool(r.get("models_raw"))
     return not build_model_mapping(r.get("models_raw"), r.get("excluded"),
                                    r.get("platform"),
                                    source_section=r.get("source_section") or r.get("section"),
@@ -1628,6 +2138,7 @@ def collect(cfg_dict):
                 "excluded": entry.get("excluded-models") or [],
                 "websockets": bool(entry.get("websockets")), "alpha_search": alpha,
                 "fingerprint": entry.get("fingerprint-profile") or "",
+                "request_relay_tls": copy.deepcopy(entry.get("request-relay-tls")),
                 "cloak": entry.get("cloak"),
                 "provider_name": entry.get("name") or "",
                 "rebuild_mid_system": entry.get("rebuild-mid-system-message"),
@@ -1667,7 +2178,16 @@ def collect(cfg_dict):
                 dropped_notes.append(
                     "%s 有一条凭据没有 api-key（base-url=%s），已跳过"
                     % (section, base.get("base_url") or "空"))
-    return recs, dropped_notes
+    unique, seen_credentials = [], {}
+    for record in recs:
+        identity = (record.get("platform"), record.get("section"),
+                    str(record.get("base_url") or "").rstrip("/"), record.get("api_key"))
+        if identity in seen_credentials:
+            dropped_notes.append("重复 URL 与凭据已折叠，保留首条配置")
+            continue
+        seen_credentials[identity] = record
+        unique.append(record)
+    return unique, dropped_notes
 
 
 def remap_priority(recs):
@@ -2033,6 +2553,22 @@ def assign_names(recs):
         stem = "%s-%s" % (r["prefix"] or r["platform"][:3].upper(), host_of(r["base_url"]))
         r["fp"] = account_fingerprint(r)
         r["name"] = "%s-%s" % (stem, r["fp"])
+    # Codex and compatibility can share URL/key/platform while requiring
+    # different endpoints, model policies and groups. Preserve legacy names
+    # unless they actually collide; disambiguation is independent of ordering.
+    identities = defaultdict(set)
+    for record in recs:
+        identities[record["name"]].add((record.get("source_section") or record.get("section"),
+                                         record.get("group")))
+    for record in recs:
+        if len(identities[record["name"]]) > 1:
+            identity = "%s|%s" % (record.get("source_section") or record.get("section"),
+                                   record.get("group"))
+            suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+            record["name"] += "-" + suffix
+        scope = record.get("_source_scope", "default")
+        if scope != "default":
+            record["name"] += "-s" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:12]
 
 
 def needs_inactive(r, cfg):
@@ -2146,14 +2682,18 @@ def to_account(r, cfg, group_id_map, proxy_id_map, proxy_need_map):
     if r["alpha_search"]:
         creds["openai_capabilities"] = {"alpha_search": True, "chat_completions": True}
 
-    extra = {}
+    extra = {"upstream_billing_probe_enabled": False,
+             "upstream_billing_rate_sync_enabled": False,
+             "cpa2sub2api_source": _record_source_metadata(r, cfg)}
     if r["responses_mode"]:
         extra["openai_responses_mode"] = r["responses_mode"]
     if r["websockets"]:
         extra["openai_ws_enabled"] = True
     # TLS fingerprint 迁移（所有平台支持）
     # 2026-09-13 修复：原先只对 anthropic 启用，现改为所有平台通用
-    if r["fingerprint"]:
+    learned_tls = {probe_policy.normalize_host(h)
+                   for h in cfg.get("detected_tls_fingerprint_hosts", [])}
+    if r["fingerprint"] or probe_policy.normalize_host(r.get("base_url")) in learned_tls:
         extra["enable_tls_fingerprint"] = True
         # CPA 的 fingerprint-profile 是字符串标识，sub2api 用数字 ID
         # 将常见 profile 映射到 sub2api 的 profile ID（需要先在 sub2api 创建）
@@ -2173,6 +2713,10 @@ def to_account(r, cfg, group_id_map, proxy_id_map, proxy_need_map):
     acc = {"name": r["name"], "platform": r["platform"], "type": r["type"],
            "credentials": creds, "priority": r["new_priority"],
            "concurrency": conc, "confirm_mixed_channel_risk": True}
+    # Native billing probes have their own frequency and bypass our site policy.
+    # Always disable them; authorized diagnostics run only through weekly plans.
+    acc["upstream_billing_probe_enabled"] = False
+    acc["upstream_billing_rate_sync_enabled"] = False
 
     # load_factor：sub2api 的负载因子（account_handler.go CreateAccountRequest
     # LoadFactor *int）。值越大该账号越容易被选中承载流量，用于在同桶内
@@ -2205,14 +2749,12 @@ def to_account(r, cfg, group_id_map, proxy_id_map, proxy_need_map):
     apoe = cfg.get("auto_pause_on_expired", False)
     acc["auto_pause_on_expired"] = bool(apoe)
 
-    if extra:
-        acc["extra"] = extra
+    acc["extra"] = extra
     gid = group_id_map.get(r["group"])
     if gid:
         acc["group_ids"] = [gid]
     pid = proxy_id_map.get(r["proxy_url"]) if r["proxy_url"] else None
-    if pid:
-        acc["proxy_id"] = pid
+    acc["proxy_id"] = pid or None
 
     # leftover 必须在这里就建好。它原先是写在下面"注意：这里不写 status"
     # 那段之后的，但上面第 1751-1760 行的"同域名代理跟进"分支会先往里写
@@ -2276,7 +2818,526 @@ def to_account(r, cfg, group_id_map, proxy_id_map, proxy_need_map):
     if leftover:
         notes += "｜未导入项=" + json.dumps(leftover, ensure_ascii=False)
     acc["notes"] = notes[:2000]
+    relay = cfg.get("request_relay") or {}
+    if _truthy(relay.get("enabled")):
+        import request_relay
+        bundle = cfg.get("_request_relay_bundle") or _load_request_relay(relay)
+        rid = request_relay.route_id(r, relay["source_scope"])
+        if rid in bundle["routes"]:
+            acc = request_relay.adapt_account(acc, r, bundle, relay["base_url"])
+            acc["notes"] = (acc["notes"].replace("｜未导入项=", "｜原CPA参数=")
+                            .replace("cloak_已写入extra但网关暂未实现", "cloak_由请求中继消费"))
+        elif r.get("_request_relay_required"):
+            raise request_relay.RelayError("required_route_missing_from_generation")
     return acc
+
+
+def account_probe_base_url(account):
+    """Use the validated original authority for relay accounts; never the relay host."""
+    if "cpa2sub2api_source" in (account.get("extra") or {}):
+        account_source_scope(account)
+    if "cpa2sub2api_original_source" in (account.get("extra") or {}):
+        import request_relay
+        return request_relay.account_original_source(account)["base_url"]
+    return (account.get("credentials") or {}).get("base_url") or ""
+
+
+def _source_scope(config):
+    value = config.get("source_scope", (config.get("request_relay") or {}).get(
+        "source_scope", config.get("request_relay_source_scope", "default")))
+    if not isinstance(value, str) or not value.strip() or len(value) > 128 or value != value.strip():
+        raise ValueError("source scope must be a nonempty stable name of at most 128 characters")
+    return value
+
+
+def _source_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _record_source_metadata(record, cfg):
+    value = {"version": 1, "scope": record.get("_source_scope", _source_scope(cfg)),
+             "source_section": record.get("source_section") or record.get("section"),
+             "group": record.get("group"), "base_url": record.get("base_url") or "",
+             "key_sha256": hashlib.sha256(str(record.get("api_key") or "").encode("utf-8")).hexdigest(),
+             "key_fingerprint": record.get("fp") or account_fingerprint(record),
+             "account_name": record.get("name")}
+    value["identity_sha256"] = _source_digest(value)
+    return value
+
+
+def account_source_scope(account):
+    """Validate explicit source ownership; invalid metadata is never legacy."""
+    extra = account.get("extra") or {}
+    if "cpa2sub2api_source" not in extra:
+        if "cpa2sub2api_original_source" in extra:
+            import request_relay
+            try:
+                return request_relay.account_original_source(account)["scope"]
+            except request_relay.RelayError as ex:
+                raise ValueError("invalid relay source ownership") from ex
+        return None
+    value = extra["cpa2sub2api_source"]
+    if not isinstance(value, dict):
+        raise ValueError("invalid source ownership")
+    unsigned = {k: v for k, v in value.items() if k != "identity_sha256"}
+    if (value.get("version") != 1 or _source_scope({"source_scope": value.get("scope")}) != value["scope"]
+            or value.get("account_name") != account.get("name")
+            or value.get("identity_sha256") != _source_digest(unsigned)
+            or value.get("source_section") not in SECTION_MAP
+            or not isinstance(value.get("base_url"), str)
+            or not re.fullmatch("[0-9a-f]{8}", str(value.get("key_fingerprint") or ""))):
+        raise ValueError("invalid source ownership")
+    if value.get("kind") == "legacy_claim":
+        if value.get("claimed_account_id") != account.get("id") or "key_sha256" in value:
+            raise ValueError("invalid legacy source claim")
+    elif not re.fullmatch("[0-9a-f]{64}", str(value.get("key_sha256") or "")):
+        raise ValueError("invalid source key identity")
+    if "cpa2sub2api_original_source" in extra:
+        import request_relay
+        original = request_relay.account_original_source(account)
+        if (any(original.get(k) != value.get(k) for k in ("scope", "source_section", "group", "key_sha256"))
+                or original.get("base_url", "").rstrip("/") != value["base_url"].rstrip("/")):
+            raise ValueError("relay/source ownership mismatch")
+    elif str((account.get("credentials") or {}).get("base_url") or "").rstrip("/") != value["base_url"].rstrip("/"):
+        raise ValueError("source URL changed outside managed identity")
+    return value["scope"]
+
+
+def _visible_source_key(account):
+    key = (account.get("_cpa2sub2api_raw_credentials", account.get("credentials")) or {}).get("api_key")
+    if (not isinstance(key, str) or not key or any(mark in key for mark in ("*", "…"))
+            or key.strip().lower() in ("redacted", "masked", "[redacted]")):
+        return None
+    return key
+
+
+def _with_source_credentials(api, account, evidence=None):
+    result = copy.deepcopy(account)
+    if hasattr(api, "reveal_account_credentials"):
+        try:
+            result["_cpa2sub2api_raw_credentials"] = api.reveal_account_credentials(account)
+        except Exception:
+            result["_cpa2sub2api_credentials_unavailable"] = True
+    if "_cpa2sub2api_raw_credentials" not in result and evidence is not None:
+        if (not isinstance(evidence, dict) or any(evidence.get(k) != account.get(k)
+                for k in ("name", "platform", "type", "notes"))
+                or not isinstance(evidence.get("credentials"), dict)
+                or any(v != evidence["credentials"].get(k) for k, v in (account.get("credentials") or {}).items()
+                       if k not in SENSITIVE_CREDENTIAL_FIELDS)):
+            raise ValueError("trusted export does not bind this exact account snapshot")
+        result["_cpa2sub2api_raw_credentials"] = copy.deepcopy(evidence["credentials"])
+        result["_cpa2sub2api_evidence_credentials"] = True
+    return result
+
+
+def _legacy_claim_metadata(account, record, scope):
+    value = {"version": 1, "kind": "legacy_claim", "scope": scope,
+             "claimed_account_id": account["id"], "source_section": record.get("source_section") or record["section"],
+             "group": record.get("group"), "base_url": record.get("base_url") or "",
+             "key_fingerprint": record.get("fp") or account_fingerprint(record), "account_name": record["name"]}
+    value["identity_sha256"] = _source_digest(value)
+    return value
+
+
+def _strong_source_binding(account, record):
+    value = (account.get("extra") or {}).get("cpa2sub2api_source") or {}
+    if value and value.get("kind") != "legacy_claim":
+        return _account_source_identity_matches(account, record, allow_platform_change=True)
+    if "cpa2sub2api_original_source" in (account.get("extra") or {}):
+        return _account_source_identity_matches(account, record, allow_platform_change=True)
+    return _visible_source_key(account) == str(record.get("api_key") or "")
+
+
+def _account_source_identity_matches(account, record, allow_platform_change=False):
+    if not _is_migrated(account):
+        return False
+    scope = record.get("_source_scope", "default")
+    current = account_source_scope(account)
+    expected = _record_source_metadata(record, {"source_scope": scope})
+    relayed = "cpa2sub2api_original_source" in (account.get("extra") or {})
+    visible_key = _visible_source_key(account)
+    if current is not None:
+        if current != scope:
+            return False
+        value = (account.get("extra") or {}).get("cpa2sub2api_source")
+        if value is None:
+            import request_relay
+            value = request_relay.account_original_source(account)
+        if value.get("kind") == "legacy_claim":
+            if not all(value.get(k) == expected.get(k) for k in (
+                    "source_section", "group", "base_url", "key_fingerprint")):
+                return False
+            if visible_key is not None and visible_key != str(record.get("api_key") or ""):
+                return False
+        elif not all(value.get(k) == expected.get(k) for k in (
+                "source_section", "group", "base_url", "key_sha256")):
+            return False
+        # A relay credential is a route token, not the original provider key.
+        # A validated modern full binding owns credential drift. Synchronization
+        # corrects a visible wrong key instead of abandoning the owned ID.
+        return (account.get("platform") == record.get("platform")
+                or allow_platform_change and value.get("kind") != "legacy_claim")
+    if scope != "default" or account.get("platform") != record.get("platform"):
+        return False
+    notes = str(account.get("notes") or "")
+    section = record.get("source_section") or record.get("section")
+    return ("源自 CPA %s｜" % section in notes
+            and re.search(r"(?:^|｜)fp=%s(?:｜|$)" % re.escape(record.get("fp") or account_fingerprint(record)), notes)
+            is not None and (visible_key is None and "api_key" not in (
+                account.get("_cpa2sub2api_raw_credentials", account.get("credentials")) or {})
+                             or visible_key == str(record.get("api_key") or ""))
+            and account_probe_base_url(account).rstrip("/") == str(record.get("base_url") or "").rstrip("/"))
+
+
+def account_matches_source(account, record):
+    return _account_source_identity_matches(account, record)
+
+
+def resolve_source_accounts(accounts, records):
+    """Resolve unique owned source signatures before import chooses new creates."""
+    found, failures, used = {}, [], {}
+    for record in records:
+        name, candidates, invalid = record["name"], [], False
+        for account in accounts:
+            try:
+                if _account_source_identity_matches(account, record, allow_platform_change=True):
+                    candidates.append(account)
+                elif account.get("name") == name:
+                    invalid = True  # A same-name foreign or unverifiable row blocks creates.
+            except (ValueError, RuntimeError):
+                if account.get("name") == name:
+                    invalid = True
+        if invalid or len(candidates) > 1:
+            failures.append((name, "来源身份冲突、损坏或候选不唯一，未创建或迁移"))
+            continue
+        if not candidates:
+            continue
+        account = candidates[0]
+        aid = account.get("id")
+        if not _is_int(aid) or aid <= 0 or aid in used:
+            failures.append((name, "同一旧账号匹配多个配置条目，未创建或迁移"))
+            if aid in used:
+                previous = used[aid]
+                found.pop(previous, None)
+                failures.append((previous, "同一旧账号匹配多个配置条目，未创建或迁移"))
+            continue
+        used[aid] = name
+        found[name] = account
+    return found, failures
+
+
+def _policy_source_scope(cfg):
+    return _source_scope(cfg) if "source_scope" in cfg or "request_relay_source_scope" in cfg else None
+
+
+def _unclaimed_record_matches(account, record):
+    if account_source_scope(account) is not None or account.get("platform") != record.get("platform"):
+        return False
+    key = _visible_source_key(account)
+    if (key is None or key != str(record.get("api_key") or "")
+            or str((account.get("credentials") or {}).get("base_url") or "").rstrip("/")
+            != str(record.get("base_url") or "").rstrip("/")):
+        return False
+    if _is_migrated(account):
+        candidate = dict(record, _source_scope="default")
+        return account_matches_source(account, candidate)
+    # Explicit IDs plus a full visible binding authorize only the reserved old
+    # position-name namespace; ordinary/manual names remain outside this path.
+    return re.fullmatch(r"ANT-%s-[0-9]+" % re.escape(host_of(record.get("base_url") or "")),
+                        str(account.get("name") or "")) is not None
+
+
+def _require_unique_claim_candidate(api, account, record):
+    rows, error = _fetch_all_accounts(api)
+    if error or not any(r.get("id") == account["id"] for r in rows):
+        raise ValueError("complete legacy claim snapshot unavailable")
+    for other in rows:
+        if other.get("id") == account["id"]:
+            continue
+        potential = (account_source_scope(other) is None and other.get("platform") == record.get("platform")
+                     and str((other.get("credentials") or {}).get("base_url") or "").rstrip("/")
+                     == str(record.get("base_url") or "").rstrip("/")
+                     and (_is_migrated(other) or re.fullmatch(r"ANT-%s-[0-9]+" % re.escape(
+                         host_of(record.get("base_url") or "")), str(other.get("name") or ""))))
+        if potential:
+            other = _with_source_credentials(api, other)
+            if _visible_source_key(other) is None:
+                raise ValueError("another legacy candidate cannot be verified")
+        if other.get("name") == record["name"] or _unclaimed_record_matches(other, record):
+            raise ValueError("legacy claim candidate is ambiguous")
+        if _account_source_identity_matches(other, record, allow_platform_change=True):
+            raise ValueError("source already has an owned account")
+
+
+def claim_source_accounts(api, ids, scope, dry_run=False, expected=None, records=None, evidence=None):
+    """Explicit ID-only legacy claim. A preview hash is required before applying."""
+    scope = _source_scope({"source_scope": scope})
+    approved = {item["id"]: item for item in (expected or [])}
+    claimed, failures = [], []
+    for aid in sorted(set(ids)):
+        try:
+            if not _is_int(aid) or aid <= 0:
+                raise ValueError("invalid account id")
+            account = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+            if account.get("id") != aid or account_source_scope(account) is not None:
+                raise ValueError("not unclaimed managed legacy")
+            account = _with_source_credentials(api, account, (evidence or {}).get(aid))
+            record = None
+            if records is not None:
+                candidates = [r for r in records if _unclaimed_record_matches(account, r)]
+                if len(candidates) != 1:
+                    raise ValueError("unique visible source binding required")
+                record = candidates[0]
+                _require_unique_claim_candidate(api, account, record)
+            notes = str(account.get("notes") or "")
+            section = re.search(r"源自 CPA ([^｜]+)｜", notes)
+            fingerprint = re.search(r"(?:^|｜)fp=([0-9a-f]{8})(?:｜|$)", notes)
+            if record is None:
+                key = _visible_source_key(account)
+                if (not _is_migrated(account) or section is None or section.group(1) not in SECTION_MAP
+                        or fingerprint is None or key is None
+                        or account.get("platform") != SECTION_MAP[section.group(1)][0]
+                        or account_fingerprint({"api_key": key, "base_url": account_probe_base_url(account)})
+                        != fingerprint.group(1)):
+                    raise ValueError("legacy provenance unavailable")
+            snapshot = hashlib.sha256(_recovery_snapshot(account).encode("utf-8")).hexdigest()
+            item = {"id": aid, "name": account.get("name"), "scope": scope, "snapshot_sha256": snapshot}
+            if record is not None:
+                metadata = _record_source_metadata(dict(record, _source_scope=scope), {"source_scope": scope})
+                item["source_identity_sha256"] = metadata["identity_sha256"]
+                item["new_name"] = record["name"]
+            if "_cpa2sub2api_raw_credentials" in account:
+                item["credential_export_sha256"] = _source_digest(account["_cpa2sub2api_raw_credentials"])
+            if dry_run:
+                claimed.append(item)
+                continue
+            if approved.get(aid) != item:
+                raise ValueError("fresh preview required")
+            if record is not None:
+                value = metadata
+            else:
+                value = {"version": 1, "kind": "legacy_claim", "scope": scope, "claimed_account_id": aid,
+                         "source_section": section.group(1), "group": SECTION_GROUP.get(section.group(1)),
+                         "base_url": account_probe_base_url(account), "key_fingerprint": fingerprint.group(1),
+                         "account_name": account.get("name")}
+                value["identity_sha256"] = _source_digest(value)
+            extra = dict(account.get("extra") or {}, cpa2sub2api_source=value)
+            change = {"extra": extra}
+            if record is not None:
+                change["name"] = record["name"]
+                change["notes"] = "%s 源自 CPA %s｜原优先级=%s｜fp=%s" % (
+                    NOTE_SENTINEL, record.get("source_section") or record["section"],
+                    record.get("priority"), record.get("fp") or account_fingerprint(record))
+            def guard():
+                fresh = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+                if fresh.get("id") != aid or _recovery_snapshot(fresh) != _recovery_snapshot(account):
+                    raise ProbeAuthorityRevoked("legacy claim snapshot changed")
+                fresh = _with_source_credentials(api, fresh, (evidence or {}).get(aid))
+                if "_cpa2sub2api_raw_credentials" in account:
+                    if fresh.get("_cpa2sub2api_raw_credentials") != account["_cpa2sub2api_raw_credentials"]:
+                        raise ProbeAuthorityRevoked("legacy full credential evidence changed")
+                if record is not None and not _unclaimed_record_matches(fresh, record):
+                    raise ProbeAuthorityRevoked("legacy claim source changed")
+                if record is not None:
+                    _require_unique_claim_candidate(api, fresh, record)
+            with _guarded_admin_write(guard):
+                api.update_account(aid, change)
+            actual = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+            if account_source_scope(actual) != scope or actual.get("extra") != extra:
+                raise ValueError("claim not persisted")
+            expected_account = dict(account, **change)
+            if _recovery_snapshot(dict(actual, updated_at=account.get("updated_at"))) != _recovery_snapshot(expected_account):
+                raise ValueError("claim changed other state")
+            claimed.append(item)
+        except Exception:
+            failures.append((aid, "旧受管账号认领失败、已归属其它来源或预演后发生变化；未计成功"))
+    return claimed, failures
+
+
+def _load_request_relay(reference):
+    import request_relay
+    bundle = request_relay.load_bundle(reference["state_dir"])
+    if (bundle["generation"] != reference["generation"]
+            or bundle["source_scope"] != reference["source_scope"]
+            or bool(bundle.get("weighted_bucket", False)) != bool(reference.get("weighted_bucket", False))):
+        raise request_relay.RelayError("import_relay_generation_mismatch")
+    # Export wakes the optional supervisor asynchronously. Wait only on local
+    # authenticated readiness; this barrier performs no model inference.
+    deadline = time.monotonic() + 30.0
+    announced = False
+    while True:
+        try:
+            request_relay.verify_runtime(reference["base_url"], bundle, timeout=1.0)
+            break
+        except request_relay.RelayError as ex:
+            if str(ex) not in ("relay_readiness_unavailable", "relay_generation_not_ready") or time.monotonic() >= deadline:
+                raise
+            if not announced:
+                print("    等待请求中继加载当前配置版本（仅内部就绪检查，不调用上游）...")
+                announced = True
+            time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+    return bundle
+
+
+def _request_relay_reference(settings, bundle):
+    """Use one config-bound runtime reference for imports and explicit diagnostics."""
+    import request_relay
+    scope = settings.get("_current_source_scope", _source_scope(settings))
+    weighted = _truthy(settings.get("request_relay_weighted_bucket", False))
+    if bundle["source_scope"] != scope or bool(bundle.get("weighted_bucket", False)) != weighted:
+        raise request_relay.RelayError("relay_runtime_source_mismatch")
+    return {"enabled": True, "source_scope": scope, "generation": bundle["generation"],
+            "state_dir": settings.get("request_relay_state_dir") or DEFAULTS["request_relay_state_dir"],
+            "base_url": settings.get("request_relay_base_url") or DEFAULTS["request_relay_base_url"],
+            "weighted_bucket": weighted,
+            "force_all_accounts": _truthy(settings.get("request_relay_force_all_accounts", False))}
+
+
+def _relay_account_diagnostic_context(account, cfg):
+    """Validate the actual persisted account and the current guarded runtime."""
+    import request_relay
+    reference = cfg.get("request_relay") or {}
+    if not _truthy(reference.get("enabled")) and _truthy(cfg.get("request_relay_enabled", False)):
+        current = request_relay.load_bundle(cfg.get("request_relay_state_dir") or DEFAULTS["request_relay_state_dir"])
+        reference = _request_relay_reference(cfg, current)
+    if not _truthy(reference.get("enabled")):
+        raise request_relay.RelayError("relay_diagnostic_requires_enabled_relay_and_sync")
+    original = request_relay.account_original_source(account)
+    if not original or original["scope"] != _source_scope(cfg):
+        raise request_relay.RelayError("relay_diagnostic_source_mismatch")
+    bundle = _load_request_relay(reference)
+    route = bundle["routes"].get(original["route_id"])
+    if (not route or any(route["original_source"].get(k) != original.get(k) for k in (
+            "scope", "source_section", "group", "base_url", "key_sha256"))
+            or str((account.get("credentials") or {}).get("base_url") or "").rstrip("/")
+            != reference["base_url"].rstrip("/") + "/r/" + route["id"]
+            or (account.get("credentials") or {}).get("api_key") != route.get("token")):
+        raise request_relay.RelayError("relay_diagnostic_account_generation_mismatch")
+    return reference, bundle, route, original
+
+
+def _native_scheduled_diagnostic_model(account, model, cfg, automatic=True):
+    from relay.config import diagnostic_model_marker
+    reference, bundle, route, original = _relay_account_diagnostic_context(account, cfg)
+    if model not in route.get("models", []):
+        model = (account.get("credentials") or {}).get("model_mapping", {}).get(model)
+    if automatic and model in route.get("models", []):
+        # A duplicate-alias business pool cannot choose a smaller model for an
+        # automatic diagnostic. Select a declared highest actual provider name.
+        matching = {entry["name"] for provider in bundle["consumer_config"].get(route["source_section"], [])
+            if provider.get("prefix") == route["diagnostic_prefix"] for entry in provider.get("models", [])
+            if entry.get("alias") == model and entry.get("name")}
+        if len(matching) > 1:
+            model = _pick_probe_model({name: name for name in sorted(matching)},
+                account.get("platform"), route["source_section"])
+    marker = diagnostic_model_marker(route, model, automatic=automatic)
+    if (account.get("credentials") or {}).get("model_mapping", {}).get(marker) != marker:
+        raise ValueError("native_diagnostic_model_self_mapping_missing_sync_source_first")
+    return marker
+
+
+def _test_relay_account_exact(account, model, cfg):
+    """A pool request never proves a key; diagnostics bind to its exact route."""
+    reference, bundle, route, original = _relay_account_diagnostic_context(account, cfg)
+    if model not in route.get("models", []):
+        model = (account.get("credentials") or {}).get("model_mapping", {}).get(model)
+    if model not in route.get("models", []):
+        raise ValueError("relay_diagnostic_model_not_in_current_route")
+    policy = dict(cfg, _request_relay_bundle=bundle)
+    return model_probe._probe_once(
+        _http, account.get("platform"), original["base_url"], "", model, {}, None,
+        settings=policy, source_section=original["source_section"],
+        request_base_url=reference["base_url"].rstrip("/") + "/r/" + route["id"],
+        request_api_key=route["token"])[0]
+
+
+def _prepare_request_relay(cfg, records):
+    """Validate the immutable runtime before any admin mutation, including pruning."""
+    reference = cfg.get("request_relay") or {}
+    if cfg.get("_live_probe_policy"):
+        live = load_settings()
+        if not _truthy(live.get("request_relay_enabled", False)):
+            cfg["request_relay"] = {"enabled": False}
+            cfg.pop("_request_relay_bundle", None)
+            return
+        if "request_relay" not in cfg:
+            import request_relay
+            raise request_relay.RelayError("regenerate_plan_for_enabled_request_relay")
+        if (not _truthy(reference.get("enabled")) and not reference.get("desired_enabled")
+                or _truthy(live.get("request_relay_weighted_bucket", False))
+                != bool(reference.get("weighted_bucket", False))
+                or _truthy(live.get("request_relay_force_all_accounts", False))
+                != bool(reference.get("force_all_accounts", False))):
+            import request_relay
+            raise request_relay.RelayError("regenerate_plan_for_changed_request_relay_mode")
+        if _truthy(reference.get("enabled")):
+            import request_relay
+            if live.get("request_relay_source_scope", "default") != reference.get("source_scope"):
+                raise request_relay.RelayError("import_relay_source_scope_mismatch")
+            reference = dict(reference, state_dir=live.get("request_relay_state_dir", reference["state_dir"]),
+                             base_url=live.get("request_relay_base_url", reference["base_url"]))
+            cfg["request_relay"] = reference
+    if not _truthy(reference.get("enabled")):
+        return
+    import request_relay
+    bundle = _load_request_relay(reference)
+    for record in records:
+        if (record.get("_request_relay_required")
+                and request_relay.route_id(record, reference["source_scope"]) not in bundle["routes"]):
+            raise request_relay.RelayError("required_route_missing_from_generation")
+    cfg["_request_relay_bundle"] = bundle
+
+
+def _export_request_relay(records, source_config, settings):
+    if not _truthy(settings.get("request_relay_enabled", False)):
+        return {"enabled": False, "desired_enabled": False}
+    import request_relay
+    weighted = _truthy(settings.get("request_relay_weighted_bucket", False))
+    force_all = _truthy(settings.get("request_relay_force_all_accounts", False))
+    selected = [r for r in records if force_all or weighted or r.get("_relay_tls") is not None
+                or request_relay.requires_relay(r, source_config)]
+    if not selected:
+        return {"enabled": False, "desired_enabled": True, "weighted_bucket": weighted,
+                "force_all_accounts": force_all}
+    for record in selected:
+        record["_request_relay_required"] = True
+        mapping = build_model_mapping(record["models_raw"], record.get("excluded"), record.get("platform"),
+                                      source_section=record.get("source_section") or record.get("section"),
+                                      probe=record.get("_probe"))
+        mapping = request_relay.relay_model_mapping(record, mapping)
+        record["_relay_models"] = sorted(set(mapping.values()))
+        if (_truthy(settings.get("model_probe_enabled", False))
+                and probe_policy.probe_allowed(record.get("base_url"), settings)):
+            models = record.get("models_raw") or []
+            families = model_selection.probe_family_models(models, record.get("platform"),
+                           record.get("source_section") or record.get("section"))
+            for family, candidates in families.items():
+                generations = {model_selection.model_family_version(m.get("name", ""))[1] for m in candidates}
+                for generation in sorted(generations, reverse=True)[:2]:
+                    candidate = model_probe.representative_model(candidates, generation, family, family=family)
+                    if candidate:
+                        record["_relay_models"] = sorted(set(record["_relay_models"]) | {candidate})
+    scope = settings.get("request_relay_source_scope") or "default"
+    state_dir = settings.get("request_relay_state_dir") or DEFAULTS["request_relay_state_dir"]
+    if settings.get("_request_relay_preview"):
+        request_relay.compile_bundle(selected, source_config, scope, weighted_bucket=weighted)
+        return {"enabled": True, "source_scope": scope, "generation": "preview-not-exported",
+                "state_dir": state_dir, "base_url": settings.get("request_relay_base_url")
+                or DEFAULTS["request_relay_base_url"], "weighted_bucket": weighted,
+                "force_all_accounts": force_all}
+    import automatic_probe_budget
+    def validate_budget_storage():
+        live = resolve_probe_policy(settings)
+        if (_source_scope(live) != _source_scope(settings)
+                or live.get("request_relay_state_dir", DEFAULTS["request_relay_state_dir"]) != state_dir):
+            raise ProbeAuthorityRevoked("automatic budget storage authority changed")
+    try:
+        automatic_probe_budget.initialize_budget(state_dir, validate_budget_storage, history_dir=OUT_DIR)
+    except automatic_probe_budget.AutomaticProbeSkipped as skipped:
+        print("    自动周检测预算尚不可用：%s；未授权任何模型请求。" % skipped.code)
+    bundle = request_relay.export_bundle(selected, source_config, scope, state_dir, weighted_bucket=weighted)
+    return _request_relay_reference(settings, bundle)
 
 
 def group_payloads(recs, s):
@@ -2355,7 +3416,7 @@ def build_proxy_need_map(recs):
     为什么不能靠域名白名单判断（2026-09-13 推翻了上一版实现）：
       "这个站要不要走代理" 取决于**本机出口 IP 有没有被它拦截**，不取决于
       域名是谁。同一个站，机房 A 直连可达、机房 B 被 Cloudflare 拦 403 ——
-      这正是 mihomo 存在的理由。把 private-site-02.example.invalid 之类写进白名单，
+      这正是代理参数存在的理由。把任何实际部署域名写进白名单，
       既在中转站场景下永不命中（config.yaml 里全是中转站域名），
       又会在上游换地址时静默失效，属于文档明令禁止的硬编码。
 
@@ -2409,10 +3470,12 @@ def act_settings(s):
     print(" 设置 sub2api 连接")
     print("=" * 60)
     print(" 直接回车 = 保留当前值。\n")
+    changed = {}
     cur = s["sub2api_base_url"]
     v = input(" sub2api 地址 [%s]：" % cur).strip()
     if v:
         s["sub2api_base_url"] = v.rstrip("/")
+        changed["sub2api_base_url"] = s["sub2api_base_url"]
     print(" 当前管理密钥：%s" % mask(s["sub2api_admin_key"]))
     print(" 提示：这是 admin- 开头的那个，在 VPS 上用这条取：")
     print('   docker exec -i sub2api-postgres psql -U sub2api -d sub2api \\')
@@ -2420,7 +3483,8 @@ def act_settings(s):
     v = input(" 粘贴 sub2api 管理密钥（回车跳过）：").strip()
     if v:
         s["sub2api_admin_key"] = v
-    save_settings(s)
+        changed["sub2api_admin_key"] = v
+    update_saved_settings(lambda saved: dict(saved, **changed))
     print("\n 已保存到 设置.json")
 
 
@@ -2446,7 +3510,14 @@ def act_test(s):
         print("\n 两边都就绪，可以选 [3] 生成导入数据。")
 
 
-def run_model_probe(recs, s):
+def _probe_record_provenance(record):
+    """Opaque exact-key/catalog identity; never persist raw probe credentials."""
+    value = {key: record.get(key) for key in ("base_url", "api_key", "headers", "platform", "models_raw",
+                                             "excluded", "source_section", "section", "_source_scope")}
+    return _source_digest(value)
+
+
+def run_model_probe(recs, s, force=False):
     """需求第 2 条⑵④：探测各上游的最新代/次最新代模型能否真的调用。
 
     返回 ({(段, 域名): {"latest":bool,"prev":bool,"detail":str}}, 告警列表)。
@@ -2465,9 +3536,12 @@ def run_model_probe(recs, s):
     拿它去探容易探出假阴性 —— 明明这一代能用，却因为我们的极简探测体
     不合它口味而被判死。裸名最稳。
     """
+    if s.get("_request_relay_preview") or s.get("_probe_execution_disabled"):
+        return {}, []
+    s = resolve_probe_policy(s)
     if not MODEL_PROBE_AVAILABLE:
         return {}, []
-    if not _truthy(s.get("model_probe_enabled", True)):
+    if not _truthy(s.get("model_probe_enabled", False)):
         return {}, []
 
     # ---- 按 (段, 域名) 归集，每个单元挑一个 KEY 当代表 ----
@@ -2476,6 +3550,8 @@ def run_model_probe(recs, s):
         if r.get("disabled"):
             continue
         base = r.get("base_url") or ""
+        if not probe_policy.probe_allowed(base, s):
+            continue
         api_key = r.get("api_key") or ""
         if not base or not api_key:
             continue
@@ -2495,34 +3571,39 @@ def run_model_probe(recs, s):
         if not models:
             continue
         platform = r.get("platform") or "openai"
-        kind = kind_of.get(platform, "openai")
-
-        gens = set()
-        for m in models:
-            n = m.get("name", "") if isinstance(m, dict) else str(m)
-            if not n or model_selection.is_low_tier(n):
-                continue
-            g = model_probe._model_gen(n, kind)
-            if g is not None:
-                gens.add(g)
-        if not gens:
-            continue
-        ordered = sorted(gens, reverse=True)
-        latest = ordered[0]
-        prev = ordered[1] if len(ordered) > 1 else None
-
-        units.append({
+        families = model_selection.probe_family_models(models, platform, sec)
+        for family, candidates in families.items():
+            ordered = sorted({model_selection.model_family_version(m.get("name", ""))[1]
+                              for m in candidates}, reverse=True)
+            latest, prev = ordered[0], ordered[1] if len(ordered) > 1 else None
+            units.append({
             "section": sec, "host": host, "platform": platform,
+            "family": family, "provenance": _probe_record_provenance(r),
             "base_url": r.get("base_url"), "api_key": r.get("api_key"),
             "headers": r.get("headers") or {},
             "latest_gen": latest, "prev_gen": prev,
-            "latest_model": model_probe.representative_model(models, latest, kind),
-            "prev_model": (model_probe.representative_model(models, prev, kind)
+            "latest_model": model_probe.representative_model(candidates, latest, family, family=family),
+            "prev_model": (model_probe.representative_model(candidates, prev, family, family=family)
                            if prev is not None else None),
-        })
+            })
 
     if not units:
         return {}, []
+
+    reference = s.get("request_relay") or {}
+    if _truthy(reference.get("enabled")):
+        import request_relay
+        bundle = _load_request_relay(reference)
+        s = dict(s, _request_relay_bundle=bundle)
+        for unit in units:
+            record = units_by_key[(unit["section"], unit["host"])]
+            rid = request_relay.route_id(record, reference["source_scope"])
+            route = bundle["routes"].get(rid)
+            if route:
+                unit.update(base_url=route["original_source"]["base_url"],
+                            request_base_url=reference["base_url"].rstrip("/") + "/r/" + rid,
+                            request_api_key=route["token"],
+                            transport_generation="relay-exact-v1:" + bundle["generation"] + ":" + rid)
 
     try:
         res = model_probe.probe_all(
@@ -2531,20 +3612,25 @@ def run_model_probe(recs, s):
             fallback_proxy=_fallback_proxy(s),
             ttl=int(s.get("model_probe_cache_ttl")
                     or model_probe.DEFAULT_CACHE_TTL),
-            log=print)
+            log=print, settings=s, automatic=True, force=force)
     except Exception as ex:
         return {}, ["模型连通性探测失败（不影响导入，按原有就高逻辑处理）：%s"
                     % str(ex)[:120]]
 
-    warn = []
-    for (sec, host), v in sorted(res.items()):
+    warn, grouped = [], {}
+    units_by_family = {(unit["section"], unit["host"], unit["family"]): unit for unit in units}
+    for key, v in sorted(res.items()):
+        sec, host, family = key
+        unit = units_by_family[key]
+        entry = grouped.setdefault((sec, host), {"provenance": unit["provenance"], "families": {}})
+        entry["families"][family] = dict(v, latest_gen=unit["latest_gen"], prev_gen=unit["prev_gen"])
         if not v.get("latest") and v.get("prev"):
             warn.append("%s / %s：最新代探测不通、次最新代连通，已同时保留两代"
                         "（需求 2⑵④）。%s" % (sec, host, v.get("detail", "")[:90]))
         elif not v.get("latest") and not v.get("prev"):
             warn.append("%s / %s：最新代与次最新代均探测不通，按目录最高级填充。%s"
                         % (sec, host, v.get("detail", "")[:90]))
-    return res, warn
+    return grouped, warn
 
 
 def build_plan(s):
@@ -2561,6 +3647,47 @@ def build_plan(s):
         raise RuntimeError("config.yaml 解析结果不是字典，检查格式")
 
     recs, dropped = collect(cfg_dict)
+    unsupported_fields, capability_drift = cpa_capability_issues(cfg_dict, s)
+    source_contract = _upstream_source_contract(s)
+    capability_drift.extend("%s 源码合同未核对；禁止写入和自动删除" % kind
+        for kind, evidence in source_contract["evidence"].items() if evidence["status"] == "review_required")
+    dropped.extend("未适配的受管配置字段：%s；未执行目标写入或自动删除" % field for field in unsupported_fields)
+    dropped.extend(capability_drift)
+    source_scope = _source_scope(s)
+    profiles = s.get("request_relay_tls_profiles") or {}
+    if not isinstance(profiles, dict):
+        raise ValueError("request_relay_tls_profiles must map explicit hosts to TLS presets")
+    for record in recs:
+        record["_source_scope"] = source_scope
+        host = probe_policy.normalize_host(record.get("base_url"))
+        if record.get("request_relay_tls") is not None:
+            record["_relay_tls"] = copy.deepcopy(record["request_relay_tls"])
+        if host in profiles:
+            record["_relay_tls"] = copy.deepcopy(profiles[host])
+    _apply_learned_source_tls(recs, cfg_dict, s)
+    incomplete_config = bool(unsupported_fields or capability_drift) or any(
+        section in cfg_dict and (not isinstance(cfg_dict[section], list)
+                                or any(not isinstance(e, dict) for e in cfg_dict[section]))
+        for section in SECTION_MAP)
+    # Falsy malformed values must not masquerade as an intentionally empty
+    # credential list and thereby authorize deletion of the previous provider.
+    for section in SECTION_MAP:
+        entries = cfg_dict.get(section)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict) or "api-key-entries" not in entry:
+                continue
+            nested = entry["api-key-entries"]
+            if (not isinstance(nested, list)
+                    or any(not isinstance(item, dict)
+                           or not isinstance(item.get("api-key"), str)
+                           or not item["api-key"].strip() for item in nested)):
+                incomplete_config = True
+    incomplete_config = incomplete_config or any(
+        "为空" in str(message) or "无有效" in str(message)
+        or "api-key" in str(message) and "重复" not in str(message)
+        for message in dropped)
     if not recs:
         raise RuntimeError("没解析到任何账号，检查是否有 *-api-key 段")
 
@@ -2580,6 +3707,7 @@ def build_plan(s):
             # 统计健康分，而 sub2api 账号列表里的 group 字段是名称还是 id
             # 不确定，所以用账号名反查（账号名由 assign_names 生成，一一对应）。
             name_to_hostkey = {}
+            assign_names(recs)
             for _r in recs:
                 if not _r.get("name"):
                     # assign_names 在本函数后半段才跑；智能优先级需要账号名
@@ -2624,6 +3752,7 @@ def build_plan(s):
     # 零权重降级必须跟在 remap_priority 之后：它以后者算出的 new_priority
     # 为基准往后平移，顺序颠倒会拿到空值。
     plan_cfg = {
+        "source_scope": source_scope,
         "default_concurrency": s.get("default_concurrency", 3),
         "respect_weight_zero": s.get("respect_weight_zero", True),
         "group_prefix": s.get("group_prefix", "CPA"),
@@ -2634,7 +3763,12 @@ def build_plan(s):
         "weight_zero_policy": s.get("weight_zero_policy", "deprioritize"),
         "auto_pause_on_expired": s.get("auto_pause_on_expired", False),
         "auto_recover_enabled": s.get("auto_recover_enabled", True),
-        "auto_recover_cron": s.get("auto_recover_cron", "*/30 * * * *"),
+        "auto_recover_cron": probe_policy.weekly_cron(s.get("auto_recover_cron")),
+        "model_probe_enabled": s.get("model_probe_enabled", False),
+        "model_probe_hard_disabled": s.get("model_probe_hard_disabled", False),
+        "online_probe_hosts": dict(probe_policy.site_switches(s)),
+        "detected_tls_fingerprint_hosts": s.get("detected_tls_fingerprint_hosts", []),
+        "prune_stale_accounts": s.get("prune_stale_accounts", True),
         # Problem 6.3：停用账号也探活，探活证明可用的可选择重新启用
         "probe_inactive": s.get("probe_inactive", True),
         "revive_proven_inactive": s.get("revive_proven_inactive", False),
@@ -2665,24 +3799,35 @@ def build_plan(s):
     groups = group_payloads(recs, s)
     proxies, proxy_warn = distinct_proxies(recs)
     fps = distinct_fingerprints(recs)
+    plan_cfg["request_relay"] = _export_request_relay(recs, cfg_dict, s)
 
     # 需求第 2 条⑵④：探测每个 (段, 域名) 的最新代/次最新代是否真的能调用。
     # 结果写进每条记录的 _probe 字段，供 build_model_mapping 消费。
-    probe_map, probe_warn = run_model_probe(recs, s)
+    probe_settings = dict(s, request_relay=plan_cfg["request_relay"],
+        _automatic_probe_document_sha256=_source_digest(cfg_dict))
+    if unsupported_fields or capability_drift:
+        probe_settings["_probe_execution_disabled"] = True
+    probe_map, probe_warn = run_model_probe(recs, probe_settings)
     if probe_map:
         for r in recs:
             key = (r.get("source_section") or r.get("section"),
                    host_of(r.get("base_url") or ""))
             pr = probe_map.get(key)
-            if pr:
-                r["_probe"] = {"latest": pr.get("latest"),
-                               "prev": pr.get("prev")}
+            if pr and pr.get("provenance") == _probe_record_provenance(r):
+                r["_probe"] = {"families": copy.deepcopy(pr["families"])}
+        plan_cfg["request_relay"] = _export_request_relay(recs, cfg_dict, s)
 
     plan = {
         "groups": groups,
         "proxies": proxies,
         "fingerprints": fps,
         "accounts_raw": recs,
+        "config_incomplete": incomplete_config,
+        "unsupported_config_fields": unsupported_fields,
+        "capability_snapshot": dict(CPA_CAPABILITY_SNAPSHOT, source_evidence=
+            upstream_contract.source_evidence(s.get("_runtime_cpa_src") or s.get("cpa_src") or CPA_SRC, "cpa")),
+        "capability_drift": capability_drift,
+        "source_contract": source_contract,
         "config": plan_cfg,
         # 新鲜度信息：菜单允许直接跑导入而不重新生成，没有这个就可能拿上周的
         # 计划去导今天的配置
@@ -2786,16 +3931,27 @@ def write_plan_files(plan, text, s):
                     "、".join(names) or "-",
                     "、".join("`%s`" % x for x in (r.get("excluded") or []))))
 
-        f.write("\n## 无法迁移的能力\n\n")
-        f.write("以下 CPA 行为活在 CPA 的请求管线里，不是凭据上的字段，"
-                "sub2api 没有等价物，已记入每条账号的 notes 存档：\n\n")
+        relay = cfg.get("request_relay") or {}
+        if _truthy(relay.get("enabled")):
+            f.write("\n## 原 CPA 请求管线\n\n")
+            f.write("已为需要原请求管线的账号生成独立请求中继配置。以下行为由原 CPA consumer 消费；"
+                    "导入前必须核实中继运行版本与计划一致。原始账号身份、优先级和模型白名单保持不变。\n\n")
+            f.write("中继版本 `%s`；路由模式 `%s`。\n\n" % (
+                relay["generation"], "weighted_bucket" if relay.get("weighted_bucket") else "exact_key"))
+            if relay.get("weighted_bucket"):
+                f.write("加权共享桶的业务结果属于逻辑池，不证明某条原始 KEY 可用；"
+                        "不会据此生成逐 KEY 恢复证据。\n\n")
+        else:
+            f.write("\n## 无法直接迁移的能力\n\n")
+            f.write("以下 CPA 行为活在 CPA 的请求管线里，不是凭据上的字段；"
+                    "当前未启用请求中继，sub2api 没有等价物，已记入每条账号的 notes 存档：\n\n")
         f.write("- `fingerprint-profile`：uTLS 伪造 ClientHello + HTTP/1.1 头序重写，"
                 "属传输层行为。sub2api 的 TLS 指纹仅对 Anthropic 的 OAuth/setup-token 账号生效，"
                 "我们导入的全是 apikey 账号，用不上。\n")
         f.write("- `cloak`：改写 system 提示、注入计费头、混淆敏感词、工具名别名化，"
                 "全是按请求内容做的报文改写。\n")
         f.write("- `$` 开头的请求头：值来自下游客户端的同名头，逐请求动态解析，"
-                "静态存储会把字面量发出去，已丢弃。\n")
+                "不能按静态字面量保存到 sub2api。\n")
         f.write("- `request-retry` / `disable-cooling`：CPA 的多轮重试与冷却调度策略。\n")
         f.write("- `rebuild-mid-system-message` / `support-prompt-cache-key`：报文改写。\n")
         f.write("- 同一 alias 的模型池轮转：需要按凭据的可变计数器与响应改写。\n")
@@ -2992,6 +4148,28 @@ def ensure_proxies(api, proxies):
     return pmap
 
 
+def current_probe_policy(config):
+    """A generated plan cannot persist or restore revoked network authority."""
+    effective = dict(config)
+    live = load_settings()
+    for key in ("model_probe_enabled", "model_probe_hard_disabled", "online_probe_hosts", "auto_recover_enabled",
+                "auto_recover_cron", "detected_tls_fingerprint_hosts"):
+        effective[key] = live.get(key, DEFAULTS.get(key))
+    if ("request_relay" in config or _truthy(config.get("request_relay_enabled", False))
+            or _truthy(live.get("request_relay_enabled", False))):
+        for key in ("request_relay_enabled", "request_relay_source_scope", "request_relay_state_dir",
+                    "request_relay_base_url", "request_relay_weighted_bucket", "request_relay_force_all_accounts"):
+            effective[key] = live.get(key, DEFAULTS.get(key))
+    effective["_live_probe_policy"] = True
+    effective["_current_source_scope"] = _source_scope(live)
+    return effective
+
+
+def resolve_probe_policy(config):
+    """Production calls recheck persisted consent; test/in-process policies stay explicit."""
+    return current_probe_policy(config) if config.get("_live_probe_policy") else config
+
+
 def do_import(api, plan, ask=None):
     """唯一的导入实现。菜单和一键导入共用，避免两份逻辑各自漂移。
 
@@ -2999,16 +4177,50 @@ def do_import(api, plan, ask=None):
 
     返回统计 dict。
     """
+    if plan.get("unsupported_config_fields"):
+        raise ValueError("unadapted managed configuration fields; refresh and review capability support before importing")
+    if plan.get("capability_drift"):
+        raise ValueError("upstream contract drift; review capability support before importing or deleting")
+    snapshot = plan.get("capability_snapshot")
+    if snapshot and any(snapshot.get(key) != value for key, value in CPA_CAPABILITY_SNAPSHOT.items()):
+        raise ValueError("stale capability contract snapshot; regenerate and review the import plan")
+    _, current_drift = cpa_capability_issues({}, load_settings())
+    if current_drift:
+        raise ValueError("current upstream contract drift; regenerate and review the import plan")
+    _validate_upstream_source_contract(plan, load_settings())
     groups = plan["groups"]
     proxies = plan["proxies"]
     recs = plan["accounts_raw"]
-    cfg = plan["config"]
+    all_recs = recs
+    selected_hosts = None
+    if "selected_hosts" in plan:
+        selected_hosts = set(plan["selected_hosts"])
+        available = {probe_policy.normalize_host(r.get("base_url")) for r in recs}
+        if (not selected_hosts or any(not isinstance(h, str) or h != probe_policy.normalize_host(h)
+                                      or h not in available for h in selected_hosts)):
+            raise ValueError("partial import requires exact configured source hosts")
+        recs = [r for r in recs if probe_policy.normalize_host(r.get("base_url")) in selected_hosts]
+        groups = {k: v for k, v in groups.items() if k in {r["group"] for r in recs}}
+        proxies, _ = distinct_proxies(recs)
+    source_recs = recs
+    cfg = current_probe_policy(plan["config"])
+    live_scope = _source_scope(load_settings())
+    if _source_scope(cfg) != live_scope:
+        raise ValueError("source scope changed; regenerate the import plan")
+    cfg["source_scope"] = live_scope
+    for record in recs:
+        if record.get("_source_scope", "default") != live_scope:
+            raise ValueError("record source scope does not match current source")
+        record["_source_scope"] = live_scope
 
     print("\n 将导入：分组 %d 个、代理 %d 个、账号 %d 条"
           % (len(groups), len(proxies), len(recs)))
     if ask and not ask("\n 确认写入 %s ？" % api.base):
         print(" 已取消。")
         return {"cancelled": True}
+    _validate_upstream_source_contract(plan, load_settings())
+
+    _prepare_request_relay(cfg, recs)
 
     # --- 1. 分组 ---
     print("\n [1/6] 创建分组...")
@@ -3016,7 +4228,7 @@ def do_import(api, plan, ask=None):
 
     # 分组降级链：同平台内按优先级串起来，整组不可用时自动转给下一组。
     # 放在建组之后、导账号之前——这一步只改分组自身的字段，与账号无关。
-    fb_chain = plan_fallback_chain(recs, groups)
+    fb_chain = {} if selected_hosts is not None else plan_fallback_chain(recs, groups)
     fb_ok, fb_fail = 0, []
     if fb_chain:
         fb_ok, fb_fail = apply_fallback_chain(api, fb_chain, gmap)
@@ -3057,10 +4269,22 @@ def do_import(api, plan, ask=None):
     # 必须拿完整详情而不是仅名字——需要 schedulable / status 字段。
     have_map, hm_err = existing_accounts_by_name(api)
     if hm_err:
-        print("    ! 读取已有账号详情失败，健康度重排跳过；仍将按 CPA 优先级导入")
+        print("    ! 读取已有账号详情失败，无法确认旧来源身份；本次中止")
         print("      原因：%s" % hm_err)
-        have_map = {}  # 容错：读不到就等于首次导入，health_rerank 会跳过
-    rerank_n, rerank_msg = health_rerank_priority(recs, have_map, cfg)
+        return {"aborted": "读不到完整已有账号身份，拒绝创建或迁移"}
+    source_matches, identity_fail = resolve_source_accounts(list(have_map.values()), recs)
+    unresolved_names = set(source_matches)
+    source_matches = {name: _with_source_credentials(api, account) for name, account in source_matches.items()}
+    # A public DTO cannot reveal secret drift; resolve again after the exact
+    # exports so a wrong visible legacy key never becomes a weak migration.
+    source_matches, revealed_fail = resolve_source_accounts(list(source_matches.values()), recs)
+    identity_fail.extend(revealed_fail)
+    identity_fail.extend((name, "旧来源完整凭据不匹配，未创建或迁移") for name in unresolved_names - set(source_matches))
+    blocked_names = {name for name, _ in identity_fail}
+    recs = [r for r in recs if r["name"] not in blocked_names]
+    have_map.update(source_matches)
+    have.update(source_matches)
+    rerank_n, rerank_msg = health_rerank_priority(all_recs, have_map, cfg)
     if rerank_n:
         print("    ✓ %s" % rerank_msg)
     else:
@@ -3072,7 +4296,7 @@ def do_import(api, plan, ask=None):
     # 已存在的账号：默认不再简单跳过，而是把 CPA 里改过的字段同步过来。
     # 老行为（纯跳过）可用 设置.json 的 sync_existing_accounts=false 恢复。
     sync_ok = sync_same = 0
-    sync_fail = []
+    sync_fail = list(identity_fail)
     if dup and cfg.get("sync_existing_accounts", True):
         print("    已存在 %d 条，检查是否需要同步..." % len(dup))
         # have_map 前面已经拿过了，直接复用
@@ -3082,8 +4306,9 @@ def do_import(api, plan, ask=None):
             for r in dup:
                 skipped.append((r["name"], "已存在，同步失败（%s）" % hm_err))
         else:
-            sync_ok, sync_same, sync_fail = sync_existing_accounts(
+            sync_ok, sync_same, update_fail = sync_existing_accounts(
                 api, dup, cfg, gmap, pmap, have_map)
+            sync_fail.extend(update_fail)
             print("      同步 %d 条，无变化 %d 条，失败 %d 条"
                   % (sync_ok, sync_same, len(sync_fail)))
             for nm, why in sync_fail[:5]:
@@ -3256,66 +4481,37 @@ def do_import(api, plan, ask=None):
     else:
         print("    没有需要停用的账号")
 
-    # --- 5. 挂定时探活计划 ---
-    # sub2api 自带的 auto_recover 机制，负责把出错的账号状态修回 active。
-    # 注意它只还 status、不还 schedulable，所以必须配合第 6 步一起用。
-    print("\n [5/6] 挂定时探活计划（auto_recover）...")
-    plan_ok, plan_fail = 0, []
-    if cfg.get("auto_recover_enabled", True):
-        # 停用的账号**也要挂**（Problem 6.3）。
-        #
-        # 原先这里排除了 want_off，理由是"停用账号探活没意义、还产生费用"。
-        # 但这恰好把「原配置关闭的上游」永久锁死了：它们不被探测，就永远
-        # 不知道已经恢复，也就永远不会被重新启用——实测 47/231 条卡在这里。
-        # 探活正是判断这些上游能不能重新用的唯一手段，所以默认纳入。
-        # 想回到旧行为（省探活费用）把 probe_inactive 设成 false。
-        off_set = set(want_off)
-        probe_inactive = cfg.get("probe_inactive", True)
-        targets = {nm: aid for nm, aid in created_ids.items()
-                   if nm in success and (probe_inactive or nm not in off_set)}
-        # 已存在的账号也要一起挂（幂等：已挂过的由 sub2api 返回 409，
-        # ensure_test_plans 把它算作"已存在"而不是失败）。
-        #
-        # 为什么必须补这一步：targets 原先只取 created_ids，也就是**本轮新建**
-        # 的账号。于是任何一次"没挂上探活"的导入都会留下永久缺口——
-        # 重跑时这些账号走的是"已存在→跳过"分支，探活计划永远不会被补挂。
-        # 实测（2026-09-19）就是这样：第一次导入时单对象接口的信封没解开，
-        # 231 条全部"未找到可用模型"，重跑时一条都不会重试。
-        # 而探活是停用账号恢复（revive_proven_inactive）的唯一证据来源，
-        # 缺口=自动恢复链路永久断掉。
-        if not hm_err:
-            for nm, cur in (have_map or {}).items():
-                aid = cur.get("id")
-                if not aid or nm in targets:
-                    continue
-                if nm not in name_to_rec:
-                    continue          # config.yaml 里已经删掉的，不碰
-                if not (probe_inactive or nm not in off_set):
-                    continue
-                targets[nm] = aid
-        n_off_probed = sum(1 for nm in targets if nm in off_set)
-        # 段名要传给 ensure_test_plans：探活挑模型时 select_highest_models
-        # 需要 source_section 才能与写入白名单走同一条分流（否则 codex 段会
-        # 落到 openai 多族分支，挑出白名单外的模型）。
-        section_by_name = {r["name"]: (r.get("source_section") or r.get("section"))
-                           for r in recs if isinstance(r, dict) and r.get("name")}
-        plan_ok, plan_fail = ensure_test_plans(api, targets, cfg,
-                                               section_by_name=section_by_name)
-        print("    挂载 %d 条，失败 %d 条（cron=%s）"
-              % (plan_ok, len(plan_fail), cfg.get("auto_recover_cron")))
-        if n_off_probed:
-            print("    其中停用账号 %d 条也已纳入探活（恢复后由第 6 步重新启用）"
-                  % n_off_probed)
-        for nm, why in plan_fail[:5]:
-            print("      ✗ %s：%s" % (nm, why))
+    # --- 5. Reconcile plans, including revoked/disabled sites ---
+    print("\n [5/6] 校准每周探活计划及关闭站点...")
+    recovery_evidence = {}
+    target_rows, target_error = _fetch_all_accounts(api)
+    if selected_hosts is not None and not target_error:
+        try:
+            target_rows = [row for row in target_rows
+                           if probe_policy.normalize_host(account_probe_base_url(row)) in selected_hosts]
+        except (ValueError, RuntimeError):
+            target_error = "账号来源归属损坏，未执行单站计划校准"
+    targets = managed_plan_targets(target_rows)
+    section_by_name = {r["name"]: r.get("source_section") or r.get("section")
+                       for r in plan["accounts_raw"]}
+    if target_error:
+        plan_ok, plan_fail = 0, [("snapshot", "读取不完整，探活计划未校准")]
     else:
-        print("    已按配置关闭（auto_recover_enabled=false）")
+        plan_ok, plan_fail = ensure_test_plans(api, targets, cfg,
+                                              section_by_name=section_by_name)
+        if _truthy(cfg.get("auto_recover_enabled", True)):
+            recovery_evidence, recovery_failures = probe_import_recovery(
+                api, targets, cfg, section_by_name=section_by_name)
+            print("    本轮授权恢复测试成功 %d 条，跳过或失败 %d 条"
+                  % (len(recovery_evidence), len(recovery_failures)))
+    print("    已校准 %d 条，失败 %d 条（周频；默认站级关闭）"
+          % (plan_ok, len(plan_fail)))
 
     # --- 6. 回收被网关关掉的调度开关 ---
     # 补 sub2api 的恢复缺口：ClearError 只还 status 不还 schedulable，
     # 账号会永久卡在 active + 不可调度。详见 reclaim_schedulable。
     print("\n [6/6] 回收被关闭的调度开关...")
-    rec_done, rec_total, rec_err = reclaim_schedulable(api)
+    rec_done, rec_total, rec_err = reclaim_schedulable(api, evidence=recovery_evidence)
     if rec_err:
         print("    ! 回收失败：%s" % rec_err)
     elif rec_total:
@@ -3325,8 +4521,8 @@ def do_import(api, plan, ask=None):
 
     # 停用账号里「探活已证明可用」的那些一并启用（Problem 6.3）。
     # sub2api 的自动恢复只认 error、不认 inactive，这一步是唯一的出路。
-    # 默认关闭，需在 设置.json 里显式打开 revive_proven_inactive。
-    rv_done, rv_total, rv_err = revive_proven_inactive(api, cfg)
+    # 默认设置开启；设置 revive_proven_inactive=false 可保留停用状态。
+    rv_done, rv_total, rv_err = revive_proven_inactive(api, cfg, evidence=recovery_evidence)
     if rv_err:
         print("    ! 停用账号复活检查失败：%s" % rv_err)
     elif rv_total:
@@ -3335,19 +4531,34 @@ def do_import(api, plan, ask=None):
     elif cfg.get("revive_proven_inactive", False):
         print("    停用账号中没有探活证明可用的，保持停用")
 
-    # --- 附加检查：僵尸账号 ---
-    # config.yaml 里换过 api_key 的上游会留下旧账号（名字含 key 指纹），
-    # 只报告不删除——删号不可逆，且可能只是用户临时注释了一段配置。
-    stale, stale_err = find_stale_accounts(api, plan["accounts_raw"])
-    if stale_err:
-        print("\n    ! 僵尸账号检查失败：%s" % stale_err)
-    elif stale:
-        print("\n    ⚠ 发现 %d 条本工具导入、但当前 config.yaml 里已无对应凭据的账号：" % len(stale))
-        for a in stale[:10]:
-            print("      · %s (id=%s)" % (a.get("name"), a.get("id")))
-        if len(stale) > 10:
-            print("      · ...另有 %d 条" % (len(stale) - 10))
-        print("      多半是轮换过 api_key 留下的旧号，确认后可用菜单的清空功能删除。")
+    # Only a fully successful import authorizes removal from this managed set.
+    unclaimed = []
+    if not target_error:
+        for row in target_rows:
+            try:
+                if _is_migrated(row) and account_source_scope(row) is None:
+                    unclaimed.append({"id": row.get("id"), "name": row.get("name")})
+            except (ValueError, RuntimeError):
+                pass  # The ownership error below blocks pruning separately.
+        if unclaimed:
+            print("\n    保留 %d 条未认领来源的旧受管账号。核对 id 后可执行 prune claim-preview / claim-apply。"
+                  % len(unclaimed))
+            for row in unclaimed[:10]:
+                print("      id=%s %s" % (row["id"], row["name"]))
+    prune_options = {"hosts": selected_hosts} if selected_hosts is not None else {}
+    stale, stale_err = find_stale_accounts(api, source_recs, **prune_options)
+    pruned, prune_fail = [], []
+    prune_safe = (not failed and not sync_fail and not off_fail and not gfailed and not plan_fail
+                  and not hm_err and not stale_err and cfg.get("sync_existing_accounts", True)
+                  and not plan.get("config_incomplete", False))
+    if cfg.get("prune_stale_accounts", True):
+        if prune_safe:
+            pruned, prune_fail = prune_stale_accounts(api, source_recs, **prune_options)
+            print("\n    已按当前配置清理旧受管账号 %d 条，失败 %d 条"
+                  % (len(pruned), len(prune_fail)))
+        else:
+            prune_fail = [("safety", "本轮配置或同步不完整，保留全部旧账号")]
+            print("\n    配置/导入/同步存在失败，已阻止旧账号删除。")
 
     # --- 第二阶段：用刚产生的真实状态再重排一次 ---
     # 文档第 2 条⑶ 明确要求解决这个冷启动问题：
@@ -3371,7 +4582,7 @@ def do_import(api, plan, ask=None):
             stage2["msg"] = "读取账号详情失败：%s" % hm2_err
             print("    ! %s" % stage2["msg"])
         else:
-            ranked2, msg2 = health_rerank_priority(plan["accounts_raw"], have2, cfg)
+            ranked2, msg2 = health_rerank_priority(all_recs, have2, cfg)
             stage2["ran"] = True
             stage2["ranked"] = ranked2
             stage2["msg"] = msg2
@@ -3379,14 +4590,13 @@ def do_import(api, plan, ask=None):
                 print("    · %s" % msg2)
             else:
                 print("    ✓ %s" % msg2)
-                # 把新桶号推给线上账号。复用 sync_existing_accounts：
-                # 它靠 diff_account_fields 只发真正变了的字段，所以这里
-                # 只会更新 priority（和由健康分派生的 load_factor）。
-                targets = [r for r in plan["accounts_raw"] if r["name"] in have2]
+                # 第二阶段只更新调度权重，不能再次同步凭据、代理等配置。
+                # 写后按账号 ID 读回核对，HTTP 成功本身不计为更新成功。
+                targets = [r for r in source_recs if r["name"] in have2]
                 if targets:
-                    ok2, same2, fail2 = sync_existing_accounts(
-                        api, targets, cfg, gmap, pmap, have2)
+                    ok2, same2, fail2 = sync_health_ranking(api, targets, have2)
                     stage2["updated"] = ok2
+                    stage2["failed"] = len(fail2)
                     print("    已按实测健康度更新 %d 条（无变化 %d，失败 %d）"
                           % (ok2, same2, len(fail2)))
                     for nm, why in fail2[:3]:
@@ -3410,6 +4620,10 @@ def do_import(api, plan, ask=None):
         "schedulable_reclaimed": rec_done,
         "schedulable_candidates": rec_total,
         "stage2_rerank": stage2,
+        "pruned_accounts": pruned,
+        "prune_failed": prune_fail,
+        "selected_hosts": sorted(selected_hosts) if selected_hosts is not None else None,
+        "unclaimed_source_accounts": unclaimed,
         "stale_accounts": [{"id": a.get("id"), "name": a.get("name")}
                            for a in (stale or [])],
         "groups": {k: gmap[k] for k in gmap},
@@ -3444,6 +4658,12 @@ def print_import_summary(stat):
     print(" 成功 %d / 失败 %d / 跳过 %d（本次计划导入 %d 条）"
           % (len(succ), len(fail), len(skip), total))
     print("=" * 64)
+
+    required_failures = [key for key in ("sync_failed", "deactivate_failed", "test_plan_failed", "prune_failed")
+                         if stat.get(key)]
+    if required_failures:
+        print(" ! 必要同步/计划/删除校准存在失败：%s；本次未完成。" % ", ".join(required_failures))
+        return 1
 
     if fail:
         print("\n 失败清单（最多列 10 条）：")
@@ -3657,8 +4877,30 @@ def existing_accounts_by_name(api):
     for a in accs:
         nm = a.get("name")
         if nm:
+            if str(nm) in out:
+                return {}, "账号重名，无法取得唯一已有身份快照"
             out[str(nm)] = a
     return out, None
+
+
+MANAGED_CREDENTIAL_FIELDS = frozenset({
+    "api_key", "base_url", "pool_mode", "pool_mode_retry_status_codes", "pool_mode_retry_count",
+    "model_mapping", "header_override_enabled", "header_overrides", "custom_headers", "temp_unschedulable_enabled",
+    "temp_unschedulable_rules", "openai_capabilities",
+})
+# Pinned Sub MergePreservingSensitiveCreds retains omitted auth fields. Type
+# conversion must explicitly clear them, including fields hidden by its DTO.
+SENSITIVE_CREDENTIAL_FIELDS = frozenset({
+    "access_token", "refresh_token", "id_token", "agent_private_key", "api_key", "session_key", "cookie",
+    "password", "sso_token", "sso", "sso-rw", "clearTextPassword", "aws_secret_access_key",
+    "aws_session_token", "service_account_json", "service_account", "private_key",
+})
+MANAGED_EXTRA_FIELDS = frozenset({
+    "openai_responses_mode", "openai_ws_enabled", "enable_tls_fingerprint", "cloak",
+    "upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled",
+    "cpa2sub2api_original_source",
+    "cpa2sub2api_source",
+})
 
 
 def diff_account_fields(existing, desired):
@@ -3677,12 +4919,17 @@ def diff_account_fields(existing, desired):
     桶号错了等于调度顺序整个错位。
     """
     patch = {}
+    for field in ("upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled"):
+        if field in desired:
+            value = existing.get(field, (existing.get("extra") or {}).get(field, False))
+            if _truthy(value) != _truthy(desired[field]):
+                patch[field] = bool(desired[field])
 
     # --- 标量字段：逐个比对，只发变化的 ---
     # load_factor 参与比对：健康度变化后同桶内的分担比例要跟着变，
     # 不同步等于把负载分配冻结在首次导入那一刻（见 build_account_body 的说明）。
-    for key in ("priority", "concurrency", "auto_pause_on_expired", "proxy_id",
-                "load_factor"):
+    for key in ("name", "type", "priority", "concurrency", "auto_pause_on_expired", "proxy_id",
+                "load_factor", "group_ids", "rate_multiplier"):
         if key not in desired:
             continue
         new = desired[key]
@@ -3700,269 +4947,734 @@ def diff_account_fields(existing, desired):
     # --- credentials：任一子项有差异就整包重发 ---
     new_creds = desired.get("credentials") or {}
     old_creds = existing.get("credentials") or {}
+    old_creds = existing.get("_cpa2sub2api_raw_credentials", old_creds)
     if not isinstance(old_creds, dict):
         old_creds = {}
-    for k, v in new_creds.items():
-        # 列表接口会把 api_key 脱敏成掩码，拿它跟明文比会永远判定"有变化"，
-        # 于是每次运行都无谓地重发一遍全部账号。api_key 的变化会体现在
-        # 账号名的指纹上（account_fingerprint），由建号/清理路径负责，
-        # 这里不参与比对。
-        if k == "api_key":
-            continue
-        if old_creds.get(k) != v:
-            patch["credentials"] = new_creds
-            break
+    # Credentials/extra are replacement maps in the upstream API. Comparing
+    # only desired keys misses obsolete options removed from the new config.
+    new_creds = dict({k: v for k, v in old_creds.items() if k not in MANAGED_CREDENTIAL_FIELDS},
+                     **new_creds)
+    if desired.get("type") and existing.get("type") != desired["type"]:
+        # A protocol/type conversion must not carry OAuth or other old-type
+        # credentials into the reviewed apikey payload.
+        new_creds = dict({key: None for key in SENSITIVE_CREDENTIAL_FIELDS},
+                         **(desired.get("credentials") or {}))
+    old_compare = {k: v for k, v in old_creds.items() if k != "api_key"}
+    new_compare = {k: v for k, v in new_creds.items() if k != "api_key"}
+    visible_key = _visible_source_key(existing)
+    key_changed = (visible_key is not None and "api_key" in (desired.get("credentials") or {})
+                   and visible_key != desired["credentials"]["api_key"])
+    if old_compare != new_compare or "type" in patch or key_changed:
+        patch["credentials"] = new_creds
 
-    # --- extra：同样整体比对 ---
     if "extra" in desired:
         old_extra = existing.get("extra") or {}
         if not isinstance(old_extra, dict):
             old_extra = {}
-        new_extra = desired["extra"] or {}
-        for k, v in new_extra.items():
-            if old_extra.get(k) != v:
-                patch["extra"] = new_extra
-                break
+        new_extra = {k: v for k, v in old_extra.items() if k not in MANAGED_EXTRA_FIELDS}
+        new_extra.update(desired.get("extra") or {})
+        if old_extra != new_extra:
+            patch["extra"] = new_extra
 
-    # --- notes：带 sentinel，变了说明未导入项清单变了，值得同步 ---
     if desired.get("notes") and existing.get("notes") != desired["notes"]:
         patch["notes"] = desired["notes"]
 
     return patch
 
 
-def sync_existing_accounts(api, recs, cfg, gmap, pmap, have_map, dry_run=False):
-    """把已存在账号的可变字段同步成 config.yaml 的最新值。
+def sync_health_ranking(api, recs, have_map, dry_run=False):
+    """仅同步健康重排的 priority/load_factor，批量读回后才计成功。
 
-    解决的问题：本工具原先对已存在的账号一律"跳过"（按名字去重），于是在 CPA
-    里改了 priority / excluded-models / weight / base_url 之后重跑本工具，
-    sub2api 侧仍是首次导入时的旧值，而且不会有任何提示。对
-    excluded-models 尤其致命——model_mapping 是白名单快照，CPA 放开限制后
-    这边仍然挡着,账号看起来正常却一个模型都不提供。
-
-    只更新**内容真的变了**的字段（见 diff_account_fields），没变的一条都不发：
-    226 条全量 PUT 一遍既慢又会把 updated_at 全部搅动，掩盖真实的变更记录。
-
-    返回 (更新成功数, 无需更新数, 失败列表)。
+    dry_run 返回拟更新数，不发请求。读回缺字段、缺账号或不一致都算失败；
+    错误正文可能含凭据，因此这里只报告固定的失败原因。
     """
-    # 2026-09-13：构建代理需求映射，供 to_account 使用
-    proxy_need = build_proxy_need_map(recs)
+    import math
 
     ok, same, fail = 0, 0, []
+    planned, seen = [], set()
+    records_by_name = {r["name"]: r for r in recs}
     for r in recs:
-        cur = have_map.get(r["name"])
+        name = r["name"]
+        cur = have_map.get(name)
         if not cur:
             continue
+        if "_source_scope" in r:
+            try:
+                if not account_matches_source(cur, r):
+                    raise ValueError("source mismatch")
+            except (ValueError, RuntimeError):
+                fail.append((name, "来源归属无法确认，未重排"))
+                continue
         aid = cur.get("id")
-        if not aid:
-            fail.append((r["name"], "已有账号没有 id，无法更新"))
+        if not isinstance(aid, int) or isinstance(aid, bool) or aid <= 0:
+            fail.append((name, "已有账号没有有效 id，无法重排"))
             continue
-        desired = to_account(r, cfg, gmap, pmap, proxy_need)
-        # 建号专用字段，PUT 时不需要也不该带
-        for k in ("name", "platform", "type", "confirm_mixed_channel_risk"):
-            desired.pop(k, None)
-        patch = diff_account_fields(cur, desired)
+        if aid in seen:
+            # 在开始写入前拒绝全部计划，避免同一个 ID 被多个名字覆盖。
+            return 0, 0, [(name, "重排账号 id 重复，未执行写入")]
+        seen.add(aid)
+        priority = r.get("new_priority")
+        if not isinstance(priority, int) or isinstance(priority, bool):
+            fail.append((name, "重排优先级无效，未更新"))
+            continue
+        desired = {"priority": priority}
+        if r.get("health_score") is not None:
+            try:
+                hs = float(r["health_score"])
+                if not math.isfinite(hs) or not 0 <= hs <= 1:
+                    raise ValueError("invalid health score")
+                desired["load_factor"] = 8 if hs >= .9 else 6 if hs >= .7 else 4 if hs >= .5 else 2
+            except (TypeError, ValueError, OverflowError):
+                fail.append((name, "健康分无效，未更新"))
+                continue
+        patch = {key: value for key, value in desired.items() if cur.get(key) != value}
         if not patch:
+            same += 1
+        else:
+            planned.append((name, aid, patch))
+    if dry_run:
+        return len(planned), same, fail
+    pending = []
+    for name, aid, patch in planned:
+        try:
+            if "_source_scope" in records_by_name[name]:
+                fresh = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+                if fresh.get("id") != aid or not account_matches_source(fresh, records_by_name[name]):
+                    raise ValueError("source changed")
+                scope = records_by_name[name]["_source_scope"]
+                policy = {"_live_probe_policy": True, "source_scope": scope}
+                with _guarded_admin_write(_account_probe_write_guard(
+                        api, fresh, policy, require_consent=False, record=records_by_name[name])):
+                    api.update_account(aid, patch)
+            else:
+                api.update_account(aid, patch)
+            pending.append((name, aid, patch))
+        except Exception:
+            fail.append((name, "重排写入请求失败，结果未验证"))
+    if not pending:
+        return ok, same, fail
+    try:
+        rows, error = _fetch_all_accounts(api)
+        if error:
+            raise ValueError("incomplete readback")
+        by_id = {}
+        for row in rows:
+            aid = row.get("id")
+            if aid in by_id:
+                raise ValueError("duplicate readback id")
+            by_id[aid] = row
+    except Exception:
+        fail.extend((name, "重排写后读取失败，结果未验证") for name, _, _ in pending)
+        return ok, same, fail
+    for name, aid, patch in pending:
+        actual = by_id.get(aid, {})
+        if all(key in actual and actual[key] == value for key, value in patch.items()):
+            ok += 1
+        else:
+            fail.append((name, "重排写后字段不一致或缺失，结果未验证"))
+    return ok, same, fail
+
+
+def _migration_write_guard(api, account, record, cfg, replacement=False):
+    snapshot = _recovery_snapshot(account)
+    def guard():
+        fresh = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % account["id"]))
+        if (fresh.get("id") != account["id"] or _recovery_snapshot(fresh) != snapshot
+                or not _account_source_identity_matches(fresh, record, allow_platform_change=replacement)):
+            raise ProbeAuthorityRevoked("migration identity or snapshot changed")
+        if "_cpa2sub2api_raw_credentials" in account:
+            if api.reveal_account_credentials(fresh) != account["_cpa2sub2api_raw_credentials"]:
+                raise ProbeAuthorityRevoked("migration credential snapshot changed")
+        if replacement:
+            _require_migration_no_dependencies(api, fresh)
+    return guard
+
+
+def _require_no_shadow_dependencies(api, account):
+    # DeleteAccount cascades shadow children. Export omits shadows, so only the
+    # complete ordinary account listing is suitable for this guard.
+    rows, error = _fetch_all_accounts(api, require_total=True)
+    if error or not any(r.get("id") == account["id"] for r in rows):
+        raise ValueError("complete dependency snapshot unavailable")
+    ids = {r.get("id") for r in rows}
+    if any(not _is_int(aid) or aid <= 0 for aid in ids):
+        raise ValueError("dependency account ids are invalid")
+    for row in rows:
+        parent = row.get("parent_account_id")
+        dimension = row.get("quota_dimension")
+        if dimension not in (None, "", "global", "spark"):
+            raise ValueError("unknown shadow dimension")
+        if parent is None:
+            if dimension == "spark":
+                raise ValueError("shadow dimension has no verified parent")
+        elif (not _is_int(parent) or parent <= 0 or parent == row["id"] or parent not in ids
+              or next(r for r in rows if r["id"] == parent).get("parent_account_id") is not None):
+            raise ValueError("unknown shadow parent relation")
+    if (account.get("parent_account_id") is not None
+            or any(r.get("parent_account_id") == account["id"] for r in rows)):
+        raise ValueError("shadow dependency prevents migration")
+
+
+def _require_migration_no_dependencies(api, account):
+    _require_no_shadow_dependencies(api, account)
+    if _strict_test_plans(api.list_test_plans(account["id"])):
+        raise ValueError("scheduled plan or history dependency prevents replacement")
+    if (account.get("status") not in ("active", "inactive")
+            or not isinstance(account.get("schedulable"), bool)
+            or _recovery_runtime_block(account)):
+        raise ValueError("unknown runtime intent prevents replacement")
+
+
+def _verified_candidate_readback(api, aid, desired):
+    actual = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+    actual = _with_source_credentials(api, actual)
+    if (actual.get("id") != aid or _visible_source_key(actual) is None
+            or actual.get("platform") != desired["platform"] or diff_account_fields(actual, desired)):
+        raise ValueError("replacement credential or parameter readback unavailable/mismatched")
+    return actual
+
+
+def _replace_owned_account(api, current, record, desired, cfg):
+    """Create/read back safely, then delete precisely the dependency-free old ID."""
+    _require_migration_no_dependencies(api, current)
+    guard = _migration_write_guard(api, current, record, cfg, replacement=True)
+    marker = os.urandom(16).hex()
+    quarantine_name = "cpa2sub2api-migration-" + marker
+    quarantine_id = None
+    quarantine_deleted = False
+    payload = copy.deepcopy(desired)
+    payload["name"] = desired["name"] + "-m" + marker[:12]
+    # Empty group_ids auto-bind the native default group. A private exclusive
+    # group plus a deny-all model mapping isolates the active-by-default factory.
+    payload["credentials"]["model_mapping"] = {BLOCK_ALL_SENTINEL: BLOCK_ALL_SENTINEL}
+    payload["extra"] = dict({k: v for k, v in (current.get("extra") or {}).items()
+                              if k not in MANAGED_EXTRA_FIELDS}, **payload.get("extra", {}))
+    # Native buildAccountForCreate removes these two system-managed defaults.
+    # Keep top-level billing off; final Update/readback still verifies its full
+    # desired extra map. No other missing field is accepted at factory readback.
+    for field in ("upstream_billing_probe_enabled", "upstream_billing_rate_sync_enabled"):
+        if payload["extra"].get(field) is False:
+            payload["extra"].pop(field)
+    payload["extra"]["cpa2sub2api_migration"] = marker
+    value = payload["extra"]["cpa2sub2api_source"]
+    value["account_name"] = payload["name"]
+    value["identity_sha256"] = _source_digest({k: v for k, v in value.items() if k != "identity_sha256"})
+    for field in ("expires_at", "auto_pause_on_expired"):
+        if field in current:
+            payload[field] = current[field]
+    created_id = None
+    deleted_old = False
+    delete_attempted = False
+    old_present = None
+    try:
+        with _guarded_admin_write(guard):
+            group = _unwrap_one(api.create_group({"name": quarantine_name, "platform": desired["platform"],
+                "rate_multiplier": 1, "is_exclusive": True, "subscription_type": "standard"}))
+        if (not isinstance(group, dict) or not _is_int(group.get("id")) or group["id"] <= 0
+                or group.get("name") != quarantine_name or group.get("platform") != desired["platform"]
+                or group.get("is_exclusive") is not True):
+            raise ValueError("quarantine group not verified")
+        quarantine_id = group["id"]
+        payload["group_ids"] = [quarantine_id]
+        with _guarded_admin_write(guard):
+            response = api.batch_accounts([payload])
+        results = (response.get("data") or {}).get("results") or []
+        if (len(results) != 1 or not results[0].get("success")
+                or not _is_int(results[0].get("id")) or results[0]["id"] <= 0
+                or results[0].get("name") != payload["name"]):
+            raise ValueError("replacement create result incomplete")
+        created_id = results[0]["id"]
+        if created_id == current["id"]:
+            raise ValueError("replacement reused the old id")
+        actual = _verified_candidate_readback(api, created_id, payload)
+        with _guarded_admin_write(guard):
+            api.bulk_update_accounts([created_id], {"status": "inactive", "schedulable": False})
+        inactive = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % created_id))
+        if (inactive.get("status") != "inactive" or inactive.get("schedulable") is not False
+                or inactive.get("group_ids") != [quarantine_id]):
+            raise ValueError("quarantine stop state not persisted")
+        final = copy.deepcopy(desired)
+        final["extra"] = dict(payload["extra"], **desired.get("extra", {}))
+        final["extra"]["cpa2sub2api_source"] = copy.deepcopy(desired["extra"]["cpa2sub2api_source"])
+        # Preserve existing memberships; source-configured memberships are added.
+        final["group_ids"] = sorted(set(current.get("group_ids") or []) | set(desired.get("group_ids") or []))
+        for field in ("expires_at", "auto_pause_on_expired"):
+            if field in current:
+                final[field] = current[field]
+        with _guarded_admin_write(guard):
+            api.update_account(created_id, {k: v for k, v in final.items()
+                                           if k not in ("platform", "confirm_mixed_channel_risk")})
+        intent = {"status": "inactive" if needs_inactive(record, cfg) else current["status"],
+                  "schedulable": False if needs_inactive(record, cfg) else current["schedulable"]}
+        with _guarded_admin_write(guard):
+            api.bulk_update_accounts([created_id], intent)
+        actual = _verified_candidate_readback(api, created_id, final)
+        if any(actual.get(k) != v for k, v in intent.items()):
+            raise ValueError("replacement parameters or intent not persisted")
+        if quarantine_id in (actual.get("group_ids") or []):
+            raise ValueError("candidate still bound to quarantine")
+        with _guarded_admin_write(guard):
+            api.delete_group(quarantine_id)
+        quarantine_deleted = True
+        delete_attempted = True
+        try:
+            def deletion_guard():
+                guard()
+                fresh_candidate = _verified_candidate_readback(api, created_id, final)
+                if (_recovery_snapshot(fresh_candidate) != _recovery_snapshot(actual)
+                        or fresh_candidate.get("_cpa2sub2api_raw_credentials")
+                        != actual.get("_cpa2sub2api_raw_credentials")):
+                    raise ProbeAuthorityRevoked("replacement candidate changed before old deletion")
+            with _guarded_admin_write(deletion_guard):
+                api.delete_account(current["id"])
+        except Exception:
+            pass  # A lost DELETE response must be resolved by readback.
+        try:
+            _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % current["id"]))
+            old_present = True
+        except ApiError as ex:
+            if ex.status != 404:
+                raise
+            deleted_old = True
+        if not deleted_old:
+            raise ValueError("old account deletion not verified")
+        # Deleting the old-owned ID is the final mutation. The nonsensitive
+        # marker remains as migration provenance and a recovery identifier.
+        return actual
+    except Exception:
+        if not deleted_old and (not delete_attempted or old_present is True):
+            if created_id is None:
+                rows, error = _fetch_all_accounts(api)
+                candidates = [] if error else [r for r in rows if r.get("name") == payload["name"]
+                    and (r.get("extra") or {}).get("cpa2sub2api_migration") == marker]
+                if len(candidates) == 1:
+                    created_id = candidates[0]["id"]
+            if created_id is not None and created_id != current["id"]:
+                candidate = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % created_id))
+                if ((candidate.get("extra") or {}).get("cpa2sub2api_migration") == marker
+                        and account_source_scope(candidate) == record.get("_source_scope", "default")):
+                    _require_migration_no_dependencies(api, candidate)
+                    api.delete_account(created_id)
+            if not quarantine_deleted:
+                if quarantine_id is None:
+                    groups = [g for g in api.list_groups() if g.get("name") == quarantine_name
+                              and g.get("platform") == desired["platform"] and g.get("is_exclusive") is True]
+                    if len(groups) == 1:
+                        quarantine_id = groups[0]["id"]
+                if quarantine_id is not None:
+                    rows, error = _fetch_all_accounts(api)
+                    if error or any(quarantine_id in (r.get("group_ids") or []) for r in rows):
+                        raise ValueError("quarantine cleanup has unknown bindings")
+                    api.delete_group(quarantine_id)
+        raise
+
+
+def sync_existing_accounts(api, recs, cfg, gmap, pmap, have_map, dry_run=False):
+    """Update managed configuration, retaining unknown upstream runtime metadata."""
+    if _truthy((cfg.get("request_relay") or {}).get("enabled")) and not cfg.get("_request_relay_bundle"):
+        cfg = dict(cfg)
+        _prepare_request_relay(cfg, recs)
+    proxy_need = build_proxy_need_map(recs)
+    ok, same, failures = 0, 0, []
+    for record in recs:
+        current = have_map.get(record["name"])
+        if not current:
+            continue
+        if "_cpa2sub2api_raw_credentials" not in current:
+            current = _with_source_credentials(api, current)
+        if "_source_scope" in record:
+            try:
+                if not _account_source_identity_matches(current, record, allow_platform_change=True):
+                    raise ValueError("different or unverified source")
+            except (ValueError, RuntimeError):
+                failures.append((record["name"], "来源归属不同、损坏或旧账号身份无法确认，未同步"))
+                continue
+        aid = current.get("id")
+        if not isinstance(aid, int) or isinstance(aid, bool) or aid <= 0:
+            failures.append((record["name"], "已有账号 id 无效"))
+            continue
+        desired = copy.deepcopy(to_account(record, cfg, gmap, pmap, proxy_need))
+        strong_identity = "_source_scope" not in record or _strong_source_binding(current, record)
+        if not strong_identity:
+            if current.get("type") != desired["type"] or current.get("platform") != desired["platform"]:
+                failures.append((record["name"], "旧身份仅有历史短指纹；类型/平台变更需要完整凭据或显式可信证据"))
+                continue
+            desired["credentials"].pop("api_key", None)
+            desired["extra"]["cpa2sub2api_source"] = _legacy_claim_metadata(
+                current, record, record.get("_source_scope", _source_scope(cfg)))
+        replace = current.get("platform") != desired["platform"]
+        if replace:
+            if dry_run:
+                try:
+                    _require_migration_no_dependencies(api, current)
+                    ok += 1
+                except Exception:
+                    failures.append((record["name"], "平台替换存在依赖或身份无法核实，未迁移"))
+                continue
+            try:
+                actual = _replace_owned_account(api, current, record, desired, cfg)
+                have_map[record["name"]] = actual
+                ok += 1
+            except Exception:
+                failures.append((record["name"], "平台替换失败或清理/读回不完整，未计成功"))
+            continue
+        for key in ("platform", "confirm_mixed_channel_risk"):
+            desired.pop(key, None)
+        change = diff_account_fields(current, desired)
+        if not change:
             same += 1
             continue
         if dry_run:
             ok += 1
             continue
         try:
-            api.update_account(aid, patch)
+            fresh = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+            if fresh.get("id") != aid or not _is_migrated(fresh):
+                raise ValueError("ownership mismatch")
+            if "_source_scope" in record and not account_matches_source(fresh, record):
+                raise ValueError("source ownership changed")
+            fresh = _with_source_credentials(api, fresh)
+            if "_source_scope" in record and not account_matches_source(fresh, record):
+                raise ValueError("revealed source identity changed")
+            change = diff_account_fields(fresh, desired)
+            if not change:
+                same += 1
+                continue
+            if "type" in change:
+                _require_no_shadow_dependencies(api, fresh)
+            if "credentials" in change and fresh.get("platform") == "openai":
+                mode = (desired.get("extra") or {}).get("openai_responses_mode")
+                if mode not in ("force_responses", "force_chat_completions"):
+                    raise ValueError("unsafe OpenAI migration mode")
+                change["extra"] = dict({k: v for k, v in (fresh.get("extra") or {}).items()
+                                        if k not in MANAGED_EXTRA_FIELDS}, **desired["extra"])
+            if "_source_scope" in record:
+                base_guard = _account_probe_write_guard(api, fresh, cfg, require_consent=False, record=record)
+                def guard():
+                    base_guard()
+                    if "type" in change:
+                        _require_no_shadow_dependencies(api, fresh)
+                with _guarded_admin_write(guard):
+                    api.update_account(aid, change)
+            else:
+                api.update_account(aid, change)
+            actual = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+            if "_cpa2sub2api_raw_credentials" in fresh:
+                actual = _with_source_credentials(api, actual)
+                if "_cpa2sub2api_raw_credentials" not in actual:
+                    raise ValueError("credential readback unavailable")
+            verify = dict(desired)
+            # Admin API may mask keys; never use a masked key as evidence.
+            if diff_account_fields(actual, verify):
+                raise ValueError("readback mismatch")
+            have_map[record["name"]] = actual
             ok += 1
-        except ApiError as ex:
-            fail.append((r["name"], "HTTP %s %s" % (ex.status, ex.body[:80])))
-        except Exception as ex:
-            fail.append((r["name"], str(ex)[:80]))
-    return ok, same, fail
+        except Exception:
+            failures.append((record["name"], "受管参数同步失败或读回不一致，未计成功"))
+    return ok, same, failures
 
 
-def reclaim_schedulable(api, dry_run=False, batch=50):
-    """把"状态正常但调度开关被关掉"的账号重新打开。
-
-    这是本工具为 sub2api 的一个恢复缺口打的补丁，不是凭空加的功能：
-
-      · 账号出错时，sub2api 在**同一次写入**里同时关掉状态和调度开关
-        （account_repo.go:1750 SetError：SetStatus(StatusError) 紧跟
-        SetSchedulable(false)）。
-      · 但恢复路径只还了一半：ClearError（account_repo.go:1750 往下）
-        只做 SetStatus(StatusActive) + SetErrorMessage("")，**没有**
-        SetSchedulable(true)。全仓搜索 SetSchedulable(true)，生产代码里
-        零调用点，只在测试文件出现。
-      · 定时探活计划的 auto_recover 最终也是落到 ClearError
-        （scheduled_test_runner_service.go 的 tryRecoverAccount ->
-        RecoverAccountAfterSuccessfulTest -> RecoverAccountState -> ClearError），
-        所以它同样只还状态、不还开关。
-
-    结果就是账号永久卡在 status=active + schedulable=false：界面上看着是
-    "正常"，但调度判定是两者取与（account.go:181 IsSchedulable 先查
-    IsActive() 再查 Schedulable；SQL 侧 group_repo.go:982 同样是
-    status='active' AND schedulable=true），于是它永远接不到请求，
-    只能人工逐行去点开关。上游临时抽风越多，这种"僵尸账号"攒得越多。
-
-    安全边界——只恢复本工具导入的账号：
-    sub2api 自己不区分"网关自动关的"和"运维手工关的"（不像 new-api 有
-    ManuallyDisabled=2 / AutoDisabled=3 两个状态），所以这个区分必须在
-    客户端做，否则会把运维特意关掉的账号又打开。这里用 notes 的
-    NOTE_SENTINEL 前缀来认定，跟回滚/清空用的是同一套认定标准。
-
-    返回 (恢复条数, 候选条数, 出错信息或 None)。
-    """
+def _restore_schedulable_verified(api, targets, activate=False, batch=50):
+    """使用支持调度字段的接口；HTTP 成功后逐账号核对持久状态。"""
     if not BULK_HAS_SCHEDULABLE:
-        # sync_constants 已经从源码确认 bulk-update 不再接受 schedulable。
-        # 这时候硬发会被 Gin 静默丢弃——请求返回 200、开关却没打开，
-        # 比直接报错更难查，所以宁可不做并说明白。
-        return 0, 0, ("上游的 bulk-update 已不接受 schedulable 字段，"
-                      "无法批量恢复调度开关，请人工处理或更新本工具。")
-    accs, err = _fetch_all_accounts(api)
-    if err:
-        return 0, 0, err
-
-    targets = []
-    for a in accs:
-        # 只认本工具导入的账号
-        if not _is_migrated(a):
-            continue
-        # 状态必须已经是正常的：还在 error 的说明上游真的没恢复，
-        # 这时候强行打开调度开关只会让请求继续打到坏账号上。
-        # 交给 sub2api 的探活计划先把状态修好，下一轮再由这里接手。
-        st = str(a.get("status") or "").strip().lower()
-        if st != "active":
-            continue
-        # 已经是可调度的不用管
-        if a.get("schedulable"):
-            continue
-        # 仍在冷却窗口里的不动：temp_unschedulable_until 是有到期时间的
-        # 临时状态，sub2api 自己会让它失效，不需要也不该干预。
-        if a.get("temp_unschedulable_until"):
-            continue
-        aid = a.get("id")
-        if aid:
-            targets.append(aid)
-
-    if not targets or dry_run:
-        return 0, len(targets), None
-
-    done = 0
+        return 0, len(targets), "上游 bulk-update 不支持 schedulable，未执行恢复。"
+    done, failed = 0, 0
+    batch = max(1, int(batch))
     for i in range(0, len(targets), batch):
         chunk = targets[i:i + batch]
+        patch = {"schedulable": True}
+        if activate:
+            patch["status"] = "active"
         try:
-            # status 一并带上是为了幂等：这批账号本来就是 active，
-            # 重复写同值不会有副作用，但能保证即使中途被打回 error
-            # 也会连状态一起修正。
-            api.bulk_update_accounts(chunk, {"status": "active",
-                                             "schedulable": True})
-            done += len(chunk)
-        except ApiError as ex:
-            return done, len(targets), "HTTP %s %s" % (ex.status, ex.body[:120])
-        except Exception as ex:
-            return done, len(targets), str(ex)[:120]
-    return done, len(targets), None
-
-
-def revive_proven_inactive(api, cfg, dry_run=False, batch=50):
-    """把「探活已证明可用」的停用账号重新启用（Problem 6.3）。
-
-    要解决的断链：config.yaml 里 disabled / 被 excluded-models 排空的上游，
-    本工具会建成 status=inactive。而 sub2api 的自动恢复**只认 error**
-    （ratelimit_service.go:2109 `if account.Status == StatusError`），
-    inactive 永远不会被它转回 active；本工具的 reclaim_schedulable 又只处理
-    已经是 active 的账号。于是这些站点即使恢复了也永久躺平——实测 47/231。
-
-    做法是**证据驱动**，不是无脑拉起：
-      1. 只看本工具导入的、当前 status=inactive 的账号；
-      2. 读它的探活计划最近一次结果，必须是成功；
-      3. 成功才置 active + schedulable=true。
-    探活由第 5 步给停用账号也挂上（probe_inactive），所以证据是有的。
-
-    为什么不能省掉证据这一步：config.yaml 把站点关掉通常是有原因的
-    （余额耗尽 / key 被吊销）。没有探活成功记录就拉起来，等于把坏号重新
-    放回调度池，反而拖低整体成功率。
-
-    默认关闭（revive_proven_inactive=false）：这是会改变调度面的写操作，
-    要用户显式开启。返回 (启用条数, 候选条数, 出错信息或 None)。
-    """
-    if not cfg.get("revive_proven_inactive", False):
-        return 0, 0, None
-
-    accs, err = _fetch_all_accounts(api)
-    if err:
-        return 0, 0, err
-
-    cands = []
-    for a in accs:
-        if not _is_migrated(a):
+            api.bulk_update_accounts(chunk, patch)
+        except Exception:
+            # 不回显服务端正文：其中可能含上游地址或凭据。
+            failed += len(chunk)
             continue
-        if str(a.get("status") or "").strip().lower() != "inactive":
-            continue
-        aid = a.get("id")
-        if aid:
-            cands.append((aid, str(a.get("name") or "")))
-
-    if not cands:
-        return 0, 0, None
-
-    def proven_ok(item):
-        """这条账号最近一次探活是否成功。取不到结果一律当成没证据。"""
-        aid, nm = item
-        try:
-            plans = _unwrap_list(api.list_test_plans(aid))
-        except Exception as ex:
-            # 取不到探活计划 = 这条账号"有没有被探活证明可用"未知。
-            # 本函数的结论直接决定**要不要把停用账号重新启用**，所以
-            # "查不到"和"查到了但没成功"必须能区分开 —— 以前两者都是
-            # 静默 return None，日志上完全看不出区别。
-            log_exc("取账号 %s 的探活计划失败，按「无证据」处理（不会因此启用它）"
-                    % aid, ex)
-            return None
-        for p in plans:
-            pid = p.get("id")
-            if not pid:
-                continue
+        for aid in chunk:
             try:
-                results = _unwrap_list(api.list_test_results(pid))
-            except Exception as ex:
-                log_exc("取探活计划 %s（账号 %s）的结果失败，按「无证据」处理"
-                        % (pid, aid), ex)
-                continue
-            # 结果按时间倒序返回；只认最近一条，历史成功不代表现在能用
-            for r in results[:1]:
-                st = str(r.get("status") or "").strip().lower()
-                if st in ("success", "ok", "passed"):
-                    return (aid, nm)
-        return None
+                account = _unwrap_one(api._call("GET", f"/api/v1/admin/accounts/{aid}"))
+                verified = (account.get("id") == aid
+                            and str(account.get("status") or "").strip().lower() == "active"
+                            and account.get("schedulable") is True)
+            except Exception:
+                verified = False
+            if verified:
+                done += 1
+            else:
+                failed += 1
+    err = "有 %d 条恢复未能核实 active 与 schedulable=true，请检查实际状态。" % failed if failed else None
+    return done, len(targets), err
 
-    proven = []
-    workers = max(1, min(int(cfg.get("test_plan_workers", 8) or 8), 8))
-    if len(cands) > 1 and workers > 1:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for got in pool.map(proven_ok, cands):
-                if got:
-                    proven.append(got)
-    else:
-        for c in cands:
-            got = proven_ok(c)
-            if got:
-                proven.append(got)
 
-    if not proven or dry_run:
-        return 0, len(proven), None
+def _recovery_snapshot(account):
+    """Conservative observable configuration guard; GET/PUT is not atomic CAS."""
+    fields = ("id", "name", "status", "schedulable", "credentials", "proxy_id",
+              "notes", "extra", "platform", "type", "group_ids",
+              "temp_unschedulable_until", "temp_unschedulable_reason", "rate_limited_at", "rate_limit_reset_at",
+              "overload_until", "updated_at", "priority", "rate_multiplier",
+              "concurrency", "load_factor", "expires_at", "auto_pause_on_expired", "error_message")
+    return json.dumps({k: account.get(k) for k in fields}, sort_keys=True,
+                      ensure_ascii=False, separators=(",", ":"))
 
-    # sub2api 无批量更新 API，逐条调用 update_account
-    done = 0
-    for aid, nm in proven:
+
+def _recovery_runtime_block(account, now=None):
+    """Expired known deadlines are harmless; ambiguous runtime state is not."""
+    from datetime import datetime
+    now = time.time() if now is None else now
+    for field in ("temp_unschedulable_until", "rate_limit_reset_at", "overload_until"):
+        value = account.get(field)
+        if value in (None, ""):
+            continue
         try:
-            api.update_account(aid, {"status": "active", "schedulable": True})
+            instant = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if instant.tzinfo is None or instant.timestamp() > now:
+                return True
+        except (TypeError, ValueError, OverflowError):
+            return True
+    if account.get("rate_limited_at") and not account.get("rate_limit_reset_at"):
+        return True
+    if account.get("rate_limited_at"):
+        try:
+            started = datetime.fromisoformat(str(account["rate_limited_at"]).replace("Z", "+00:00"))
+            if started.tzinfo is None or started.timestamp() > now:
+                return True
+        except (TypeError, ValueError, OverflowError):
+            return True
+    if account.get("temp_unschedulable_reason") and not account.get("temp_unschedulable_until"):
+        return True
+    extra = account.get("extra") or {}
+    return bool(extra.get("model_rate_limits") or extra.get("antigravity_quota_scopes"))
+
+
+def _current_error_recovery_record(account, cfg):
+    """Error recovery needs the still-declared source key, not only old metadata."""
+    with io.open(CONFIG_YAML, encoding="utf-8-sig") as source:
+        document = _yaml().safe_load(source)
+    if not isinstance(document, dict):
+        raise ValueError("invalid current source")
+    records, dropped = collect(document)
+    for record in records:
+        record["_source_scope"] = _source_scope(cfg)
+    assign_names(records)
+    matched = [record for record in records if record.get("name") == account.get("name")
+               and account_matches_source(account, record)]
+    if len(matched) != 1 or matched[0].get("disabled") or serves_nothing(matched[0]):
+        raise ValueError("error account is not an enabled current source record")
+    record = matched[0]
+    weight = record.get("weight")
+    if (str((document.get("routing") or {}).get("strategy") or "").lower() == "weighted-round-robin"
+            and _is_int(weight) and weight <= 0):
+        raise ValueError("current source excludes zero-weight credentials")
+    mapping = build_model_mapping(record.get("models_raw"), record.get("excluded"), record.get("platform"),
+                                  source_section=record.get("source_section") or record.get("section"))
+    if "cpa2sub2api_original_source" in (account.get("extra") or {}):
+        import request_relay
+        mapping = request_relay.relay_model_mapping(record, mapping)
+        _, _, route, _ = _relay_account_diagnostic_context(account, cfg)
+        mapping = request_relay.diagnostic_model_mapping(route, mapping)
+    if not mapping or (account.get("credentials") or {}).get("model_mapping") != mapping:
+        raise ValueError("error account model policy is stale; sync source first")
+    return record
+
+
+def _successful_test_stream(raw):
+    """Accept only an explicit successful terminal SSE event, never HTML/cron."""
+    if not isinstance(raw, str):
+        return False
+    raw = raw.replace("\r\n", "\n")
+    if not raw.endswith("\n\n"):
+        return False
+    events = []
+    try:
+        for block in raw.split("\n\n"):
+            data = "\n".join(line[5:].lstrip() for line in block.splitlines()
+                             if line.startswith("data:"))
+            if data:
+                event = json.loads(data)
+                if not isinstance(event, dict):
+                    return False
+                events.append(event)
+    except (ValueError, TypeError):
+        return False
+    return bool(events and events[-1].get("type") == "test_complete"
+                and events[-1].get("success") is True
+                and not any(e.get("type") == "error" or e.get("success") is False
+                            for e in events))
+
+
+def probe_import_recovery(api, name_to_id, cfg, section_by_name=None):
+    """Fresh per-invocation evidence for exact imported IDs, with bounded workers.
+
+    The upstream test route may clear error/rate-limit state itself. Only active
+    or inactive accounts without cooldown are candidates; any observed state or
+    configuration change causes a conservative skip before our explicit write.
+    A protocol test success is not proof of all model business outputs.
+    """
+    section_by_name = section_by_name or {}
+    authorized_ids = {value for value in cfg.get("explicit_recovery_account_ids", [])
+                      if isinstance(value, int) and not isinstance(value, bool) and value > 0}
+    def probe(item):
+        name, aid = item
+        if aid not in authorized_ids:
+            return aid, None, None
+        try:
+            account = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%s" % aid))
+            if not probe_policy.probe_allowed(account_probe_base_url(account), cfg):
+                return aid, None, None
+            scope = _policy_source_scope(cfg)
+            if scope is not None and account_source_scope(account) != scope:
+                return aid, None, "账号不属于当前来源，未探测或恢复"
+            if account.get("id") != aid or not _is_migrated(account):
+                return aid, None, "账号归属或 ID 不匹配"
+            if (account.get("extra") or {}).get("synthetic_ui_test") is True:
+                return aid, None, "合成 UI 测试账号不可作为真实探活证据"
+            status = str(account.get("status") or "").strip().lower()
+            if status not in ("active", "inactive", "error"):
+                return aid, None, None
+            if status == "error" and not cfg.get("_explicit_error_recovery"):
+                return aid, None, None
+            if status == "error" and account.get("schedulable") is not False:
+                return aid, None, "error账号调度状态不是明确关闭，需先检查，未自动清错"
+            if status == "active" and account.get("schedulable") is not False:
+                return aid, None, None
+            if status == "inactive" and not cfg.get("revive_proven_inactive", True):
+                return aid, None, None
+            if _recovery_runtime_block(account):
+                return aid, None, "账号仍有冷却状态，保留原状"
+            if "cpa2sub2api_original_source" not in (account.get("extra") or {}):
+                return aid, None, "原生账号检测需开启 REQUEST_RELAY_ENABLED 和 REQUEST_RELAY_FORCE_ALL_ACCOUNTS 后同步此站；普通 Direct 业务保持可用"
+            error_record = _current_error_recovery_record(account, cfg) if status == "error" else None
+            model = _pick_probe_model((account.get("credentials") or {}).get("model_mapping"),
+                                      account.get("platform"), section_by_name.get(name))
+            if not model:
+                return aid, None, "持久化账号缺少可测试模型"
+            snapshot = _recovery_snapshot(account)
+            live = resolve_probe_policy(cfg)
+            if not probe_policy.probe_allowed(account_probe_base_url(account), live):
+                return aid, None, "站点授权已撤销"
+            success = _test_relay_account_exact(account, model, live)
+            if not success:
+                return aid, None, "本轮即时探活未获得完整成功事件"
+            current = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%s" % aid))
+            if _recovery_snapshot(current) != snapshot:
+                return aid, None, "探活期间状态或配置发生变化，跳过显式恢复"
+            return aid, {"snapshot": snapshot, "status": status, "success": True,
+                         "error_source_provenance": _probe_record_provenance(error_record) if error_record else None,
+                         "recovery_authorized": True,
+                         "live_policy": cfg.get("_live_probe_policy", False),
+                         "policy": {key: copy.deepcopy(cfg[key]) for key in (
+                             "_live_probe_policy", "source_scope", "request_relay_source_scope", "request_relay",
+                             "model_probe_enabled", "online_probe_hosts", "auto_recover_enabled") if key in cfg},
+                         "source_scope": _policy_source_scope(cfg),
+                         "host": probe_policy.normalize_host(account_probe_base_url(account))}, None
+        except Exception:
+            return aid, None, "本轮即时探活或状态读取失败"
+    evidence, failures = {}, []
+    workers = max(1, min(int(cfg.get("test_plan_workers", 8) or 8), 8))
+    # Stable IDs are tested once even when names alias the same account.
+    unique = dict((aid, name) for name, aid in name_to_id.items() if aid)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for aid, result, reason in pool.map(probe, ((name, aid) for aid, name in unique.items())):
+            if result:
+                evidence[aid] = result
+            if reason:
+                failures.append((aid, reason))
+    return evidence, failures
+
+
+def _restore_from_job(api, evidence, status, dry_run, batch):
+    candidates = [(aid, e) for aid, e in (evidence or {}).items()
+                  if e.get("success") is True and e.get("status") == status
+                  and e.get("recovery_authorized") is True]
+    if dry_run:
+        return 0, len(candidates), None
+    done, failed = 0, 0
+    for aid, entry in candidates:
+        try:
+            if entry.get("live_policy"):
+                live = load_settings()
+                if (not probe_policy.probe_allowed(entry.get("host"), live)
+                        or entry.get("source_scope") is not None and _source_scope(live) != entry["source_scope"]):
+                    failed += 1
+                    continue
+            current = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%s" % aid))
+            if current.get("id") != aid or _recovery_snapshot(current) != entry.get("snapshot"):
+                failed += 1
+                continue
+            policy = entry.get("policy")
+            if policy is None and entry.get("live_policy"):
+                policy = {"_live_probe_policy": True, "model_probe_enabled": True,
+                          "online_probe_hosts": {entry.get("host"): True}}
+                if entry.get("source_scope") is not None:
+                    policy["source_scope"] = entry["source_scope"]
+            guard = _account_probe_write_guard(api, current, policy)
+            with _guarded_admin_write(guard):
+                count, _, error = _restore_schedulable_verified(api, [aid],
+                                            activate=status == "inactive", batch=batch)
+            done += count
+            failed += bool(error)
+        except Exception:
+            failed += 1
+    return done, len(candidates), ("有 %d 条状态变化或恢复未核实，已保留失败记录。" % failed if failed else None)
+
+
+def _restore_error_from_job(api, evidence):
+    """Clear only explicitly tested errors, then separately restore scheduling."""
+    done, failed = 0, 0
+    for aid, entry in (evidence or {}).items():
+        if entry.get("status") != "error" or entry.get("success") is not True or not entry.get("recovery_authorized"):
+            continue
+        try:
+            policy = entry["policy"]
+            current = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+            if _recovery_snapshot(current) != entry["snapshot"] or current.get("status") != "error":
+                raise ProbeAuthorityRevoked("error changed after probe")
+            source_digest = entry["error_source_provenance"]
+            def guard_for(account):
+                base_guard = _account_probe_write_guard(api, account, policy, require_clear_runtime=True)
+                def guard():
+                    base_guard()
+                    record = _current_error_recovery_record(account, resolve_probe_policy(policy))
+                    if _probe_record_provenance(record) != source_digest:
+                        raise ProbeAuthorityRevoked("error source changed after probe")
+                return guard
+            with _guarded_admin_write(guard_for(current)):
+                api._call("POST", "/api/v1/admin/accounts/%d/clear-error" % aid)
+            cleared = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+            expected = dict(current, status="active", error_message="", updated_at=cleared.get("updated_at"))
+            # The official endpoint also discards known expired runtime metadata.
+            for field in ("temp_unschedulable_until", "temp_unschedulable_reason", "rate_limited_at",
+                          "rate_limit_reset_at", "overload_until"):
+                if cleared.get(field) in (None, ""):
+                    expected[field] = cleared.get(field)
+            if (_recovery_runtime_block(cleared) or cleared.get("error_message") != ""
+                    or _recovery_snapshot(cleared) != _recovery_snapshot(expected)):
+                raise ProbeAuthorityRevoked("clear error changed unrelated state")
+            with _guarded_admin_write(guard_for(cleared)):
+                count, _, error = _restore_schedulable_verified(api, [aid])
+            final = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+            expected_final = dict(cleared, schedulable=True, updated_at=final.get("updated_at"))
+            if (count != 1 or error or final.get("error_message") != "" or _recovery_runtime_block(final)
+                    or _recovery_snapshot(final) != _recovery_snapshot(expected_final)):
+                raise ValueError("error recovery was not fully verified")
             done += 1
-        except ApiError as ex:
-            # 某条失败不中断整批，收集首个错误返回
-            if done == 0:
-                return 0, len(proven), "HTTP %s %s" % (ex.status, ex.body[:120])
-        except Exception as ex:
-            if done == 0:
-                return 0, len(proven), str(ex)[:120]
-    return done, len(proven), None
+        except Exception:
+            # Clearing may have succeeded while scheduling remains closed.
+            failed += 1
+    return done, failed
+
+
+def reclaim_schedulable(api, dry_run=False, batch=50, evidence=None):
+    """Only exact current-job IDs with fresh successful probes may be restored."""
+    return _restore_from_job(api, evidence, "active", dry_run, batch)
+
+
+def revive_proven_inactive(api, cfg, dry_run=False, batch=50, evidence=None):
+    """Default enabled; historical scheduled-test results never authorize writes."""
+    if not cfg.get("revive_proven_inactive", True):
+        return 0, 0, None
+    return _restore_from_job(api, evidence, "inactive", dry_run, batch)
 
 
 def _unwrap_one(resp):
@@ -4017,7 +5729,7 @@ def _unwrap_list(resp):
     return []
 
 
-def find_stale_accounts(api, recs):
+def find_stale_accounts(api, recs, hosts=None):
     """找出"本工具导过、但当前 config.yaml 里已经没有对应凭据"的僵尸账号。
 
     成因：账号名是 `前缀-主机-指纹`（assign_names），指纹取自完整 api_key
@@ -4040,14 +5752,106 @@ def find_stale_accounts(api, recs):
     if err:
         return [], err
     want = {r["name"] for r in recs}
+    scopes = {r["_source_scope"] for r in recs if "_source_scope" in r}
+    if len(scopes) > 1:
+        return [], "配置混合多个来源，拒绝判断旧账号"
     stale = []
     for a in accs:
         if not _is_migrated(a):
+            continue
+        if ((a.get("extra") or {}).get("cpa2sub2api_source") or {}).get("kind") == "legacy_claim":
+            continue  # A short historical fingerprint cannot authorize deletion.
+        if scopes:
+            try:
+                if account_source_scope(a) not in scopes:
+                    continue
+            except (ValueError, RuntimeError):
+                return [], "账号来源归属损坏，拒绝判断旧账号"
+        if hosts is not None and probe_policy.normalize_host(account_probe_base_url(a)) not in hosts:
             continue
         nm = str(a.get("name") or "")
         if nm and nm not in want:
             stale.append(a)
     return stale, None
+
+
+def prune_stale_accounts(api, recs, dry_run=False, hosts=None):
+    """Remove only exact sentinel-owned stale/duplicate accounts after full reads.
+
+    Empty plans are never deletion authority. Each candidate is reread before
+    deletion so a concurrent edit or ownership change cancels that deletion.
+    """
+    if not recs or any(not r.get("name") or not r.get("api_key") for r in recs):
+        return [], [("plan", "配置为空或存在不完整条目，拒绝删除")]
+    rows, error = _fetch_all_accounts(api)
+    if error:
+        return [], [("snapshot", "账号列表读取不完整，拒绝删除")]
+    scopes = {r["_source_scope"] for r in recs if "_source_scope" in r}
+    if len(scopes) > 1 or scopes and any("_source_scope" not in r for r in recs):
+        return [], [("plan", "来源配置不一致，拒绝删除")]
+    if scopes:
+        try:
+            rows = [row for row in rows if _is_migrated(row) and account_source_scope(row) in scopes]
+        except (ValueError, RuntimeError):
+            return [], [("ownership", "账号来源归属损坏，拒绝删除")]
+    if hosts is not None:
+        try:
+            rows = [row for row in rows if probe_policy.normalize_host(account_probe_base_url(row)) in hosts]
+        except (ValueError, RuntimeError):
+            return [], [("ownership", "单站账号来源归属损坏，拒绝删除")]
+    desired = {r["name"] for r in recs}
+    keep_ids = {}
+    for row in sorted(rows, key=lambda a: a.get("id") or 0):
+        if _is_migrated(row) and row.get("name") in desired:
+            keep_ids.setdefault(row["name"], row.get("id"))
+    # Do not remove old credentials until every new configuration entry exists.
+    if set(keep_ids) != desired:
+        return [], [("snapshot", "新配置账号未全部持久化，拒绝删除")]
+    candidates = [row for row in rows if _is_migrated(row)
+                  and ((row.get("extra") or {}).get("cpa2sub2api_source") or {}).get("kind") != "legacy_claim"
+                  and (row.get("name") not in desired
+                       or row.get("id") != keep_ids.get(row.get("name")))]
+    if dry_run:
+        return [{"id": row.get("id"), "name": row.get("name")} for row in candidates], []
+    removed, failures = [], []
+    for row in candidates:
+        aid = row.get("id")
+        if not isinstance(aid, int) or isinstance(aid, bool) or aid <= 0:
+            failures.append(("account", "删除候选 id 无效"))
+            continue
+        try:
+            fresh = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+            if (not _is_migrated(fresh) or fresh.get("id") != aid
+                    or _recovery_snapshot(fresh) != _recovery_snapshot(row)):
+                raise ValueError("candidate changed")
+            if scopes and account_source_scope(fresh) not in scopes:
+                raise ValueError("source ownership changed")
+            def guard():
+                latest = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+                if (latest.get("id") != aid or not _is_migrated(latest)
+                        or _recovery_snapshot(latest) != _recovery_snapshot(row)
+                        or scopes and account_source_scope(latest) not in scopes):
+                    raise ProbeAuthorityRevoked("prune candidate changed")
+                _require_no_shadow_dependencies(api, latest)
+            try:
+                with _guarded_admin_write(guard):
+                    api.delete_account(aid)
+            except Exception:
+                # DELETE may have applied despite a lost response; the final
+                # readback decides success without retrying a broad cleanup.
+                pass
+            try:
+                result = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+            except ApiError as missing:
+                if missing.status != 404:
+                    raise
+                result = {}
+            if result.get("id") == aid:
+                raise ValueError("deletion not verified")
+            removed.append({"id": aid, "name": row.get("name")})
+        except Exception:
+            failures.append(("account-%s" % aid, "删除失败、候选已变化或删除未能读回确认"))
+    return removed, failures
 
 
 def _cron_with_offset(cron, offset):
@@ -4097,7 +5901,10 @@ def _pick_probe_model(model_mapping, platform, source_section=None):
     if not model_mapping or not isinstance(model_mapping, dict):
         return None
 
-    keys = [str(k) for k in model_mapping.keys()]
+    from relay.config import is_diagnostic_model_marker
+    keys = [str(k) for k in model_mapping.keys() if not is_diagnostic_model_marker(str(k))]
+    if not keys:
+        return None
     if not MODEL_SELECTION_AVAILABLE or not platform:
         return keys[0] if keys else None
 
@@ -4114,172 +5921,123 @@ def _pick_probe_model(model_mapping, platform, source_section=None):
     return names[0] if names else None
 
 
+def _strict_test_plans(response):
+    """Reject API error envelopes; an error cannot prove absence of live plans."""
+    if isinstance(response, dict):
+        if response.get("code") not in (None, 0, 200):
+            raise ValueError("plan list error envelope")
+        if "data" not in response:
+            raise ValueError("plan list missing data")
+        response = response["data"]
+        if isinstance(response, dict):
+            for key in ("items", "list", "plans"):
+                if key in response:
+                    response = response[key]
+                    break
+    if not isinstance(response, list) or any(not isinstance(plan, dict) or not plan.get("id")
+                                             for plan in response):
+        raise ValueError("invalid plan list")
+    return response
+
+
 def ensure_test_plans(api, name_to_id, cfg, dry_run=False, section_by_name=None):
-    """给账号挂上 sub2api 自带的定时探活计划（auto_recover=true）。
+    """Reconcile managed plans offline: explicit consent, weekly schedule, readback.
 
-    用上游已有的机制，不自己造轮子：sub2api 的 scheduled_test_plans 表
-    有 auto_recover 字段（migrations/070_add_scheduled_test_auto_recover.sql，
-    默认 false），runner 每分钟扫一遍，测试成功且该字段为真时调用
-    tryRecoverAccount -> RecoverAccountAfterSuccessfulTest，把账号从
-    error / rate-limited 状态里捞回来（scheduled_test_runner_service.go:133-168）。
-
-    但要说清楚它的**局限**：这条链路最终落到 ClearError，只还 status、
-    不还 schedulable（见 reclaim_schedulable 的详细说明）。所以探活计划
-    负责"把状态修回 active"，reclaim_schedulable 负责"把调度开关打开"，
-    两个是互补的，缺一不可，不能只配其中一个。
-
-    探活会真的向上游发请求、产生费用，所以默认 cron 是半小时一次，
-    且整个功能可以用 auto_recover_enabled=false 关掉。
-
-    返回 (成功数, 失败列表)。
+    Admin API reads/writes do not call the upstream. Revoked sites have existing
+    plans disabled even when the global switch or auto recovery is off.
     """
-    if not cfg.get("auto_recover_enabled", True):
-        return 0, []
-    cron = str(cfg.get("auto_recover_cron") or "*/30 * * * *").strip()
-    if not cron:
-        return 0, []
-
-    # 与其它三处并发一致地钳到 8。以前这里是裸的
-    # int(cfg.get(...))，用户把 test_plan_workers 配成 100 就会真起 100 个线程
-    # 同时打 /accounts/{id}，把 sub2api 和自己的连接池一起压垮。
-    max_workers = max(1, min(int(cfg.get("test_plan_workers", 8) or 8), 8))
-    items = [(nm, aid) for nm, aid in sorted(name_to_id.items()) if aid]
-
-    if dry_run:
-        return len(items), []
-
-    # 防测活 prompt 池（文档第 2 条⑷）。
-    #
-    # 为什么不能用"test"/"你好"/"你是什么模型"：那是测活系统的教科书特征，
-    # 一次就能被识别。
-    #
-    # 但换掉措辞只解决了一半。真正更强的机器特征是**调用模式的规律性**：
-    # 同一批账号在同一个 cron 时刻、用同一条 prompt、以相同节奏反复发问，
-    # 曲线平滑得像服务器监控图 —— 间隔方差为 0 本身就是异常信号。
-    # 所以这里做三件事：
-    #   1. prompt 池分中英双语、覆盖多种话题（单一语种的池在中文站里
-    #      反而是统计上的异常样本）；
-    #   2. 每次调用现场随机抽（见下面 random.choice）；
-    #   3. **给每个账号错开分钟偏移**（见 _cron_with_offset），
-    #      避免全部账号在同一分钟一起探活。
-    #
-    # 仍然保持简短：探活只需验证连通性，请求体越大越容易被限流。
-    anti_detect_prompts = [
-        # —— 英文 ——
-        "What's the weather like today?",
-        "Can you help me write an email?",
-        "Explain the concept of recursion with an example.",
-        "What are some healthy breakfast ideas for a busy morning?",
-        "How do I center a div using flexbox in CSS?",
-        "What's the difference between a list and a tuple in Python?",
-        "Suggest a good sci-fi book for beginners.",
-        "How can I improve my daily productivity at work?",
-        "Give me a simple recipe for tomato pasta.",
-        "How does HTTPS work in simple terms?",
-        "What are the best practices for writing clean code?",
-        "Explain what machine learning is in one paragraph.",
-        "What time does the sun rise today?",
-        "How do I convert a PDF to an editable document?",
-        "What should I look for when buying a used laptop?",
-        # —— 中文 ——
-        "今天北京的天气怎么样？",
-        "帮我把这句话改得更正式一些。",
-        "解释一下什么是递归，举个例子。",
-        "推荐几个适合上班族的简单早餐。",
-        "怎么用 CSS 让一个 div 水平居中？",
-        "Python 里列表和元组的区别是什么？",
-        "推荐一本适合入门看的书。",
-        "怎么提高工作效率？",
-        "写一段自我介绍，用于邮件开头。",
-        "解释一下 HTTPS 的基本原理。",
-        "什么是机器学习？用一段话说明。",
-        "帮我把下面这段话说得更简洁一点。",
-        "如何快速整理一份会议纪要？",
-        "解释一下什么是数据库索引。",
-        "有什么办法能减少日常的重复工作？",
-    ]
-
-    def create_test_plan_for_account(nm, aid):
-        """为单个账号创建探活计划"""
+    failures, reconciled = [], 0
+    for name, aid in sorted(name_to_id.items()):
+        if not aid:
+            continue
         try:
-            # 单对象接口带信封 {code,data,message}，必须 unwrap。
-            # 不 unwrap 时 credentials/platform 恒为 None，下面会一路
-            # "未找到可用模型"，231 条计划全部挂载失败（实测 2026-09-19）。
-            acc = _unwrap_one(api._call("GET", f"/api/v1/admin/accounts/{aid}"))
-        except Exception as ex:
-            return nm, False, f"获取账号失败: {str(ex)[:60]}"
-
-        creds = acc.get("credentials", {})
-        model_mapping = creds.get("model_mapping", {})
-        model_id = None
-        platform = acc.get("platform", "")
-        # 探活挑哪个模型来打，必须和账号白名单用的是**同一套就高规则**。
-        # 以前这里有第三份独立拷贝：gemini 正则、claude 的 `-5` 字面、
-        # openai 的 [r'^gpt-6', r'^o3-', r'^gpt-5'] 全部手写在这里，
-        # 与 model_selection.py 各改各的。后果是探活可能挑一个白名单里
-        # 根本没放行的模型（比如白名单已按当代门槛裁到 gpt-7，探活还在打 gpt-6），
-        # 那类失败会被误读成"账号不可用"。
-        # 现在统一走 model_selection，门槛也跟随上游同步。
-        model_id = _pick_probe_model(
-            model_mapping, platform,
-            source_section=(section_by_name or {}).get(nm))
-
-        if not model_id and model_mapping:
-            model_id = next(iter(model_mapping.keys()))
-
-        if not model_id:
-            return nm, False, "未找到可用模型"
-
-        import random
-        test_prompt = random.choice(anti_detect_prompts)
-
-        # 用账号名派生一个稳定的分钟偏移：同一账号每次得到同一个偏移
-        # （计划是幂等的，重复运行不该把已排好的时刻改来改去），
-        # 而不同账号之间会散开，避免全部账号在同一分钟一起探活。
-        # 用 sha1 而不是内置 hash()：后者在 Python 3 里带进程随机盐，
-        # 同一账号每次运行会得到不同偏移，正是要避免的。
-        off = int(hashlib.sha1(str(nm).encode("utf-8")).hexdigest()[:4], 16)
-        my_cron = _cron_with_offset(cron, off)
-
-        body = {"account_id": aid, "cron_expression": my_cron,
-                "enabled": True, "auto_recover": True,
-                "model_id": model_id,
-                "prompt": test_prompt}
-        try:
-            api.create_test_plan(body)
-            return nm, True, None
-        except ApiError as ex:
-            if ex.status == 409 or "exist" in ex.body.lower():
-                return nm, True, None
-            return nm, False, "HTTP %s %s" % (ex.status, ex.body[:80])
-        except Exception as ex:
-            return nm, False, str(ex)[:80]
-
-    ok, fail = 0, []
-
-    if len(items) > 1 and max_workers > 1:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(create_test_plan_for_account, nm, aid): (nm, aid)
-                      for nm, aid in items}
-
-            for future in as_completed(futures):
+            account = _unwrap_one(api._call("GET", f"/api/v1/admin/accounts/{aid}"))
+            if account.get("id") != aid or not _is_migrated(account):
+                raise ValueError("unmanaged account")
+            credentials = account.get("credentials") or {}
+            live = resolve_probe_policy(cfg)
+            scope = _source_scope(live)
+            if (scope is not None and account_source_scope(account) != scope
+                    and _truthy(live.get("model_probe_enabled", False))):
+                continue
+            allowed = (_truthy(live.get("auto_recover_enabled", True))
+                       and probe_policy.probe_allowed(account_probe_base_url(account), live))
+            model = _pick_probe_model(credentials.get("model_mapping"),
+                                      account.get("platform"),
+                                      (section_by_name or {}).get(name)) if allowed else None
+            allowed = bool(allowed and model)
+            diagnostic_problem = None
+            if allowed:
                 try:
-                    nm, success, error = future.result()
-                    if success:
-                        ok += 1
+                    model = _native_scheduled_diagnostic_model(account, model, live)
+                except (ValueError, OSError) as error:
+                    allowed = False
+                    model = None
+                    diagnostic_problem = str(error)
+            offset = int(hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:4], 16)
+            desired = {"enabled": allowed, "auto_recover": allowed,
+                       "cron_expression": probe_policy.weekly_cron(
+                           cfg.get("auto_recover_cron"), offset)}
+            if model:
+                desired["model_id"] = model
+            plans = _strict_test_plans(api.list_test_plans(aid))
+            if not isinstance(plans, list) or any(not isinstance(p, dict) or not p.get("id")
+                                                  for p in plans):
+                raise ValueError("invalid plans")
+            if diagnostic_problem:
+                failures.append((name, "原生周检测需已启用并同步的安全 relay：" + diagnostic_problem))
+            if dry_run:
+                reconciled += int(bool(plans or allowed))
+                continue
+            if not plans and allowed:
+                try:
+                    with _guarded_admin_write(_account_probe_write_guard(api, account, cfg, require_auto_recover=True)):
+                        api.create_test_plan(dict(desired, account_id=aid))
+                except ProbeAuthorityRevoked:
+                    continue
+                except ApiError as ex:
+                    if ex.status != 409:
+                        raise
+                # Creation conflict is not success: discover then reconcile.
+                plans = _strict_test_plans(api.list_test_plans(aid))
+                if not plans:
+                    raise ValueError("creation not verified")
+            for plan in plans:
+                if not plan.get("id"):
+                    raise ValueError("plan id missing")
+                live = resolve_probe_policy(cfg)
+                if not (_truthy(live.get("auto_recover_enabled", True))
+                        and probe_policy.probe_allowed(account_probe_base_url(account), live)
+                        and (scope is None or (live.get("_current_source_scope", _policy_source_scope(live)) == scope
+                                               and account_source_scope(account) == scope))):
+                    desired.update(enabled=False, auto_recover=False)
+                patch = {key: val for key, val in desired.items() if plan.get(key) != val}
+                if patch:
+                    path = "/api/v1/admin/scheduled-test-plans/%d" % plan["id"]
+                    if desired["enabled"] or desired["auto_recover"]:
+                        try:
+                            with _guarded_admin_write(_account_probe_write_guard(
+                                    api, account, cfg, require_auto_recover=True, plan_id=plan["id"])):
+                                api._call("PUT", path, patch)
+                        except ProbeAuthorityRevoked:
+                            # A delayed enable may have been accepted despite a
+                            # retryable response. Reconcile it to the safe state.
+                            desired.update(enabled=False, auto_recover=False)
+                            with _guarded_admin_write(_account_probe_write_guard(api, account, plan_id=plan["id"])):
+                                api._call("PUT", path, {"enabled": False, "auto_recover": False})
                     else:
-                        fail.append((nm, error))
-                except Exception as ex:
-                    nm, aid = futures[future]
-                    fail.append((nm, str(ex)[:80]))
-    else:
-        for nm, aid in items:
-            nm, success, error = create_test_plan_for_account(nm, aid)
-            if success:
-                ok += 1
-            else:
-                fail.append((nm, error))
-    return ok, fail
+                        with _guarded_admin_write(_account_probe_write_guard(api, account, plan_id=plan["id"])):
+                            api._call("PUT", path, patch)
+            if plans:
+                checked = _strict_test_plans(api.list_test_plans(aid))
+                by_id = {p.get("id"): p for p in checked if isinstance(p, dict)}
+                if any(any(by_id.get(p["id"], {}).get(k) != v for k, v in desired.items())
+                       for p in plans):
+                    raise ValueError("plan readback mismatch")
+                reconciled += 1
+        except Exception:
+            failures.append((name, "探活计划校准失败，未能核实停用或周频状态"))
+    return reconciled, failures
 
 
 def plan_fallback_chain(recs, groups):
@@ -4378,19 +6136,28 @@ def apply_fallback_chain(api, chain, gmap, dry_run=False):
     for g in order:
         tgt = chain[g]
         gid, tid = gmap.get(g), gmap.get(tgt)
-        if not gid or not tid:
+        if not _is_int(gid) or gid <= 0 or not _is_int(tid) or tid <= 0:
             fail.append((g, "分组 id 缺失，跳过降级设置"))
             continue
-        if dry_run:
-            ok += 1
-            continue
         try:
+            current = _unwrap_one(api.get_group(gid))
+            if current.get("id") != gid:
+                raise ValueError("fallback group identity mismatch")
+            value = current.get("fallback_group_id")
+            if _is_int(value) and value == tid:
+                continue
+            if dry_run:
+                ok += 1
+                continue
             api.update_group(gid, {"fallback_group_id": tid})
+            actual = _unwrap_one(api.get_group(gid))
+            if actual.get("id") != gid or not _is_int(actual.get("fallback_group_id")) or actual["fallback_group_id"] != tid:
+                raise ValueError("fallback field readback mismatch")
             ok += 1
         except ApiError as ex:
-            fail.append((g, "HTTP %s %s" % (ex.status, ex.body[:80])))
-        except Exception as ex:
-            fail.append((g, str(ex)[:80]))
+            fail.append((g, "降级分组同步失败：HTTP %s" % ex.status))
+        except Exception:
+            fail.append((g, "降级分组读取、更新或读回校验失败，未计成功"))
     return ok, fail
 
 
@@ -4581,7 +6348,7 @@ def push_pricing(api, prices, gmap, group_platforms, dry_run=False,
     return ok, same, fail, detail
 
 
-def _fetch_all_accounts(api):
+def _fetch_all_accounts(api, require_total=False):
     """翻页取回全部账号。返回 (账号列表, 出错信息或 None)。
 
     以 total 为准而不是"某页不足 page_size 就收工"：后者假设服务端严格返回
@@ -4592,20 +6359,27 @@ def _fetch_all_accounts(api):
     while page <= 1000:
         try:
             d = api.list_accounts(page, size)
-        except ApiError as ex:
-            return out, "读账号列表失败：HTTP %s %s" % (ex.status, ex.body[:160])
+        except Exception:
+            return out, "读账号列表失败，未取得完整快照"
+        if not isinstance(d, dict) or d.get("code") not in (None, 0, 200) or "data" not in d:
+            return out, "账号列表返回错误或缺少数据"
         data = d.get("data")
         if isinstance(data, list):
             items, page_total = data, None
         elif isinstance(data, dict):
-            items = (data.get("items") or data.get("list")
-                     or data.get("accounts") or data.get("records") or [])
+            items = next((data[key] for key in ("items", "list", "accounts", "records")
+                          if key in data), None)
             page_total = data.get("total")
         else:
-            items, page_total = [], None
+            return out, "账号列表数据结构无效"
+        if not isinstance(items, list) or any(not isinstance(x, dict) for x in items):
+            return out, "账号列表包含无效项"
+        if require_total and (not _is_int(page_total) or page_total < 0
+                              or total is not None and page_total != total):
+            return out, "破坏性操作需要完整且稳定的账号总数"
         if total is None and isinstance(page_total, int):
             total = page_total
-        out.extend(x for x in items if isinstance(x, dict))
+        out.extend(items)
         if not items:
             break
         if total is not None and len(out) >= total:
@@ -4616,6 +6390,9 @@ def _fetch_all_accounts(api):
 
     if total is not None and len(out) != total:
         return out, "账号列表取不全：服务端报 %d 条，实际拿到 %d 条" % (total, len(out))
+    ids = [row.get("id") for row in out]
+    if len(ids) != len(set(ids)):
+        return out, "账号列表重复id，快照不完整"
     return out, None
 
 
@@ -4935,55 +6712,26 @@ UPSTREAM_FILES = {
 
 
 def fetch_upstream_src(s, verbose=True):
-    """本地没有上游源码时，从 GitHub 取回提取常量所需的那几个文件。
-
-    为什么需要：本工具的「自动跟随上游」是靠读 Go 源码实现的
-    （见 sync_constants）。如果用户把本地源码目录删了，就只能退回内置
-    兜底值——那正是我们想摆脱的硬编码。在线抓取让这件事不依赖本地副本。
-
-    缓存到 out/upstream-cache/ 下，结构与原仓库一致，之后可离线复用。
-    只在缓存缺失时联网；想强制刷新就删掉缓存目录。
-
-    任何一步失败都不抛异常，返回 (缓存根目录或 None, 提示列表)——
-    调用方会继续降级到内置值，并把原因打出来。
-    """
-    if not s.get("fetch_upstream_src", True):
-        return None, None, ["已按配置关闭在线抓取上游源码"]
-
+    """Refresh reviewed, commit-pinned source evidence; never auto-upgrade."""
     root = os.path.join(OUT_DIR, "upstream-cache")
     msgs = []
     out = {}
     for kind, base_key in (("sub2api", "sub2api_repo"), ("cpa", "cpa_repo")):
-        base = (s.get(base_key) or "").rstrip("/")
-        if not base:
+        spec = upstream_contract.PINNED[kind]
+        configured = (s.get(base_key) or DEFAULTS[base_key]).rstrip("/")
+        legacy = "https://raw.githubusercontent.com/%s/main%s" % (
+            spec["repo"], "/" + spec["prefix"] if spec["prefix"] else "")
+        if configured not in (DEFAULTS[base_key], legacy):
+            msgs.append("%s 非已核对来源；请先核对固定版本合同，不抓取可变源码" % kind)
             continue
-        local_root = os.path.join(root, kind)
-        got, missed = 0, []
-        for rel in UPSTREAM_FILES[kind]:
-            dst = os.path.join(local_root, rel.replace("/", os.sep))
-            if os.path.exists(dst) and os.path.getsize(dst) > 0:
-                got += 1
-                continue
-            try:
-                st, raw = _http("GET", base + "/" + rel, timeout=30)
-                if st != 200 or not raw.strip():
-                    missed.append(rel)
-                    continue
-                d = os.path.dirname(dst)
-                if d:
-                    os.makedirs(d, exist_ok=True)
-                with io.open(dst, "w", encoding="utf-8", newline="\n") as f:
-                    f.write(raw)
-                got += 1
-            except Exception as ex:
-                missed.append("%s（%s）" % (rel, str(ex)[:60]))
-        if got:
-            out[kind] = local_root
-            msgs.append("已从 GitHub 取回 %s 的 %d/%d 个源码文件（缓存在 %s）"
-                        % (kind, got, len(UPSTREAM_FILES[kind]), local_root))
-        if missed:
-            msgs.append("! %s 有 %d 个文件取不到：%s"
-                        % (kind, len(missed), "、".join(missed[:3])))
+        snapshot, warnings = upstream_contract.cached_or_refresh(
+            root, kind, spec, _http, ttl=s.get("upstream_cache_ttl_seconds", upstream_contract.CACHE_TTL),
+            offline=not _truthy(s.get("fetch_upstream_src", True)) or bool(s.get("_request_relay_preview")))
+        msgs.extend("%s: %s" % (kind, warning) for warning in warnings)
+        if snapshot:
+            out[kind] = snapshot["root"]
+            msgs.append("%s 固定合同 %s commit=%s extracted_at=%s；完整源码摘要已核对" % (
+                kind, snapshot["tag"], snapshot["commit"], snapshot["extracted_at"]))
     return out.get("sub2api"), out.get("cpa"), msgs
 
 
@@ -5004,6 +6752,21 @@ def sync_constants(s, verbose=True):
     sub_src = s.get("sub2api_src") or SUB2API_SRC
     cpa_src = s.get("cpa_src") or CPA_SRC
 
+    # A source check explicitly authorized online is the automatic discovery
+    # mode. Preview/import construction never calls this network path.
+    if _truthy(s.get("fetch_upstream_src", True)) and not s.get("_request_relay_preview"):
+        version_report, _ = upstream_contract.check_releases(
+            os.path.join(OUT_DIR, "upstream-cache"), _http,
+            ttl=s.get("upstream_cache_ttl_seconds", upstream_contract.CACHE_TTL))
+        for kind, item in version_report["upstreams"].items():
+            release = item.get("available_release") or item.get("last_available_release")
+            if release:
+                msgs.append("%s 最新可用版本证据 %s commit=%s%s；执行仍用固定合同 %s" % (
+                    kind, release["tag"], release["commit"],
+                    "（已过期/本次未确认）" if item.get("latest_evidence_stale") else "",
+                    upstream_contract.PINNED[kind]["tag"]))
+            msgs.extend("%s: %s" % (kind, warning) for warning in item.get("warnings", []))
+
     if not os.path.exists(sub_src):
         # 本地没有源码目录：先试在线抓取，取到了照样能同步契约，
         # 取不到才降级到内置值。三级降级的中间那一级就是这里。
@@ -5019,12 +6782,33 @@ def sync_constants(s, verbose=True):
                         % sub_src)
             return False, msgs
 
+    proofs = {"sub2api": upstream_contract.source_evidence(sub_src, "sub2api"),
+              "cpa": upstream_contract.source_evidence(cpa_src, "cpa")}
+    errors = ["%s 未核对源码合同：%s；禁止写入和删除" % (
+        kind, "、".join(proof["unverified_files"])) for kind, proof in proofs.items()
+        if proof["status"] == "review_required"]
+    s["_upstream_contract_errors"] = errors
+    s["_upstream_contract_evidence"] = proofs
+    s["_runtime_cpa_src"] = cpa_src
+    s["_runtime_sub2api_src"] = sub_src
+    if errors:
+        msgs.extend(errors)
+        return False, msgs
+
     try:
         import extract as ext
         c = ext.get_constants(sub_src, cpa_src)
     except Exception as ex:
         msgs.append("常量提取失败（%s），改用内置常量。" % str(ex)[:120])
         return False, msgs
+
+    _, capability_drift = cpa_capability_issues({}, dict(s, cpa_src=cpa_src))
+    msgs.extend(capability_drift)
+    for section, fields in (c.get("cpa_sections") or {}).items():
+        added_fields = set(fields) - set(CPA_MANAGED_FIELDS.get(section, ()))
+        if added_fields:
+            msgs.append("CPA %s 新增字段尚未适配：%s；不能将源码字段清单当作运行支持" % (
+                section, "、".join(sorted(added_fields))))
 
     added = set(c["header_blacklist"]) - set(HEADER_BLACKLIST)
     removed = set(HEADER_BLACKLIST) - set(c["header_blacklist"])
@@ -5154,6 +6938,440 @@ def act_import_menu(s):
     print_import_summary(stat)
 
 
+def _tls_consumer_provenance(settings):
+    from relay.server import verify_consumer_guard
+    binary = settings.get("request_relay_consumer_bin") or os.environ.get(
+        "REQUEST_RELAY_CONSUMER_BIN", "/usr/local/bin/cpa-consumer")
+    return verify_consumer_guard(binary)
+
+
+def _apply_learned_source_tls(records, document, settings, bundle=None, provenance=None):
+    """Automatic parameters apply only to their still-current source contract."""
+    if not settings.get("request_relay_learned_tls_profiles"):
+        return
+    import tls_diagnostic_transaction as tls
+    provenance = provenance or _tls_consumer_provenance(settings)
+    for record in records:
+        rid = tls.route_id(record, record.get("_source_scope") or _source_scope(settings))
+        if bundle is not None:
+            route = bundle["routes"].get(rid)
+            if route is None:
+                continue
+            models = route["models"]
+        else:
+            mapping = build_model_mapping(record.get("models_raw"), record.get("excluded"),
+                record.get("platform"), source_section=record.get("source_section") or record.get("section"))
+            models = sorted(set(mapping.values()))
+        profile = tls.learned_profile(record, document, settings, models, provenance)
+        if profile is not None:
+            record["_relay_tls"] = profile
+
+
+def _tls_source_records(account, settings, bundle, provenance):
+    import request_relay
+    source, _ = fetch_cpa_text(settings)
+    document = _yaml().safe_load(source)
+    if not isinstance(document, dict):
+        raise ValueError("TLS诊断当前来源配置无效")
+    records, _ = collect(document)
+    for record in records:
+        record["_source_scope"] = _source_scope(settings)
+    assign_names(records)
+    selected, target = [], None
+    profiles = settings.get("request_relay_tls_profiles") or {}
+    for record in records:
+        rid = request_relay.route_id(record, _source_scope(settings))
+        route = bundle["routes"].get(rid)
+        if route is None:
+            continue
+        if record.get("disabled") or serves_nothing(record):
+            raise ValueError("TLS诊断来源路由已停用，先同步配置")
+        record["_relay_models"] = list(route["models"])
+        record["new_priority"] = record.get("priority", 0)
+        if record.get("request_relay_tls") is not None:
+            record["_relay_tls"] = copy.deepcopy(record["request_relay_tls"])
+        host = probe_policy.normalize_host(record.get("base_url"))
+        if host in profiles:
+            record["_relay_tls"] = copy.deepcopy(profiles[host])
+        selected.append(record)
+        if record.get("name") == account.get("name") and account_matches_source(account, record):
+            if target is not None:
+                raise ValueError("TLS诊断来源身份不唯一")
+            target = record
+    if (target is None or len(selected) != len(bundle["routes"])):
+        raise ValueError("TLS诊断完整来源路由合同发生变化，先同步配置")
+    _apply_learned_source_tls(selected, document, settings, bundle, provenance)
+    rebuilt = request_relay.compile_bundle(selected, document, bundle["source_scope"], bundle["state"],
+        consumer_port=bundle["consumer_port"], weighted_bucket=bundle.get("weighted_bucket", False),
+        transport_port=bundle["transport_port"])
+    if rebuilt["generation"] != bundle["generation"]:
+        raise ValueError("TLS诊断来源参数或模型发生变化，先同步配置")
+    return document, selected, target
+
+
+def diagnose_tls_fingerprint(api, targets, settings):
+    """Compare two real source transports; never write sub2api account TLS flags."""
+    import tls_diagnostic_transaction as tls
+    learned, failures = set(), []
+    for aid in sorted(set(targets)):
+        try:
+            live = resolve_probe_policy(settings)
+            account = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+            base = account_probe_base_url(account)
+            scope = _policy_source_scope(live)
+            if scope is not None and account_source_scope(account) != scope:
+                continue
+            if not probe_policy.probe_allowed(base, live):
+                continue
+            if (account.get("id") != aid or not _is_migrated(account)
+                    or account.get("status") != "active" or account.get("schedulable") is not True
+                    or _recovery_runtime_block(account)):
+                continue
+            if "cpa2sub2api_original_source" not in (account.get("extra") or {}):
+                raise ValueError("完整原生诊断需开启 REQUEST_RELAY_ENABLED 和 REQUEST_RELAY_FORCE_ALL_ACCOUNTS 后同步此站")
+            reference, bundle, route, original = _relay_account_diagnostic_context(account, live)
+            live = dict(live, request_relay=reference)
+            provenance = _tls_consumer_provenance(live)
+            document, records, record = _tls_source_records(account, live, bundle, provenance)
+            model = _pick_probe_model((account.get("credentials") or {}).get("model_mapping"), account.get("platform"))
+            if model not in route["models"]:
+                model = (account.get("credentials") or {}).get("model_mapping", {}).get(model)
+            _native_scheduled_diagnostic_model(account, model, live, automatic=False)
+            expected_account = _recovery_snapshot(account)
+            expected_source = tls.digest(document)
+            def validate():
+                fresh = _unwrap_one(api._call("GET", "/api/v1/admin/accounts/%d" % aid))
+                current = resolve_probe_policy(settings)
+                text, _ = fetch_cpa_text(current)
+                current_document = _yaml().safe_load(text)
+                if (_recovery_snapshot(fresh) != expected_account or account_source_scope(fresh) != scope
+                        or _recovery_runtime_block(fresh) or not probe_policy.probe_allowed(base, current)
+                        or _source_scope(current) != bundle["source_scope"]
+                        or not _truthy(current.get("request_relay_enabled", False))
+                        or _truthy(current.get("request_relay_weighted_bucket", False)) != bundle.get("weighted_bucket", False)
+                        or _truthy(current.get("request_relay_force_all_accounts", False)) != bool(reference.get("force_all_accounts", False))
+                        or current.get("request_relay_state_dir", DEFAULTS["request_relay_state_dir"]) != reference["state_dir"]
+                        or current.get("request_relay_base_url", DEFAULTS["request_relay_base_url"]) != reference["base_url"]
+                        or tls.digest(current_document) != expected_source):
+                    raise ProbeAuthorityRevoked("TLS诊断授权、账号或当前来源发生变化")
+            result = tls.compare_and_publish(records, document, record, model, live, bundle,
+                SETTINGS_PATH, provenance, validate)
+            if result["saved"]:
+                learned.add(probe_policy.normalize_host(base))
+            elif result["status"] == "comparison_failed":
+                failures.append((aid, "两种真实源级TLS参数均未得到有效模型输出；主状态未更改"))
+        except Exception:
+            failures.append((aid, "源级TLS对照未获得可安全保留的证据；请核对当前来源与事务报告"))
+    return learned, failures
+
+
+def configured_probe_sites(settings):
+    """Read only local configuration; listing/authorizing sites never sends HTTP."""
+    sites = set(probe_policy.site_switches(settings))
+    if os.path.isfile(CONFIG_YAML):
+        with io.open(CONFIG_YAML, encoding="utf-8-sig") as stream:
+            document = _yaml().safe_load(stream)
+        if not isinstance(document, dict):
+            raise ValueError("config.yaml 必须是映射")
+        records, _ = collect(document)
+        sites.update(probe_policy.normalize_host(row.get("base_url")) for row in records)
+    return sorted(site for site in sites if site)
+
+
+def managed_plan_targets(rows):
+    """Include every managed ID, including duplicate names and stale accounts."""
+    targets = {}
+    for row in rows:
+        if _is_migrated(row) and row.get("name") and row.get("id"):
+            targets["%s#%s" % (row["name"], row["id"])] = row["id"]
+    return targets
+
+
+def probe_cli(arguments):
+    """Offline per-site switches, plus explicit admin-only plan reconciliation."""
+    import argparse
+    parser = argparse.ArgumentParser(prog="tool.py probes")
+    parser.add_argument("action", choices=("list", "enable", "disable", "enable-all", "disable-all",
+                                           "master", "reconcile", "diagnose", "recover"), default="list", nargs="?")
+    parser.add_argument("hosts", nargs="*")
+    args = parser.parse_args(arguments)
+    settings = current_probe_policy(load_settings())
+    sites = configured_probe_sites(settings)
+    if args.action in ("recover", "diagnose") and _truthy(settings.get("request_relay_enabled", False)):
+        state_dir = settings.get("request_relay_state_dir") or DEFAULTS["request_relay_state_dir"]
+        if os.path.isfile(os.path.join(state_dir, "CURRENT")):
+            import request_relay
+            settings["request_relay"] = _request_relay_reference(settings, request_relay.load_bundle(state_dir))
+    if args.action == "recover":
+        if not args.hosts or any(not value.isdigit() or int(value) <= 0 for value in args.hosts):
+            parser.error("recover需要明确授权恢复的正整数账号id")
+        ids = sorted({int(value) for value in args.hosts})
+        settings["explicit_recovery_account_ids"] = ids
+        settings["_explicit_error_recovery"] = True
+        settings["revive_proven_inactive"] = True
+        api = Sub2Api(settings)
+        evidence, failures = probe_import_recovery(api, {str(aid): aid for aid in ids}, settings)
+        active, _, active_error = reclaim_schedulable(api, evidence=evidence)
+        inactive, _, inactive_error = revive_proven_inactive(api, settings, evidence=evidence)
+        recovered_error, error_failures = _restore_error_from_job(api, evidence)
+        done = active + inactive + recovered_error
+        if error_failures:
+            print("error恢复未完整核实 %d 个；可能已清错但调度仍关闭，请检查精确账号状态。" % error_failures)
+        print("明确授权恢复 %d 个账号，已验证恢复 %d，跳过或失败 %d" % (len(ids), done, len(ids) - done))
+        return int(done != len(ids) or bool(failures or active_error or inactive_error or error_failures))
+    if args.action == "diagnose":
+        selected = {probe_policy.normalize_host(h) for h in args.hosts}
+        if not selected or any(not probe_policy.probe_allowed(h, settings) for h in selected):
+            parser.error("diagnose需要一个或多个已开启总闸、站级授权且非永久禁探的域名")
+        api = Sub2Api(settings)
+        rows, error = _fetch_all_accounts(api)
+        if error:
+            print("账号列表不完整，未执行诊断")
+            return 1
+        targets = [row["id"] for row in rows if _is_migrated(row)
+                   and probe_policy.normalize_host(account_probe_base_url(row))
+                   in selected]
+        learned, failures = diagnose_tls_fingerprint(api, targets, settings)
+        print("源级TLS对照诊断自动保留参数 %d 个站点，失败 %d；sub2api原生账号客户端需独立验证。"
+              % (len(learned), len(failures)))
+        return int(bool(failures))
+    if args.action == "reconcile":
+        api = Sub2Api(settings)
+        rows, error = _fetch_all_accounts(api)
+        if error:
+            print("账号列表不完整，未校准计划")
+            return 1
+        targets = managed_plan_targets(rows)
+        count, failures = ensure_test_plans(api, targets, settings)
+        print("已校准 %d 个受管账号计划，失败 %d" % (count, len(failures)))
+        return int(bool(failures))
+    if args.action == "master":
+        if args.hosts not in (["on"], ["off"]):
+            parser.error("master 需要 on 或 off")
+        update_saved_settings(lambda saved: dict(saved, model_probe_enabled=args.hosts == ["on"]))
+    elif args.action != "list":
+        selected = sites if args.action.endswith("-all") else args.hosts
+        if not selected:
+            parser.error("需要一个或多个站点域名")
+        enable = args.action.startswith("enable")
+        refused = 0
+        def update_switches(saved):
+            nonlocal refused
+            switches = probe_policy.site_switches(saved)
+            targets = set(selected) | set(switches) if args.action.endswith("-all") else selected
+            for value in targets:
+                host = probe_policy.normalize_host(value)
+                if not host or enable and probe_policy.permanently_denied(host):
+                    refused += 1
+                    continue
+                switches[host] = enable
+            saved["online_probe_hosts"] = switches
+            return saved
+        update_saved_settings(update_switches)
+        print("更新站点授权，拒绝无效或永久禁探项 %d" % refused)
+    if args.action != "list":
+        settings = load_settings()
+    master = _truthy(settings.get("model_probe_enabled", False))
+    print("线上检测总闸：%s；环境初始默认：%s；独立硬禁用：%s" % (
+        "开" if master else "关", os.environ.get("MODEL_PROBE_ENABLED", "未设置"),
+        "开" if probe_policy.hard_disabled(settings) else "关"))
+    for host in configured_probe_sites(settings):
+        status = "永久禁止" if probe_policy.permanently_denied(host) else (
+            "开" if probe_policy.site_switches(settings).get(host) else "关")
+        print("[%s] %s（本次有效：%s）" % (
+            status, host, "开" if probe_policy.probe_allowed(host, settings) else "关"))
+    if args.action != "list":
+        print("已保存。已有线上计划请执行 probes reconcile 立即停用/校准；该命令仅调用管理API。")
+    return 0
+
+
+def probe_menu():
+    probe_cli(["list"])
+    print("操作：enable 域名 / disable 域名 / enable-all / disable-all / master on / master off / reconcile")
+    import shlex
+    command = input("输入操作（空行返回）：").strip()
+    if command:
+        probe_cli(shlex.split(command))
+
+
+def select_import_hosts(plan, hosts):
+    """Keep full source context for priority and generation, narrow only mutations."""
+    selected = set(hosts)
+    available = {probe_policy.normalize_host(r.get("base_url")) for r in plan["accounts_raw"]}
+    if (not selected or any(not isinstance(h, str) or h != probe_policy.normalize_host(h)
+                            or h not in available for h in selected)):
+        raise ValueError("--host requires exact domain names from the current source configuration")
+    result = copy.deepcopy(plan)
+    result["selected_hosts"] = sorted(selected)
+    return result
+
+
+def import_cli(arguments):
+    import argparse
+    parser = argparse.ArgumentParser(prog="tool.py import", description="从当前 CPA 配置添加或同步账号；单站与全量共用参数迁移")
+    parser.add_argument("--host", action="append", default=[], help="只导入该域名；可重复；其余站点不会更新或删除")
+    parser.add_argument("--preview", action="store_true", help="仅显示配置预演，不访问管理端、不执行检测")
+    parser.add_argument("--yes", action="store_true", help="确认执行已列出的导入范围")
+    args = parser.parse_args(arguments)
+    settings = load_settings()
+    # Import/preview is not an implicit diagnostic action. Explicit probes use
+    # the existing per-host authorization commands and the same runtime payload.
+    build_settings = dict(settings, model_probe_enabled=False, health_rerank_enabled=False,
+                          _probe_execution_disabled=True, _request_relay_preview=args.preview)
+    plan, _, _, warnings = build_plan(build_settings)
+    if args.host:
+        plan = select_import_hosts(plan, args.host)
+    selected = set(plan.get("selected_hosts") or [])
+    count = sum(not selected or probe_policy.normalize_host(r.get("base_url")) in selected
+                for r in plan["accounts_raw"])
+    print("导入预演：来源 %s，范围 %s，账号 %d 条。" % (
+        plan["config"]["source_scope"], "、".join(sorted(selected)) if selected else "全量", count))
+    print("新账号先添加到当前 CPA 配置，再执行同一导入；已有账号同步受管参数。")
+    for warning in warnings:
+        print("  %s" % warning)
+    if args.preview:
+        return 0
+    # Offline plan construction must not erase the operator's execution policy.
+    plan["config"]["health_rerank_enabled"] = settings.get("health_rerank_enabled", True)
+    api = Sub2Api(settings)
+    ask = None if args.yes else lambda prompt: input(prompt + " 输入 yes 继续：").strip().lower() == "yes"
+    stat = do_import(api, plan, ask=ask)
+    if stat.get("cancelled") or stat.get("aborted"):
+        return 1
+    return print_import_summary(stat)
+
+
+def prune_cli(arguments):
+    import argparse
+    parser = argparse.ArgumentParser(prog="tool.py prune")
+    parser.add_argument("action", choices=("preview", "apply", "claim-preview", "claim-apply"))
+    parser.add_argument("ids", nargs="*", type=int)
+    parser.add_argument("--yes", action="store_true", help="明确确认所列旧账号的来源认领")
+    parser.add_argument("--evidence", help="可选：私有管理员单账号原文导出文件；只用于明确列出的一个 id")
+    args = parser.parse_args(arguments)
+    settings = load_settings()
+    if args.action.startswith("claim-"):
+        if not args.ids or any(aid <= 0 for aid in args.ids):
+            parser.error("来源认领需要明确列出的正整数账号 id")
+        evidence = None
+        if args.evidence:
+            if len(args.ids) != 1:
+                parser.error("单账号可信导出证据只接受一个明确 id")
+            try:
+                with io.open(args.evidence, encoding="utf-8") as stream:
+                    exported = _unwrap_one(json.load(stream))
+                items = exported.get("accounts") if isinstance(exported, dict) else None
+                if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+                    raise ValueError("exact export required")
+                evidence = {args.ids[0]: items[0]}
+            except Exception:
+                print("可信证据必须是私有管理员单账号原文导出；读取或结构校验失败。")
+                return 1
+        api, scope = Sub2Api(settings), _source_scope(settings)
+        offline = dict(settings, model_probe_enabled=False, health_rerank_enabled=False)
+        plan, _, _, _ = build_plan(offline)
+        if plan.get("config_incomplete"):
+            print("配置不完整，无法安全绑定旧账号；未认领。")
+            return 1
+        records = plan["accounts_raw"]
+        preview, failures = claim_source_accounts(api, args.ids, scope, dry_run=True, records=records, evidence=evidence)
+        print("旧受管账号来源认领预演：scope=%s，%d 条，失败 %d" % (scope, len(preview), len(failures)))
+        for item in preview:
+            print("  id=%s %s" % (item["id"], item["name"]))
+        if args.action == "claim-preview" or failures:
+            return int(bool(failures))
+        if not args.yes and input("确认仅将这些旧受管账号认领到当前来源？输入 CLAIM：").strip() != "CLAIM":
+            print("已取消。")
+            return 1
+        # Reload the source at the final write boundary; the preview includes
+        # its identity digest and cannot consume a changed key/URL/protocol.
+        refreshed, _, _, _ = build_plan(offline)
+        if refreshed.get("config_incomplete"):
+            print("配置发生变化或不完整，未认领。")
+            return 1
+        claimed, failures = claim_source_accounts(api, args.ids, scope, expected=preview,
+                                                  records=refreshed["accounts_raw"], evidence=evidence)
+        print("已核实认领 %d 条，失败 %d；未改变状态或调度开关。" % (len(claimed), len(failures)))
+        return int(bool(failures))
+    if args.ids or args.yes or args.evidence:
+        parser.error("preview/apply 不接受账号 id、--yes 或 --evidence")
+    # Pruning never authorizes diagnostics or upstream probes.
+    settings["model_probe_enabled"] = False
+    settings["health_rerank_enabled"] = False
+    plan, _, _, _ = build_plan(settings)
+    if plan.get("config_incomplete"):
+        print("配置存在无效/丢弃条目，拒绝删除")
+        return 1
+    removed, failures = prune_stale_accounts(
+        Sub2Api(settings), plan["accounts_raw"], dry_run=args.action == "preview")
+    print("%s旧受管账号 %d 条，失败 %d 条" % (
+        "拟删除" if args.action == "preview" else "已删除", len(removed), len(failures)))
+    for item in removed:
+        print("  id=%s %s" % (item["id"], item["name"]))
+    return int(bool(failures))
+
+
+def upstream_cli(arguments):
+    """Read-only evidence inspection, or explicitly refresh upgrade candidates."""
+    import argparse
+    parser = argparse.ArgumentParser(prog="tool.py upstream")
+    parser.add_argument("action", choices=("inspect", "refresh"))
+    parser.add_argument("--kind", choices=("all", "cpa", "sub2api"), default="all")
+    parser.add_argument("--latest", action="store_true", help="发现官方最新稳定版；只生成候选，绝不升级消费者")
+    parser.add_argument("--offline", action="store_true", help="只读固定缓存，不联网")
+    args = parser.parse_args(arguments)
+    if args.latest and (args.action != "refresh" or args.offline):
+        parser.error("--latest requires explicit online refresh")
+    settings = load_settings()
+    cache_root = os.path.join(OUT_DIR, "upstream-cache")
+    report_path = os.path.join(cache_root, "release-evidence.json")
+    ttl = settings.get("upstream_cache_ttl_seconds", upstream_contract.CACHE_TTL)
+    kinds = ("cpa", "sub2api") if args.kind == "all" else (args.kind,)
+    if args.latest:
+        report, exit_code = upstream_contract.check_releases(
+            cache_root, _http, kinds=kinds, ttl=ttl, force=True)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return exit_code
+    report = {"automatic_upgrade": False, "checked_at": time.time(), "upstreams": {}}
+    exit_code = 0
+    for kind in kinds:
+        spec = upstream_contract.PINNED[kind]
+        if args.action == "inspect":
+            snapshot = upstream_contract.load_snapshot(cache_root, kind, spec)
+            warnings = []
+        else:
+            snapshot, warnings = upstream_contract.cached_or_refresh(cache_root, kind, spec, _http,
+                ttl=ttl, offline=args.offline, force=not args.offline and not args.latest)
+        item = {"pinned_tag": spec["tag"], "pinned_commit": spec["commit"],
+                "source_cache": "available" if snapshot else "unavailable", "warnings": warnings}
+        if snapshot:
+            item.update(extracted_at=snapshot["extracted_at"], files=snapshot["files"],
+                        source_cache_stale=time.time() - snapshot["extracted_at"] > ttl)
+        elif args.action == "refresh":
+            exit_code = 1
+        report["upstreams"][kind] = item
+    if args.action == "inspect":
+        try:
+            with open(report_path, encoding="utf-8") as stream:
+                previous = json.load(stream)
+            report["latest_available_evidence"] = previous
+            report["latest_evidence_stale"] = time.time() - previous["checked_at"] > ttl
+        except (OSError, ValueError, KeyError, TypeError):
+            report["latest_available_evidence"] = None
+    elif not args.offline:
+        os.makedirs(cache_root, exist_ok=True)
+        fd, pending = tempfile.mkstemp(prefix=".release-evidence-", dir=cache_root)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(report, stream, ensure_ascii=False, indent=2)
+            os.replace(pending, os.path.join(cache_root, "source-cache-evidence.json"))
+        finally:
+            if os.path.exists(pending):
+                os.unlink(pending)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return exit_code
+
+
 def menu():
     s = load_settings()
     ok, msgs = sync_constants(s)
@@ -5177,6 +7395,7 @@ def menu():
         print("  [6] 提交价格清单（分组逐模型定价）")
         print("  [7] 价格预演（只算差异，不写入）")
         print("  [8] 打开产出文件夹")
+        print("  [9] 每站线上检测开关 / 批量授权 / 周频计划校准")
         print("  [0] 退出")
         print("-" * 60)
         choice = input(" 请输入数字回车：").strip()
@@ -5197,6 +7416,8 @@ def menu():
                 act_pricing(s, dry_run=True)
             elif choice == "8":
                 act_open_out(s)
+            elif choice == "9":
+                probe_menu()
             elif choice == "0":
                 print(" 再见。")
                 return
@@ -5211,6 +7432,15 @@ def menu():
 
 if __name__ == "__main__":
     try:
-        menu()
+        if len(sys.argv) > 1 and sys.argv[1] == "upstream":
+            sys.exit(upstream_cli(sys.argv[2:]))
+        elif len(sys.argv) > 1 and sys.argv[1] == "probes":
+            sys.exit(probe_cli(sys.argv[2:]))
+        elif len(sys.argv) > 1 and sys.argv[1] == "prune":
+            sys.exit(prune_cli(sys.argv[2:]))
+        elif len(sys.argv) > 1 and sys.argv[1] == "import":
+            sys.exit(import_cli(sys.argv[2:]))
+        else:
+            menu()
     except KeyboardInterrupt:
         print("\n 退出。")

@@ -1,176 +1,107 @@
-# CPA2SUB2API 的 Mihomo 代理配置指南
+# CPA2SUB2API 的共享 Mihomo 代理
 
-## 为什么需要代理
+已有部署栈优先复用 upstream-importer 提供的 `mihomo-init` 和 `mihomo`。本工具以 `http://mihomo:7890` 访问共享服务，不另起同端口代理。sub2api、CPA和导入器应处于能解析该服务名的共同Docker网络。
 
-部分上游站点按**出口 IP** 拦截（Cloudflare 人机验证、直接 403）。
-本工具对这类站点的处理是**兜底代理**：
+本镜像也包含 mihomo 内核、地理数据与 `/app/mihomo-manager`，可供独立部署使用。初始化脚本在镜像内，VPS不需要上传此目录；运行配置由init生成到 `/root/.config/mihomo` 命名卷。
 
-- 直连成功 → 不走代理
-- 直连失败（连接层错误 / 429 / 5xx）→ 自动经代理重试一次
+## 探测与代理是两件事
 
-判据是"本机出口 IP 有没有被拦"，不取决于域名是谁 —— 所以由你在 CPA 里
-为**哪些条目**配了 `proxy-url` 来决定谁需要代理。
+`proxy-url` 决定账号的业务请求出口；`FALLBACK_PROXY` 是本工具允许重试时的出口。代理不解除检测授权：默认 `MODEL_PROBE_ENABLED=false`、站授权为空，永久禁探站始终不能被检测。开启检测须同时满足总闸和站授权；详见[主README](README.md#管理每站线上检测)。
 
----
+不能从“直连失败、换出口成功”推断所有KEY都有相同权限，也不能保证换代理能满足客户端专属校验或规避封号。
 
-## 方式 1：与 cpa2sub2api 联动部署（推荐，VPS 用这个）
 
-本仓库已内置完整的 mihomo 实现（与 upstream-importer 同源），走
-compose profile，不需要从别处复制文件。
+## request-relay 的代理路径
 
-### 1. 在部署根目录的 `.env` 里配置
+可选 relay 与导入器使用同一应用镜像，运行时由官方 CPA consumer 消费原 `proxy-url`。需要显式 TLS 预设的站通过固定目标 adapter 发送，保留每 KEY/全局的显式代理并启用证书校验；不会让宿主环境中的 `NO_PROXY` 悄悄绕过指定代理。relay 与共享 mihomo 必须在同一可互通网络中。
 
-```bash
-MIHOMO_SECRET=<自己生成的随机串>
-MIHOMO_SUBSCRIPTIONS=wog=https://机场订阅地址
+`REQUEST_RELAY_WEIGHTED_BUCKET=false` 默认绑定原 KEY。显式开启权重池只在同来源 scope、类型、分组和原主机内选路；池内另一 KEY 成功不能当作原 KEY 的检测证据。诊断使用 exact-key、零额外重试并即时核对原站授权。普通业务重试保留原显式策略。
+
+`REQUEST_RELAY_TLS_PROFILES` 需要显式主机映射，例如 `{"upstream.example.invalid":{"impersonate":"chrome136"}}`；一个布尔 TLS 开关不能替代预设。代理或 TLS 预设都不证明拥有 Claude Code 客户端身份、签名或专属分组权限。完整启用、state/scope、迁移和回滚流程见[主 README](README.md#可选-request-relay让原-cpa-运行时消费参数)与[教程](tutorial.html#s6-relay)。
+
+## 填写私有配置
+
+部署根 `.env` 示例：
+
+```dotenv
+MIHOMO_SECRET=REPLACE_WITH_RANDOM_CONTROLLER_SECRET
+MIHOMO_SUBSCRIPTIONS=primary=https://subscription.example/REPLACE_WITH_TOKEN
+MIHOMO_AUTOMATIC_TESTS=false
 FALLBACK_PROXY=http://mihomo:7890
+MODEL_PROBE_ENABLED=false
+ONLINE_PROBE_HOSTS=
 ```
 
-### 2. 启动
+也可使用 `MIHOMO_SUB_<名称>`，两种格式混用时具体优先级以初始化脚本输出为准。订阅URL、控制器密钥和真实站点信息不能提交。
+
+`MIHOMO_AUTOMATIC_TESTS=false` 关闭 provider 节点自动健康检测与 url-test，原自动检测组转为 `select`，保留节点、过滤与规则。模型站的在线探测由另一个总闸和站级授权控制，两个开关不互相授权。
+
+共享栈保留 upstream-importer 原 init 和 kernel 镜像，在两者之间加入本项目镜像的 `mihomo-policy-init`：原 init 完成 → policy-init 无网络原子处理已有共享配置 → 原 kernel 启动。policy-only 不覆盖原中立连通性健康脚本、数据或手工 fallback。恢复自动节点检测时要明确恢复/重建原自动组并设置 true，不能只改变量就认为 select 已还原。
+
+已有父栈只更新需要的代理镜像/配置并按其compose启动。仓库独立部署模板才使用：
 
 ```bash
 cd /opt/deploy
 docker compose --profile mihomo up -d
 ```
 
-`mihomo-init` 会先把配置物化到命名卷，跑完即退，然后 mihomo 才启动。
+不要把独立模板覆盖共享父栈。父栈的实际四文件是 `.env`、`config.yaml`、`docker-compose.yml`、`nginx.conf`；代理源文件由镜像提供。
 
-### 3. 验证
+## 验证代理本体与真实网络路径
 
 ```bash
-# 出网是否正常
-curl -fsS -m 15 -x http://127.0.0.1:7890 -o /dev/null \
-  -w 'egress OK: %{http_code}\n' https://www.gstatic.com/generate_204
+docker compose ps mihomo mihomo-init
+docker compose logs --tail 100 mihomo-init mihomo
+docker compose exec mihomo sh /root/.config/mihomo/healthcheck.sh
+```
 
-# AUTO 组有没有节点（为 0 就是静默失效）
+检查控制器API时，`MIHOMO_SECRET` 必须已在当前终端安全提供；`.env`供compose使用，并不自动导出到宿主shell。以下命令仅在控制器绑定宿主回环9090时适用：
+
+```bash
 curl -fsS -H "Authorization: Bearer $MIHOMO_SECRET" \
-  http://127.0.0.1:9090/proxies/AUTO | jq '.all|length'
+  http://127.0.0.1:9090/version
+curl -fsS -H "Authorization: Bearer $MIHOMO_SECRET" \
+  http://127.0.0.1:9090/proxies/AUTO | jq '{now: .now, count: (.all|length)}'
 ```
 
-详细的故障判定见 [mihomo-manager/README.md](mihomo-manager/README.md)。
-
----
-
-## 方式 2：本地开发（不用 Docker）
+`count: 0` 说明AUTO没有节点，需要检查订阅拉取与过滤规则；有节点也不代表节点实际可用。使用公共连通性端点验证出口，不要把永久禁探上游当作代理测试目标：
 
 ```bash
-cd mihomo-manager
-MIHOMO_TARGET_DIR=../mihomo-config \
-MIHOMO_SECRET=devsecret \
-MIHOMO_SUB_WOG="https://你的订阅" \
-sh bootstrap-mihomo.sh
-
-# 生成好配置后，用 mihomo 二进制指定目录启动
-mihomo -d ../mihomo-config
-```
-
----
-
-## 怎么确认代理兜底真的生效了
-
-### 关键误区
-
-**容器部署下不要配 `设置.json`。** 容器的配置走环境变量
-（`FALLBACK_PROXY`），`load_settings()` 会把它映射成 `fallback_proxy`。
-把地址写成 `127.0.0.1:7890` 也是错的 —— 容器里的 `127.0.0.1`
-是容器自己，不是宿主机。**容器间必须用服务名 `mihomo`。**
-
-### 正确的配置
-
-| 部署方式 | 配在哪 | 值 |
-|---|---|---|
-| Docker | `.env` 的 `FALLBACK_PROXY` | `http://mihomo:7890` |
-| 本机直跑 | `设置.json` 的 `fallback_proxy` | `http://127.0.0.1:7890` |
-
-### 验证
-
-本工具**没有**单独的"探测某个站点"子命令（曾经文档里写过
-`python tool.py detect --name ...`，那个命令不存在）。要验证兜底链路，
-看批量流程的实际输出：走代理成功时日志里会出现"经代理"字样。
-
-也可以直接测代理本身：
-
-```bash
-# 宿主机
+# 宿主机代理端口已映射到127.0.0.1:7890时
 curl -fsS -m 15 -x http://127.0.0.1:7890 -o /dev/null \
   -w '%{http_code}\n' https://www.gstatic.com/generate_204
 
-# 从容器内部（这才是工具真实使用的路径）
-docker compose exec cpa2sub2api \
+# 本工具是一次性作业，通常已退出，因此用run而非exec
+docker compose run --rm cpa2sub2api \
   curl -fsS -m 15 -x http://mihomo:7890 -o /dev/null \
   -w '%{http_code}\n' https://www.gstatic.com/generate_204
 ```
 
----
+还需在实际sub2api管理页检查绑定代理的账号以及IP管理页。宿主curl成功不能代替sub2api容器的真实请求路径；目标镜像缺curl/wget时，应使用该镜像已有工具或同网络诊断容器，不要把“命令不存在”误判为网络失败。
 
-## CPA 侧怎么指定哪些站点走代理
+## 常见问题
 
-在 CPA 的 `config.yaml` 里给条目加：
+| 现象 | 核查 |
+|---|---|
+| 控制器401 | init与代理本体的控制器secret是否一致；shell变量是否为空 |
+| 服务名解析失败 | 客户端与mihomo是否同网络；跨compose的default不是同一网络 |
+| IP管理页连接失败 | API鉴权、代理端口、allow-lan、订阅、AUTO节点、真实出口逐层检查 |
+| AUTO有节点但出口超时 | 节点可用性、订阅过期、出口策略；节点计数不是成功证据 |
+| unhealthy但不自动重启 | Docker不会仅因健康状态变差触发restart策略；查看健康脚本结果与进程状态 |
+| 全站502/524 | 分开检查出口失败、上游模型/分组、网关协议和总重试预算 |
+
+健康脚本可能把出口切换到DIRECT，恢复后再切回AUTO。这是有实际副作用的出口策略；DIRECT可用不证明指定站点可用，依赖固定出口的业务需要单独评估。
+
+## CPA配置
 
 ```yaml
 proxy-url: "http://mihomo:7890"
 ```
 
-本工具会据此为对应账号绑定代理（`proxy_id`），并让**同域名**的其它条目
-自动跟进（同一个站的其它 KEY 出口 IP 一样，拦不拦是同一个答案）。
+容器里的 `127.0.0.1` 是容器自己。代理与目标账号的映射、旧字段修正结果应以本次导入对照表和sub2api详情为准。
 
----
+## 更新与安全
 
-## 常见问题
+更改私有订阅后，使用当前部署镜像的init脚本重新生成命名卷配置，再重建代理本体。镜像入口与目录说明见 [mihomo-manager/README.md](mihomo-manager/README.md)。本机源码目录里的宿主脚本仅供本地开发，不是VPS必需文件。
 
-### Q1: sub2api 的 IP 管理页显示"链接失败"
-
-按可能性排序：
-
-1. **AUTO 组 0 节点**：mihomo 进程健康、端口在听，但出不去。
-   `curl .../proxies/AUTO | jq '.all|length'` 为 0 即是。
-   查订阅是否拉到、`filter: "×1倍率"` 是否把节点全筛掉。
-   **mihomo 对这种情况不报错**，只表现为上游全部超时。
-2. **`allow-lan: false`**：mihomo 只接受来自 127.0.0.1 的连接，
-   容器间访问会被拒。本项目模板已是 `true`。
-3. **不在同一 Docker 网络**：`http://mihomo:7890` 解析不到。
-   跨 compose 项目的 `default` 网络是不同的网络。
-
-### Q2: 代理不生效
-
-1. `.env` 里有没有 `FALLBACK_PROXY=http://mihomo:7890`（不是 127.0.0.1）
-2. `docker compose ps` 里 mihomo 是否在跑
-3. 端口是否在听：`docker compose port mihomo 7890`
-4. 该条上游在 CPA 里有没有 `proxy-url`
-
-### Q3: 部分站点仍然 503
-
-- 代理节点也被该站拦截（换节点）
-- 订阅过期（更新订阅）
-- 上游本身的问题，与代理无关
-
-换节点：
-
-```bash
-curl -X PUT -H "Authorization: Bearer $MIHOMO_SECRET" \
-  -H 'Content-Type: application/json' \
-  http://127.0.0.1:9090/proxies/PROXY \
-  -d '{"name":"节点名"}'
-```
-
-### Q4: 想强制某站走代理（不管直连通不通）
-
-直接给该条目配 `proxy-url`。只要配了，本工具就会为它绑定代理，
-不走"先直连失败再兜底"这条路。
-
----
-
-## 安全提示
-
-1. **端口**：只绑宿主回环（`127.0.0.1:7890`），不对外暴露。
-2. **API 鉴权**：务必设 `MIHOMO_SECRET`。为空时同网络内任何容器都能
-   切换出口、读出全部节点地址。
-3. **订阅 token**：`mihomo-subscriptions.conf` 含私密 token，
-   `.gitignore` 已排除，不要提交。
-
----
-
-## 参考文档
-
-- 本仓库 mihomo 实现：[mihomo-manager/README.md](mihomo-manager/README.md)
-- mihomo 官方文档：https://wiki.metacubex.one/
+控制器应设置强密钥；宿主映射端口保持回环绑定，不对公网开放。真实 `.env`、订阅清单、生成配置、providers缓存和日志均不提交。不要删除共享命名卷来“重装代理”，这可能破坏另一个项目的运行配置。

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>站点检测授权 · cpa2sub2api</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<!-- THESIS: 站点授权工作台，让保存与有效状态在同一行可比。
+OWN-WORLD: 冷灰工作底、白色表格、深蓝动作，绿/琥珀/红仅承载状态。
+STORY: 先看硬总闸，逐站或批量保存，再明确校准管理计划。
+FIRST VIEWPORT: 标题和会话动作；紧凑总闸；全宽站点授权表，主操作位于每站右侧。
+FORM: code-led 操作工作台，遵循已授权的克制中文运维界面。
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+-->
+<a class="skip" href="#workspace">跳到站点列表</a>
+<header class="page-head">
+  <div><h1>站点检测授权</h1><p>管理每站开关，明确区分已保存授权与本次有效状态。</p></div>
+  <button id="logout" class="quiet" hidden>退出登录</button>
+</header>
+<main>
+  <section id="login" class="login-panel" aria-labelledby="login-title">
+    <h2 id="login-title">登录本地面板</h2>
+    <p>输入部署时设置的访问令牌。令牌仅用于本次认证，不会保存在浏览器中。</p>
+    <form id="login-form">
+      <label for="token">访问令牌</label>
+      <input id="token" type="password" autocomplete="off" required spellcheck="false" autocapitalize="none">
+      <button type="submit" class="primary">登录面板</button>
+    </form>
+  </section>
+
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <section id="workspace" hidden aria-labelledby="authorization-title">
+    <section class="master-strip" aria-labelledby="authorization-title">
+      <div class="master-copy"><h2 id="authorization-title">检测总闸</h2><p id="master-explanation"></p></div>
+      <dl class="master-states"><div><dt>保存授权</dt><dd id="master-desired">关闭</dd></div><div><dt>本次有效</dt><dd id="master-effective">关闭</dd></div></dl>
+      <button id="master-toggle" class="quiet">开启总闸</button>
+    </section>
+
+    <section class="sites-section" aria-labelledby="sites-title">
+      <div class="section-head"><div><h2 id="sites-title">站点开关</h2><p id="summary">正在读取本地站点配置…</p></div><button id="refresh" class="quiet">刷新状态</button></div>
+      <div class="filters"><label for="search">查找站点<input id="search" type="search" placeholder="输入域名或类别" autocomplete="off"></label><label for="category">类别<select id="category"><option value="">全部类别</option></select></label></div>
+      <div class="batch-bar">
+        <label class="select-label"><input id="select-all" type="checkbox">全选当前可操作站点</label>
+        <span id="selected-count">已选 0 站</span>
+        <div class="batch-actions"><button id="enable-selected" class="primary" disabled>批量开启</button><button id="disable-selected" class="quiet danger" disabled>批量关闭</button></div>
+      </div>
+      <div class="table-wrap"><table>
+        <caption class="sr-only">每个站点的保存授权、本次有效状态与操作</caption>
+        <thead><tr><th scope="col"><span class="sr-only">选择</span></th><th scope="col">站点 / 类别</th><th scope="col">保存授权</th><th scope="col">本次有效</th><th scope="col">操作</th></tr></thead>
+        <tbody id="sites"></tbody>
+      </table></div>
+      <p id="empty" class="empty" hidden>没有匹配的站点。可清空筛选条件，或检查本地配置后刷新。</p>
+    </section>
+
+    <section class="reconcile-section" aria-labelledby="reconcile-title">
+      <div><h2 id="reconcile-title">管理计划校准</h2><p>开启只保存授权。校准会把受管账号的旧计划调整为当前授权和周频策略；关闭时已自动尝试停用。该操作只调用管理端，不主动发起模型或 TLS 检测。</p><p id="recovery-status"></p></div>
+      <button id="reconcile" class="quiet">校准管理计划</button>
+    </section>
+  </section>
+</main>
+<footer>仅显示站点授权状态，不显示账号密钥或配置原文。会话 15 分钟后过期。</footer>
+</body>
+</html>

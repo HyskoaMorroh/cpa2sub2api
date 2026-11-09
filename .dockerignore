@@ -22,6 +22,9 @@
 config.yaml
 .env
 .env.*
+runtime.env
+*.runtime.env
+relay-state/
 !.env.example
 
 # 密钥和凭证
@@ -51,6 +54,14 @@ upstream-cache/
 # 只能靠这里整目录排除。graphify-out 是代码图谱，含全量路径与符号表，同样不外发。
 docx_temp/
 graphify-out/
+.graphify/
+state/
+audit/
+audit-*/
+*.sqlite3
+*.sqlite3-*
+*.har
+*.trace.zip
 
 # 备份文件
 *.bak
@@ -160,3 +171,8 @@ mihomo-manager/providers/
 说明书.html
 pri.txt
 model.txt
+
+# Public build instructions are explicit provenance inputs for the patched
+# consumer build stage; they are never copied to the runtime image.
+!Dockerfile
+!.dockerignore

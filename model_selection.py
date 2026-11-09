@@ -66,6 +66,21 @@ def claude_major(name):
     return int(m.group(1)) if m else None
 
 
+def _version_parts(value):
+    parts = tuple(int(part) for part in value.split('.'))
+    parts = parts + (0,) if len(parts) == 1 else parts
+    while len(parts) > 2 and parts[-1] == 0:
+        parts = parts[:-1]
+    return parts
+
+
+def claude_version(name):
+    """Known kind-major-minor and major-minor-kind forms; dates are suffixes."""
+    match = re.match(r'^claude-(?:[a-z]+-)?(\d+)(?:[.-](\d{1,7})(?=[-_.]|$))?(?=[-_.]|$)',
+                     str(name or ""), re.IGNORECASE)
+    return (int(match.group(1)), int(match.group(2) or 0)) if match else None
+
+
 def openai_gpt_major(name):
     """取 gpt-* 模型的主版本号，非 gpt-* 返回 None。"""
     m = re.match(r'^gpt-(\d+)', str(name or ""), re.IGNORECASE)
@@ -88,10 +103,10 @@ def openai_gpt_version(name):
       gpt-5        -> (5, 0)
       gpt-4o       -> (4, 0)    字母后缀不算小数位
     """
-    m = re.match(r'^gpt-(\d+)(?:\.(\d+))?', str(name or ""), re.IGNORECASE)
+    m = re.match(r'^gpt-(\d+(?:\.\d+)*)', str(name or ""), re.IGNORECASE)
     if not m:
         return None
-    return (int(m.group(1)), int(m.group(2) or 0))
+    return _version_parts(m.group(1))
 
 
 def gemini_version(name):
@@ -102,11 +117,60 @@ def gemini_version(name):
     `gemini-3-pro`（需求原文举的"次最新模型"例子）直接解析成 None、
     被整个跳过 —— 上游若提供 gemini-3-pro，本工具会当它不存在。
     """
-    m = re.match(r'^gemini-(\d+)(?:\.(\d+))?(?:[-.]|$)',
+    m = re.match(r'^gemini-(\d+(?:\.\d+)*)(?:[-.]|$)',
                  str(name or ""), re.IGNORECASE)
     if not m:
         return None
-    return (int(m.group(1)), int(m.group(2) or 0))
+    return _version_parts(m.group(1))
+
+
+def grok_version(name):
+    """Numeric Grok releases; ordinary suffixes do not change the release."""
+    match = re.match(r'^grok-(\d+(?:\.\d+)*)(?:[-_][a-z0-9].*|\.[a-z][a-z0-9._-]*|$)',
+                     str(name or ""), re.IGNORECASE)
+    if not match:
+        return None
+    return _version_parts(match.group(1))
+
+
+def model_family_version(name):
+    """Recognize supported families only; never guess versions for other brands."""
+    for family, parser in (("gpt", openai_gpt_version), ("grok", grok_version), ("gemini", gemini_version)):
+        version = parser(name)
+        if version is not None:
+            return family, version
+    version = claude_version(name)
+    if version is not None:
+        return "claude", version
+    for family, prefix in (("kimi-k", "kimi-k"), ("moonshot-v", "moonshot-v"),
+                           ("deepseek-v", "deepseek-v"), ("deepseek-r", "deepseek-r")):
+        match = re.match(r'^' + re.escape(prefix) + r'(\d+(?:\.\d+)*)(?:[-_]|$)',
+                         str(name or ""), re.IGNORECASE)
+        if match:
+            return family, _version_parts(match.group(1))
+    match = re.match(r'^(o\d+)(?:[-_.]|$)', str(name or ""), re.IGNORECASE)
+    if match:
+        family = match.group(1).lower()
+        return family, (int(family[1:]), 0)
+    return None, None
+
+
+def probe_family_models(models, platform, source_section=None):
+    """Eligible known candidates grouped independently of their HTTP protocol."""
+    families = {}
+    for model in models or []:
+        name = _name(model)
+        if not name or is_low_tier(name):
+            continue
+        family, version = model_family_version(name)
+        if family is None or (platform == "gemini" and family != "gemini") or (platform == "anthropic" and family != "claude"):
+            continue
+        if source_section == "codex-api-key" and family != "gpt":
+            continue
+        if family == "gemini" and not re.match(r'^gemini-\d+(?:\.\d+)*-pro(?:[.\-]|$)', name, re.IGNORECASE):
+            continue
+        families.setdefault(family, []).append(model)
+    return families
 
 
 # 低档模型。需求①原文："所有带 mini、flash、fast 的模型都不勾选，
@@ -128,20 +192,11 @@ def is_low_tier(name):
 
 
 def _drop_low_tier(models, label):
-    """滤掉低档模型。全被滤光时原样返回并出声。
-
-    为什么滤光了要还回去：需求④兜底写的是"如果检测出来没有高级模型，
-    按该系列该类型模型的最高级进行填充勾选"——宁可留下低档的，
-    也不能让凭据的白名单变成空集（空白名单 = 该账号一个模型都不提供，
-    等于静默退出调度）。
-    """
-    kept = [m for m in models if not is_low_tier(_name(m))]
-    if kept:
-        return kept
-    if models:
-        _note("%s：过滤 mini/flash/fast 后一个不剩，已保留原列表（%d 个）"
-              "以免白名单变空。" % (label, len(models)))
-    return models
+    """Exclude forbidden tiers even when that leaves no eligible model."""
+    kept = [model for model in models if not is_low_tier(_name(model))]
+    if models and not kept:
+        _note("%s：没有符合高级模型规则的候选，账号将阻止全部模型。" % label)
+    return kept
 
 
 def _observed_generation(models, kind):
@@ -205,7 +260,7 @@ def select_highest_models(models, platform, source_section=None, series=None,
     if probe is not None:
         picked = _apply_probe_fallback(models, picked, platform,
                                        source_section, series, probe)
-    return picked
+    return _drop_low_tier(picked, platform)
 
 
 def _gen_of(name, platform, source_section):
@@ -213,8 +268,7 @@ def _gen_of(name, platform, source_section):
     if platform == "gemini":
         return gemini_version(name)
     if platform == "anthropic":
-        g = claude_major(name)
-        return (g, 0) if g is not None else None
+        return claude_version(name)
     return openai_gpt_version(name)
 
 
@@ -235,6 +289,23 @@ def _apply_probe_fallback(all_models, picked, platform, source_section,
       · 最新通    -> 现有结果就是对的
       · 两代都不通 -> 由各 _select_* 的目录最高级兜底（需求④后半句）
     """
+    if probe and isinstance(probe.get("families"), dict):
+        result = list(picked)
+        for family, candidates in probe_family_models(all_models, platform, source_section).items():
+            evidence = probe["families"].get(family) or {}
+            if evidence.get("latest") is not False or evidence.get("prev") is not True:
+                continue
+            versions = sorted({model_family_version(_name(model))[1] for model in candidates}, reverse=True)
+            if len(versions) < 2:
+                continue
+            latest, previous = versions[:2]
+            if (tuple(evidence.get("latest_gen") or ()) != latest
+                    or tuple(evidence.get("prev_gen") or ()) != previous):
+                continue
+            existing = {id(model) for model in result}
+            result.extend(model for model in candidates if id(model) not in existing
+                          and model_family_version(_name(model))[1] == previous)
+        return result
     if not probe or probe.get("latest") or not probe.get("prev"):
         return picked
 
@@ -269,7 +340,7 @@ def _apply_probe_fallback(all_models, picked, platform, source_section,
     def _keep(n):
         if platform != "gemini":
             return True
-        return bool(re.match(r'^gemini-\d+(?:\.\d+)?-pro(?:[.\-]|$)',
+        return bool(re.match(r'^gemini-\d+(?:\.\d+)*-pro(?:[.\-]|$)',
                              n, re.IGNORECASE))
 
     seen = {id(m) for m in picked}
@@ -290,8 +361,7 @@ def _apply_probe_fallback(all_models, picked, platform, source_section,
 def _fmt_gen(gen):
     """代际转成人看的字符串。"""
     if isinstance(gen, tuple):
-        return "%d" % gen[0] if len(gen) < 2 or gen[1] == 0 \
-            else "%d.%d" % (gen[0], gen[1])
+        return str(gen[0]) if len(gen) == 2 and gen[1] == 0 else '.'.join(str(part) for part in gen)
     return str(gen)
 
 
@@ -312,12 +382,14 @@ def _select_gemini_highest(models):
     best_ver, picked = None, []
     for m in models:
         n = _name(m)
+        if is_low_tier(n):
+            continue
         ver = gemini_version(n)
         if ver is None:
             continue
         # 必须带 -pro 段。小数部分可选，保证 gemini-3-pro 也能匹配
         # （它是需求②原文举的"次最新模型"例子）。
-        if not re.match(r'^gemini-\d+(?:\.\d+)?-pro(?:[.\-]|$)', n, re.IGNORECASE):
+        if not re.match(r'^gemini-\d+(?:\.\d+)*-pro(?:[.\-]|$)', n, re.IGNORECASE):
             continue
         if best_ver is None or ver > best_ver:
             best_ver, picked = ver, [m]
@@ -328,11 +400,8 @@ def _select_gemini_highest(models):
         # -pro 里理论上不会出现 mini/flash/fast，仍走一遍保证口径统一
         return _drop_low_tier(picked, "gemini")
 
-    fallback = [m for m in models if _name(m).lower().startswith("gemini-")]
-    if fallback:
-        _note("gemini：列表里没有任何 gemini-X.Y-pro，已回退为全部 gemini-* "
-              "（%d 个），可能包含 flash。请确认该上游是否真的不提供 pro。" % len(fallback))
-        return fallback
+    if models:
+        _note("gemini：没有任何 pro 模型，账号将阻止全部模型。")
     return []
 
 
@@ -345,23 +414,14 @@ def _select_claude_current(models, series):
     "当代"来自 series["anthropic"]；没注入就从列表里观测最高代。
     观测法的好处：上游发第 6 代时无须改代码，门槛自动前移。
     """
-    gen = series.get("anthropic")
-    if gen is None:
-        gen = _observed_generation(models, "anthropic")
-    picked = [m for m in models if claude_major(_name(m)) == gen] if gen is not None else []
-
-    if picked:
-        return picked
-
-    fallback = [m for m in models
-                if _name(m).lower().startswith("claude-") and claude_major(_name(m)) is not None]
-    if fallback:
-        # 取回退集合里的最高代，而不是全留：全留会让低代模型也进白名单，
-        # 与"就高"直接冲突。
-        best = max(claude_major(_name(m)) for m in fallback)
-        picked = [m for m in fallback if claude_major(_name(m)) == best]
-        _note("claude：没有代际门槛 %s 的模型，已回退为该列表里的最高代 %s。" % (gen, best))
-        return picked
+    candidates = [model for model in models if not is_low_tier(_name(model))
+                  and claude_version(_name(model)) is not None]
+    if candidates:
+        best = max(claude_version(_name(model)) for model in candidates)
+        if series.get("anthropic") is not None and best[0] != series["anthropic"]:
+            _note("claude：源码代际提示 %s 与当前目录不同，按目录最高数值版本 %s 选择。"
+                  % (series["anthropic"], _fmt_gen(best)))
+        return [model for model in candidates if claude_version(_name(model)) == best]
     return []
 
 
@@ -377,18 +437,9 @@ def _select_codex_current(models, series):
     以前用 `^gpt-6` 这种字面前缀匹配，有两个问题：
       1. 会把 gpt-60 这类不属于第 6 代的模型误判进来；
       2. 门槛写死 6，上游发 7 代时新模型全被砍。
-    现在按"提取主版本号 == 当代"判定，两个问题都没有。
+    完整数值版本决定最高级，后缀属于同级；源码代际提示不限制未来版本。
     """
-    gen = series.get("openai")
-    if gen is None:
-        gen = _observed_generation(models, "openai")
-    picked = [m for m in models if openai_gpt_major(_name(m)) == gen] if gen is not None else []
-
-    if picked:
-        # 需求①：mini / flash / fast 这一类低档模型不勾选。
-        return _drop_low_tier(picked, "codex")
-
-    # 没有当代 gpt：退回 gpt 族里的最高版本（而不是把 o 系列之类全拉进来，
+    # 只在 gpt 族里选最高版本（而不是把 o 系列之类全拉进来，
     # codex 段本来就不该出现非 gpt 模型）。
     #
     # 比较粒度是 (major, minor) 而不是只比 major：需求④原文说回退时
@@ -398,15 +449,11 @@ def _select_codex_current(models, series):
             and not is_low_tier(_name(m))]
     if gpts:
         best = max(openai_gpt_version(_name(m)) for m in gpts)
-        shown = "gpt-%d" % best[0] if best[1] == 0 else "gpt-%d.%d" % best
-        _note("codex：没有代际门槛 %s 的 gpt 模型，已回退为列表里的最高版本 %s。"
-              % (gen, shown))
         return [m for m in gpts if openai_gpt_version(_name(m)) == best]
 
-    # 连 gpt 都没有：把非空列表原样留下，避免把凭据饿死
     if models:
-        _note("codex：列表里没有任何 gpt-* 模型，已保留原列表（%d 个）。" % len(models))
-    return [m for m in models if isinstance(m, dict)]
+        _note("codex：没有任何 gpt 模型，账号将阻止全部模型。")
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -416,8 +463,8 @@ def _select_openai_highest_per_family(models, series):
     r"""openai：每一族各取最高级，允许多族并存。
 
     族（family）的划分：
-      - gpt-<major>          ：gpt-6 / gpt-5 / gpt-4 各是一族
-      - "gpt-<major>.<minor>"：gpt-4o 这类**字母后缀**模型
+      - gpt                  ：全部 GPT 主代属于同族，按数值版本就高
+      - grok / claude / gemini：兼容入口中的已知各族独立就高
       - o<major>             ：o1 / o3 / o4 各是一族
       - other                ：无法识别的，整族保留
 
@@ -454,19 +501,21 @@ def _select_openai_highest_per_family(models, series):
             # 违反需求③"各自检测出来的最高级最新模型"。
             fam = "gemini"
             ver = gemini_version(n)
-        elif claude_major(n) is not None:
+        elif claude_version(n) is not None:
             # 同理：claude-opus-5 与 claude-opus-4 不该同时留。
             # 同代的不同档位（opus/sonnet/haiku）靠 ver 相等而全部保留，
             # 满足需求③"相同等级系列的模型全部都要勾选上"。
             fam = "claude"
-            ver = (claude_major(n), 0)
+            ver = claude_version(n)
+        elif grok_version(n) is not None:
+            fam, ver = "grok", grok_version(n)
+        elif model_family_version(n)[0] in {"kimi-k", "moonshot-v", "deepseek-v", "deepseek-r"}:
+            fam, ver = model_family_version(n)
         else:
-            mm = re.match(r'^gpt-(\d+)(?:\.(\d+))?', low)
-            if mm:
-                major = int(mm.group(1))
-                minor = int(mm.group(2) or 0)
-                fam = "gpt-%d" % major
-                ver = (major, minor)
+            version = openai_gpt_version(n)
+            if version is not None:
+                fam = "gpt"
+                ver = version
             else:
                 fam = "other"
                 ver = (0, 0)
@@ -483,21 +532,16 @@ def _select_openai_highest_per_family(models, series):
             # 由 _select_gemini_highest 保证，openai 段也要一致，
             # 否则同一条规则在两个段里表现不同。
             pros = [(v, m) for v, m in items
-                    if re.match(r'^gemini-\d+(?:\.\d+)?-pro(?:[.\-]|$)',
+                    if re.match(r'^gemini-\d+(?:\.\d+)*-pro(?:[.\-]|$)',
                                 _name(m), re.IGNORECASE)]
             if pros:
                 items = pros
             elif items:
-                _note("openai：gemini 族里没有任何 -pro 模型，已保留该族全部"
-                      "（%d 个）。" % len(items))
+                _note("openai：gemini 族没有 pro 模型，已排除该族。")
+                continue
         top = max(v for v, _ in items)
         result.extend([m for v, m in items if v == top])
 
-    if not result:
-        # 一个都没识别出来：原样保留，别饿死
-        result = [m for m in models if isinstance(m, dict)]
-        if result:
-            _note("openai：没有任何模型被识别进已知族，已保留原列表（%d 个）。" % len(result))
     return result
 
 

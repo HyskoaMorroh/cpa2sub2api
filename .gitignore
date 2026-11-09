@@ -14,6 +14,11 @@
 *设置*.json.bak*
 config.yaml
 .env
+.env.*
+runtime.env
+*.runtime.env
+relay-state/
+!.env.example
 .env.local
 .env.*.local
 
@@ -32,6 +37,8 @@ out/
 output/
 *.json
 !package.json
+# Reviewed public source/build contract; generated credentials/provenance stay ignored.
+!third_party/patches/consumer_patch_manifest.json
 
 # Python 缓存
 __pycache__/
@@ -97,6 +104,14 @@ upstream-cache/
 
 # graphify 代码图谱（本机分析产物，含全量路径与符号表，不进版本库）
 graphify-out/
+.graphify/
+state/
+audit/
+audit-*/
+*.sqlite3
+*.sqlite3-*
+*.har
+*.trace.zip
 
 # 需求文档抽取出的临时图片
 repo_docx_check/

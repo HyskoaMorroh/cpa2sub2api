@@ -1,104 +1,155 @@
-# ========================================
-# 叠加片段：把 cpa2sub2api 接入**已有**的部署栈
-# ========================================
-#
-# 用法（与部署根目录的 docker-compose.yml 叠加）：
-#
-#   docker compose -f docker-compose.yml \
-#                  -f cpa2sub2api/docker-compose.cpa2sub2api.yml up -d
-#
-# 或者直接把它加进部署根 compose 的 `include:`。
-#
-# 注意本文件**只**定义自己这个服务。不要在这里重复声明 mihomo / sub2api /
-# cli-proxy-api 等服务，也不要用 `# ... 已有配置 ...` 之类占位 ——
-# compose 会把那些空服务当成真实定义，直接报 "service has neither an image
-# nor a build context specified"。要引用的服务由被叠加的那个文件提供。
-#
-# 本项目独立部署请用同目录的 docker-compose.yml（它自带 mihomo）。
-
+# 接入已有整栈的叠加片段：本项目服务及共享代理检测策略，复用已有代理与网络。
+# 在部署根执行：
+# docker compose -f docker-compose.yml -f cpa2sub2api/docker-compose.cpa2sub2api.yml up -d cpa2sub2api
+# VPS 已有父 compose 内的本服务时无需上传或叠加本模板。
 services:
-  cpa2sub2api:
-    # 镜像名由环境变量决定，与 docker-publish.yml 用同一组名字，
-    # 避免"CI 推到 A、VPS 拉 B"这种静默不一致。
-    image: ${DOCKERHUB_USERNAME:?请在 .env 里设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
-    container_name: cpa2sub2api
-    restart: "no"  # 按需启动的运维工具，不是常驻服务
-
-    # 与 config.yaml 属主一致，避免写出 root 属主的产物文件
-    user: "${IMPORTER_UID:-0}:${IMPORTER_GID:-0}"
-
+  # 保留父栈upstream-importer的init/kernel镜像；只补检测策略环境。
+  mihomo-init:
     environment:
-      # sub2api 连接配置
-      - SUB2API_BASE_URL=${SUB2API_BASE_URL:-http://sub2api:8080}
-      - SUB2API_ADMIN_KEY=${SUB2API_ADMIN_KEY}
+      MIHOMO_AUTOMATIC_TESTS: ${MIHOMO_AUTOMATIC_TESTS:-false}
 
-      # CPA 连接配置（可选，本地无 config.yaml 时用于在线抓取）
-      - CPA_BASE_URL=${CPA_BASE_URL:-http://cli-proxy-api:8317}
-      - CPA_MANAGEMENT_KEY=${CPA_MANAGEMENT_KEY:-}
-
-      # 并发控制
-      - IMPORT_WORKERS=${CPA2SUB2API_IMPORT_WORKERS:-4}
-      - TEST_PLAN_WORKERS=${CPA2SUB2API_TEST_PLAN_WORKERS:-8}
-      - PRICING_WORKERS=${CPA2SUB2API_PRICING_WORKERS:-8}
-
-      # 代理兜底（复用同一网络里的 mihomo）。必须用服务名，
-      # 容器内的 127.0.0.1 是本容器自己。
-      - FALLBACK_PROXY=${FALLBACK_PROXY:-http://mihomo:7890}
-
-      - TZ=Asia/Shanghai
-      - PYTHONUNBUFFERED=1
-      - PYTHONIOENCODING=utf-8
-
-    volumes:
-      # 源数据（只读）
-      - ./config.yaml:/app/config.yaml:ro,Z
-      # 产物目录
-      - ./cpa2sub2api-out:/app/out:Z
-      # 连接信息（可写）
-      - ./cpa2sub2api-设置.json:/app/设置.json:Z
-
-    networks:
-      - sub2api-network  # 访问 sub2api
-      - default          # 访问 mihomo / cli-proxy-api
-
+  mihomo-policy-init:
+    image: ${DOCKERHUB_USERNAME:?请设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
+    pull_policy: always
+    user: '0:0'
+    entrypoint: [/bin/sh, /app/mihomo-manager/bootstrap-mihomo.sh]
+    environment:
+      MIHOMO_POLICY_ONLY: '1'
+      MIHOMO_AUTOMATIC_TESTS: ${MIHOMO_AUTOMATIC_TESTS:-false}
+      MIHOMO_TARGET_DIR: /mihomo-config
+    volumes: ['${MIHOMO_SHARED_VOLUME:-mihomo-data}:/mihomo-config']
+    network_mode: none
     depends_on:
-      # 都只等"起来了"，不等"健康"。
-      # sub2api 的健康检查在负载高时容易抖动，而 mihomo 在节点全挂时
-      # 会因为出不去网而报 unhealthy —— 用 service_healthy 会让本工具
-      # 永远不启动，把"上游不好用"放大成"工具跑不起来"。
-      sub2api:
-        condition: service_started
-      mihomo:
-        condition: service_started
-      cli-proxy-api:
-        condition: service_started
+      mihomo-init: {condition: service_completed_successfully}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
 
+  mihomo:
+    environment:
+      MIHOMO_AUTOMATIC_TESTS: ${MIHOMO_AUTOMATIC_TESTS:-false}
+    depends_on:
+      mihomo-policy-init: {condition: service_completed_successfully}
+
+  cpa2sub2api:
+    image: ${DOCKERHUB_USERNAME:?请设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
+    pull_policy: always
+    restart: "no"
+    user: "${IMPORTER_UID:-1000}:${IMPORTER_GID:-1000}"
+    env_file: [.env]
+    environment:
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://sub2api:8080}
+      SUB2API_ADMIN_KEY: ${SUB2API_ADMIN_KEY:?请填写 sub2api 管理密钥}
+      CPA_BASE_URL: ${CPA_BASE_URL:-http://cli-proxy-api:8317}
+      CPA_MANAGEMENT_KEY: ${CPA_MANAGEMENT_KEY:-}
+      FALLBACK_PROXY: ${FALLBACK_PROXY:-http://mihomo:7890}
+      SETTINGS_PATH: /app/state/设置.json
+      MODEL_PROBE_ENABLED: ${MODEL_PROBE_ENABLED:-false}
+      MODEL_PROBE_HARD_DISABLED: ${MODEL_PROBE_HARD_DISABLED:-false}
+      ONLINE_PROBE_HOSTS: ${ONLINE_PROBE_HOSTS:-}
+      AUTO_RECOVER_CRON: ${AUTO_RECOVER_CRON:-0 3 * * 0}
+      RUN_INTERVAL_SECONDS: ${RUN_INTERVAL_SECONDS:-0}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro,z
+      - cpa2sub2api-out:/app/out
+      - cpa2sub2api-state:/app/state
+    networks: [sub2api-network, default]
+    depends_on:
+      sub2api: {condition: service_started}
+      mihomo: {condition: service_started}
     healthcheck:
-      test: ["CMD", "python", "-c", "import tool, yaml"]
-      interval: 30s
+      test: [CMD, python, -c, "import tool, yaml, model_probe, probe_policy"]
+      interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 10s
-
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '1.0'
-
     logging:
       driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: {max-size: 10m, max-file: '3'}
 
-networks:
-  sub2api-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.25.0.0/16
-          gateway: 172.25.0.1
+  # Optional local authorization panel; the default CLI remains unchanged.
+  probe-ui:
+    image: ${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
+    profiles: [probe-ui]
+    pull_policy: always
+    user: "${IMPORTER_UID:-1000}:${IMPORTER_GID:-1000}"
+    entrypoint: [python, /app/probe_web.py]
+    command: [serve, --bind, 0.0.0.0, --port, '8775']
+    environment:
+      PROBE_UI_TOKEN: ${PROBE_UI_TOKEN:-}
+      PROBE_UI_ORIGIN: ${PROBE_UI_ORIGIN:-http://127.0.0.1:8775}
+      REQUEST_RELAY_ENABLED: ${REQUEST_RELAY_ENABLED:-false}
+      REQUEST_RELAY_FORCE_ALL_ACCOUNTS: ${REQUEST_RELAY_FORCE_ALL_ACCOUNTS:-false}
+      REQUEST_RELAY_BASE_URL: ${REQUEST_RELAY_BASE_URL:-http://request-relay:8380}
+      REQUEST_RELAY_STATE_DIR: /app/state/relay
+      REQUEST_RELAY_SOURCE_SCOPE: ${REQUEST_RELAY_SOURCE_SCOPE:-default}
+      REQUEST_RELAY_WEIGHTED_BUCKET: ${REQUEST_RELAY_WEIGHTED_BUCKET:-false}
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://sub2api:8080}
+      SUB2API_ADMIN_KEY: ${SUB2API_ADMIN_KEY:-}
+      SETTINGS_PATH: /app/state/设置.json
+      MODEL_PROBE_ENABLED: ${MODEL_PROBE_ENABLED:-false}
+      MODEL_PROBE_HARD_DISABLED: ${MODEL_PROBE_HARD_DISABLED:-false}
+      ONLINE_PROBE_HOSTS: ${ONLINE_PROBE_HOSTS:-}
+      AUTO_RECOVER_CRON: ${AUTO_RECOVER_CRON:-0 3 * * 0}
+      LOG_LEVEL: INFO
+      LOG_TO_FILE: 'false'
+      TZ: ${TZ:-Asia/Shanghai}
+    ports: ['127.0.0.1:${PROBE_UI_PORT:-8775}:8775']
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro,z
+      - cpa2sub2api-state:/app/state
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [sub2api-network, default]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import os,urllib.request,urllib.parse; origin=os.environ.get('PROBE_UI_ORIGIN') or 'http://127.0.0.1:8775'; req=urllib.request.Request('http://127.0.0.1:8775/', headers={'Host':urllib.parse.urlsplit(origin).netloc}); assert urllib.request.urlopen(req, timeout=3).status == 200"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
 
-  default:
-    driver: bridge
+  # Private inference front; no host port and no startup model request.
+  request-relay:
+    image: ${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
+    profiles: [request-relay]
+    pull_policy: always
+    user: "${IMPORTER_UID:-1000}:${IMPORTER_GID:-1000}"
+    entrypoint: [python, /app/request_relay.py]
+    command: [serve]
+    environment:
+      MODEL_PROBE_ENABLED: ${MODEL_PROBE_ENABLED:-false}
+      MODEL_PROBE_HARD_DISABLED: ${MODEL_PROBE_HARD_DISABLED:-false}
+      ONLINE_PROBE_HOSTS: ${ONLINE_PROBE_HOSTS:-}
+      REQUEST_RELAY_STATE_DIR: /app/state/relay
+      REQUEST_RELAY_BIND: 0.0.0.0
+      REQUEST_RELAY_PORT: '8380'
+      REQUEST_RELAY_CONSUMER_BIN: /usr/local/bin/cpa-consumer
+      REQUEST_RELAY_TIMEOUT: ${REQUEST_RELAY_TIMEOUT:-600}
+      REQUEST_RELAY_MAX_RESPONSE_BYTES: ${REQUEST_RELAY_MAX_RESPONSE_BYTES:-67108864}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro,z
+      - cpa2sub2api-state:/app/state
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [sub2api-network, default]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, /app/request_relay.py, health]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+
+
+# 不覆盖父栈 networks/IPAM，也不重复定义 mihomo 或 sub2api。
+volumes:
+  cpa2sub2api-out: {}
+  cpa2sub2api-state: {}

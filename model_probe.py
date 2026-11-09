@@ -39,22 +39,28 @@
 "/v1/models 列表里有"不等于"真的能调用" —— 需求里点名的正是这种
 "检测成功的模型因为参数缺失检测不成功" 的情形。
 
-  · HTTP 200                -> 通
-  · HTTP 400 / 422          -> 通（链路与鉴权都过了，只是请求体被挑刺）
+  · HTTP 200 + 有效模型输出 -> 通（HTML/错误JSON不算）
+  · HTTP 400 / 422          -> 未证实模型可用，不作为成功
   · HTTP 404 model_not_found -> 不通（这一代确实没有）
   · HTTP 401 / 403          -> 不通（鉴权或 WAF）
-  · HTTP 429                -> 通（限流说明鉴权过了、模型存在）
+  · HTTP 429                -> 限流，不作为成功，不清除上游冷却
   · HTTP 5xx / 超时 / 连接错误 -> 不通
 
 先直连；不通再走 _fallback_proxy 复探一次 —— 对应需求原文
 "包括代理检测或其他办法"。两次都不通才判定为不通。
 """
 
+import copy
+import hashlib
 import io
 import json
 import os
+import model_selection
 import re
 import time
+import probe_policy
+import automatic_probe_budget as auto_budget
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 try:
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -111,7 +117,7 @@ def _norm_gen(gen):
     return str(gen)
 
 
-def representative_model(models, gen, kind):
+def representative_model(models, gen, kind, family=None):
     """从 models 里挑一个代表这一代的模型名。
 
     挑选偏好：名字最短的那个。理由是变体后缀（-preview / -thinking /
@@ -123,7 +129,9 @@ def representative_model(models, gen, kind):
         n = m.get("name", "") if isinstance(m, dict) else str(m)
         if not n:
             continue
-        if _model_gen(n, kind) == gen:
+        actual_family, version = model_selection.model_family_version(n)
+        if (not model_selection.is_low_tier(n) and (family is None or family == actual_family)
+                and (version if family else _model_gen(n, kind)) == gen):
             cand.append(n)
     if not cand:
         return None
@@ -132,22 +140,12 @@ def representative_model(models, gen, kind):
 
 def _model_gen(name, kind):
     """取模型的代际（与 model_selection 的口径保持一致）。"""
-    n = str(name or "")
-    if kind == "anthropic":
-        m = re.match(r'^claude-[a-z]+-(\d+)', n, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
-        m = re.match(r'^claude-(\d+)', n, re.IGNORECASE)
-        return int(m.group(1)) if m else None
-    if kind == "gemini":
-        m = re.match(r'^gemini-(\d+)(?:\.(\d+))?(?:[-.]|$)', n, re.IGNORECASE)
-        return (int(m.group(1)), int(m.group(2) or 0)) if m else None
-    # openai / codex
-    m = re.match(r'^gpt-(\d+)(?:\.(\d+))?', n, re.IGNORECASE)
-    return (int(m.group(1)), int(m.group(2) or 0)) if m else None
+    family, version = model_selection.model_family_version(name)
+    expected = {"anthropic": "claude", "openai": "gpt", "codex": "gpt"}.get(kind, kind)
+    return version if family == expected else None
 
 
-def _build_request(platform, base_url, api_key, model, headers=None):
+def _build_request(platform, base_url, api_key, model, headers=None, source_section=None):
     """按平台拼探测请求。返回 (method, url, headers, body)。
 
     端点拼法**照抄 CPA 自己的 executor**，这样"探测通不通"与
@@ -197,13 +195,13 @@ def _build_request(platform, base_url, api_key, model, headers=None):
     # **短句**，语义上仍是自然问题，长度上仍是 1 个 token 的活。
     probe_prompts = (
         # 英文（短句）
-        "Hi, how are you?",
-        "What's the weather like?",
-        "Give me a quick tip.",
+        "Calculate 2 plus 3 and return the integer.",
+        "Sort these numbers ascending: 3, 1, 2.",
+        "Return the next integer after 4.",
         "How do I center a div?",
         "Name one good book.",
         # 中文（短句）
-        "你好，今天天气如何？",
+        "计算2加3，仅返回整数。",
         "帮我把这句话改短一点。",
         "推荐一本入门书。",
         "怎么提高工作效率？",
@@ -234,37 +232,91 @@ def _build_request(platform, base_url, api_key, model, headers=None):
     # 而我们只想知道"这一代模型在这个站上认不认"，chat/completions
     # 是覆盖面最广的那个端点。
     hdr["Authorization"] = "Bearer " + api_key
+    if source_section == "codex-api-key":
+        url = base + "/responses"
+        body = {"model": model, "input": [{"role": "user", "content": text}],
+                "max_output_tokens": 16, "stream": False, "store": False}
+        return "POST", url, hdr, body
     url = base + "/chat/completions"
     body = {"model": model, "max_tokens": 1,
             "messages": [{"role": "user", "content": text}]}
     return "POST", url, hdr, body
 
 
-def _probe_once(http_fn, platform, base_url, api_key, model, headers, proxy):
-    """发一次探测请求。返回 (通不通, 说明)。"""
-    method, url, hdr, body = _build_request(
-        platform, base_url, api_key, model, headers)
+def _valid_model_output(raw, platform):
+    """A reached endpoint, HTML login page or parameter error proves no model call."""
     try:
-        st, _ = http_fn(method, url, hdr, body,
-                        timeout=PROBE_TIMEOUT, retries=1, proxy=proxy)
-        ok = st in _OK_CODES
-        return ok, "HTTP %s" % st
-    except Exception as ex:
-        # 注意 `is not None`：ApiError 在"连一次都没成功发出去"时
-        # status 会是 **0**，用 `if st:` 判断会把它当成没有状态码，
-        # 于是原因被抹成一句没信息量的 "ApiError"，排障时完全看不出所以然。
-        st = getattr(ex, "status", None)
-        if st is not None:
-            if st in _OK_CODES:
-                return True, "HTTP %s" % st
-            body_txt = str(getattr(ex, "body", "") or "")[:70]
-            # 去掉换行，避免一条 HTML 错误页把汇总撑成几十行
-            body_txt = " ".join(body_txt.split())
-            return False, "HTTP %s %s" % (st, body_txt)
-        return False, "%s: %s" % (type(ex).__name__, str(ex)[:60])
+        value = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(value, dict) or value.get("error"):
+            return False
+        if platform == "anthropic":
+            return value.get("type") == "message" and isinstance(value.get("content"), list)
+        if platform == "gemini":
+            return bool(value.get("candidates"))
+        return bool(value.get("choices") or value.get("output"))
+    except (ValueError, TypeError):
+        return False
 
 
-def probe_unit(http_fn, unit, fallback_proxy=None):
+def _probe_once(http_fn, platform, base_url, api_key, model, headers, proxy, settings=None,
+                source_section=None, request_base_url=None, request_api_key=None):
+    """Send one explicitly authorized call. Errors never count as success."""
+    automatic = (settings or {}).get("_automatic_probe")
+    if not probe_policy.probe_allowed(base_url, settings):
+        if automatic:
+            raise auto_budget.AutomaticProbeSkipped("automatic_probe_authority_revoked")
+        return False, "探测未授权"
+    target_base = request_base_url or base_url
+    if request_base_url:
+        # The relay exposes protocol roots; original CPA bases remain declarative.
+        # OpenAI builders append relative endpoints, while Anthropic/Gemini add
+        # their version themselves. Accept either relay client-base spelling.
+        target_base = re.sub(r"/(?:v1|v1beta)$", "", request_base_url.strip().rstrip("/"))
+        if platform not in ("anthropic", "gemini"):
+            target_base += "/v1"
+    method, url, hdr, body = _build_request(platform, target_base,
+                                           request_api_key or api_key, model, headers, source_section)
+    transport = {}
+    if request_base_url:
+        # Source authentication and outbound proxies belong to the CPA consumer.
+        hdr = {k: v for k, v in hdr.items() if k.lower() not in {
+            "authorization", "x-api-key", "x-goog-api-key", "x-relay-exact-key"}}
+        hdr["Authorization"] = "Bearer " + request_api_key
+        hdr["X-Relay-Exact-Key"] = "true"
+        hdr["X-Relay-Generation"] = (settings or {}).get("request_relay", {}).get("generation", "")
+        parsed = urlsplit(url)
+        query = urlencode([(k, v) for k, v in parse_qsl(parsed.query) if k != "key"])
+        url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, ""))
+        proxy = None
+        transport["probe_authority_url"] = base_url
+    if automatic:
+        automatic["validate"]()
+        if request_base_url:
+            hdr[auto_budget.HEADER] = automatic["ticket"]
+        else:
+            auto_budget.consume_ticket(automatic["state_dir"], base_url, automatic["ticket"],
+                automatic["source_id"], model, automatic["generation"], automatic["validate"])
+    try:
+        status, raw = http_fn(method, url, hdr, body, timeout=PROBE_TIMEOUT, retries=1,
+                              proxy=proxy, probe_settings=settings, _allow_proxy_fallback=False, **transport)
+        if automatic and status == 400:
+            try:
+                error = json.loads(raw).get("error")
+                code = error if isinstance(error, str) else (error or {}).get("code")
+            except (ValueError, TypeError, AttributeError):
+                code = None
+            if isinstance(code, str) and re.fullmatch(r"automatic_probe_[a-z_]+", code):
+                raise auto_budget.AutomaticProbeSkipped(code)
+        valid = status in (200, 201) and _valid_model_output(raw, platform)
+        return valid, "HTTP %s%s" % (status, "" if valid else " 未获得有效模型输出")
+    except auto_budget.AutomaticProbeSkipped:
+        raise
+    except Exception as error:
+        status = getattr(error, "status", None)
+        return False, "HTTP %s" % status if status is not None else type(error).__name__
+
+
+def probe_unit(http_fn, unit, fallback_proxy=None, settings=None):
     """探一个 (段, 域名) 单元的最新代与次最新代。
 
     unit 需要的字段：
@@ -275,6 +327,11 @@ def probe_unit(http_fn, unit, fallback_proxy=None):
     """
     out = {"latest": False, "prev": False, "detail": ""}
     notes = []
+    if not probe_policy.probe_allowed(unit.get("base_url"), settings):
+        if (settings or {}).get("_automatic_probe"):
+            raise auto_budget.AutomaticProbeSkipped("automatic_probe_authority_revoked")
+        out["detail"] = "探测未授权"
+        return out
 
     for slot in ("latest", "prev"):
         model = unit.get(slot + "_model")
@@ -283,12 +340,13 @@ def probe_unit(http_fn, unit, fallback_proxy=None):
             continue
 
         ok, why = _probe_once(http_fn, unit["platform"], unit["base_url"],
-                              unit["api_key"], model, unit.get("headers"), None)
+                              unit["api_key"], model, unit.get("headers"), None, settings,
+                              unit.get("section"), unit.get("request_base_url"), unit.get("request_api_key"))
         # 直连不通就走代理再试一次 —— 需求点名"包括代理检测或其他办法"
-        if not ok and fallback_proxy:
+        if not ok and fallback_proxy and not unit.get("request_base_url"):
             ok2, why2 = _probe_once(http_fn, unit["platform"], unit["base_url"],
                                     unit["api_key"], model,
-                                    unit.get("headers"), fallback_proxy)
+                                    unit.get("headers"), fallback_proxy, settings, unit.get("section"))
             if ok2:
                 ok, why = True, why2 + "(代理)"
             else:
@@ -351,22 +409,72 @@ def save_cache(out_dir, entries):
         _log_exc("探测缓存写入失败（下次运行会重探全部单元）", ex, level="warning")
 
 
-def cache_key(section, host, latest_gen, prev_gen):
-    return "%s|%s|%s|%s" % (section, host, _norm_gen(latest_gen),
-                            _norm_gen(prev_gen))
+def cache_key(section, host, latest_gen, prev_gen, transport_generation=None, family=None, provenance=None):
+    key = "%s|%s|%s|%s" % (section, host, _norm_gen(latest_gen), _norm_gen(prev_gen))
+    if family:
+        key += "|family=" + family
+    if provenance:
+        key += "|provenance=" + provenance
+    return key + "|transport=" + transport_generation if transport_generation else key
 
 
 # ---------------------------------------------------------------------------
 # 批量入口
 # ---------------------------------------------------------------------------
+def _automatic_source_identity(unit, settings):
+    if unit.get("request_base_url"):
+        matched = re.search(r"/r/([0-9a-f]{40})(?:/|$)", urlsplit(unit["request_base_url"]).path)
+        generation = (settings.get("request_relay") or {}).get("generation")
+        if not matched or not isinstance(generation, str) or re.fullmatch(r"[0-9a-f]{64}", generation) is None:
+            raise auto_budget.AutomaticProbeSkipped("automatic_probe_binding_changed")
+        return matched.group(1), generation
+    if not isinstance(unit.get("api_key"), str) or not unit["api_key"]:
+        raise auto_budget.AutomaticProbeSkipped("automatic_probe_binding_changed")
+    identity = [unit.get("section"), unit.get("base_url"), unit["api_key"], unit.get("provenance")]
+    return "direct:" + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest(), None
+
+
+def _automatic_authority(units, settings):
+    live = settings
+    if settings.get("_live_probe_policy"):
+        import tool
+        live = tool.resolve_probe_policy(settings)
+        if (tool._source_scope(live) != tool._source_scope(settings)
+                or live.get("request_relay_state_dir") != settings.get("request_relay_state_dir")):
+            raise auto_budget.AutomaticProbeSkipped("automatic_probe_authority_revoked")
+        if settings.get("request_relay"):
+            tool._validate_request_relay_authority(settings["request_relay"],
+                settings.get("_request_relay_bundle") or {}, live)
+        expected = settings.get("_automatic_probe_document_sha256")
+        if not expected:
+            raise auto_budget.AutomaticProbeSkipped("automatic_probe_binding_changed")
+        current, _ = tool.fetch_cpa_text(live)
+        if tool._source_digest(tool._yaml().safe_load(current)) != expected:
+            raise auto_budget.AutomaticProbeSkipped("automatic_probe_binding_changed")
+    for unit in units:
+        if not probe_policy.probe_allowed(unit.get("base_url"), live):
+            raise auto_budget.AutomaticProbeSkipped("automatic_probe_authority_revoked")
+        if unit.get("request_base_url") and settings.get("_live_probe_policy"):
+            source, generation = _automatic_source_identity(unit, settings)
+            route = (settings.get("_request_relay_bundle") or {}).get("routes", {}).get(source)
+            models = [unit.get(slot + "_model") for slot in ("latest", "prev") if unit.get(slot + "_model")]
+            if not route or any(model not in route["models"] for model in models):
+                raise auto_budget.AutomaticProbeSkipped("automatic_probe_binding_changed")
+
+
 def probe_all(units, http_fn, out_dir=None, workers=8,
-              fallback_proxy=None, ttl=DEFAULT_CACHE_TTL, log=None):
+              fallback_proxy=None, ttl=DEFAULT_CACHE_TTL, log=None, settings=None,
+              automatic=False, force=False):
     """并发探测全部单元。返回 {(section, host): {"latest","prev","detail"}}。
 
     workers 硬性钳到 8：与本项目其它三处线程池一致。探测是网络密集型，
     再高只会让同一个上游看到突发并发、更容易撞限流，反而变慢。
     """
     say = log or (lambda *a: None)
+    if type(automatic) is not bool or type(force) is not bool:
+        raise ValueError("automatic/force must be explicit booleans")
+    settings = dict(settings or {})
+    settings.pop("_automatic_probe", None)  # Saved caller data cannot forge a batch.
     result, cached = {}, {}
 
     if out_dir:
@@ -374,17 +482,56 @@ def probe_all(units, http_fn, out_dir=None, workers=8,
 
     todo = []
     for u in units:
+        if not probe_policy.probe_allowed(u.get("base_url"), settings):
+            continue
         k = cache_key(u["section"], u["host"], u.get("latest_gen"),
-                      u.get("prev_gen"))
-        hit = cached.get(k)
+                      u.get("prev_gen"), u.get("transport_generation"), u.get("family"), u.get("provenance"))
+        result_key = (u["section"], u["host"], u["family"]) if u.get("family") else (u["section"], u["host"])
+        hit = None if force else cached.get(k)
+        # A previous successful lower release cannot authorize a new fallback.
+        # Explicit family diagnostics obtain fresh lower-release proof each job.
+        if u.get("family") and hit and hit.get("latest") is False and hit.get("prev") is True:
+            hit = None
         if hit:
-            result[(u["section"], u["host"])] = {
+            result[result_key] = {
                 "latest": bool(hit.get("latest")),
                 "prev": bool(hit.get("prev")),
                 "detail": (hit.get("detail") or "") + "（缓存）",
+                "cached": True,
             }
         else:
             todo.append((k, u))
+
+    if automatic and not force and todo:
+        state_dir = settings.get("request_relay_state_dir")
+        batches = {}
+        for item in todo:
+            batches.setdefault(probe_policy.normalize_host(item[1]["base_url"]), []).append(item)
+        admitted = []
+        for host, items in batches.items():
+            try:
+                validate = lambda batch=items: _automatic_authority([item[1] for item in batch], settings)
+                if not state_dir:
+                    raise auto_budget.AutomaticProbeSkipped("automatic_probe_budget_unavailable")
+                auto_budget.initialize_budget(state_dir, validate, history_dir=out_dir)
+                bindings = []
+                prepared = []
+                for key, unit in items:
+                    source_id, generation = _automatic_source_identity(unit, settings)
+                    limit = 2 if fallback_proxy and not unit.get("request_base_url") else 1
+                    for slot in ("latest", "prev"):
+                        if unit.get(slot + "_model"):
+                            bindings.append({"source_id": source_id, "model": unit[slot + "_model"],
+                                "generation": generation, "limit": limit})
+                    prepared.append((key, unit, source_id, generation))
+                ticket = auto_budget.claim_batch(state_dir, host, bindings, validate)
+                for key, unit, source_id, generation in prepared:
+                    unit = dict(unit, _automatic_probe={"state_dir": state_dir, "ticket": ticket,
+                        "source_id": source_id, "generation": generation, "validate": validate})
+                    admitted.append((key, unit))
+            except auto_budget.AutomaticProbeSkipped as skipped:
+                say("[模型探测] 自动检测跳过：%s" % skipped.code)
+        todo = admitted
 
     say("[模型探测] %d 个单元，命中缓存 %d，待探 %d"
         % (len(units), len(result), len(todo)))
@@ -396,19 +543,35 @@ def probe_all(units, http_fn, out_dir=None, workers=8,
 
     def one(item):
         k, u = item
-        return k, u, probe_unit(http_fn, u, fallback_proxy)
+        policy = dict(settings)
+        if u.get("_automatic_probe"):
+            policy["_automatic_probe"] = u["_automatic_probe"]
+        try:
+            return k, u, probe_unit(http_fn, u, fallback_proxy, policy)
+        except auto_budget.AutomaticProbeSkipped as skipped:
+            say("[模型探测] 自动检测跳过：%s" % skipped.code)
+            return k, u, None
+
+    def host_batch(items):
+        return [one(item) for item in items]
 
     if CONCURRENT_OK and len(todo) > 1:
+        host_batches = {}
+        for item in todo:
+            host_batches.setdefault(item[1]["host"], []).append(item)
         with ThreadPoolExecutor(max_workers=n_workers) as ex:
-            futs = [ex.submit(one, it) for it in todo]
+            futs = [ex.submit(host_batch, items) for items in host_batches.values()]
             for fu in as_completed(futs):
                 try:
-                    k, u, r = fu.result()
+                    completed = fu.result()
                 except Exception as e:
                     say("[模型探测] 单元失败：%s" % e)
                     continue
-                result[(u["section"], u["host"])] = r
-                cached[k] = dict(r, ts=time.time())
+                for k, u, r in completed:
+                    if r is None:
+                        continue
+                    result[(u["section"], u["host"], u["family"]) if u.get("family") else (u["section"], u["host"])] = r
+                    cached[k] = dict(r, ts=time.time())
     else:
         for it in todo:
             try:
@@ -416,7 +579,9 @@ def probe_all(units, http_fn, out_dir=None, workers=8,
             except Exception as e:
                 say("[模型探测] 单元失败：%s" % e)
                 continue
-            result[(u["section"], u["host"])] = r
+            if r is None:
+                continue
+            result[(u["section"], u["host"], u["family"]) if u.get("family") else (u["section"], u["host"])] = r
             cached[k] = dict(r, ts=time.time())
 
     if out_dir:

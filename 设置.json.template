@@ -7,42 +7,38 @@
     "      这个字段没有任何代码消费，留着无害。",
     "",
     "优先级：环境变量 > 设置.json > 内置默认值。",
-    "容器部署请**只用环境变量**，不要混用本文件：两份配置同时存在时，",
-    "排查『改了却没生效』会非常困难。",
+    "容器部署使用环境变量作为总闸，站级授权由probes命令写入持久化设置。",
+    "MODEL_PROBE_ENABLED环境变量优先；probes master on不会覆盖显式false环境变量。",
     "",
     "首次运行会由工具自动生成 设置.json（若不存在）。"
   ],
-
   "sub2api_base_url": "",
   "sub2api_admin_key": "",
   "cpa_base_url": "",
   "cpa_management_key": "",
   "sub2api_src": "",
   "cpa_src": "",
-
   "import_workers": 4,
   "test_plan_workers": 8,
   "pricing_workers": 8,
   "default_concurrency": 3,
   "batch_size": 50,
-
   "fallback_proxy": "",
   "disable_proxy_fallback": false,
-
   "health_rerank_enabled": true,
   "sync_existing_accounts": true,
   "respect_weight_zero": true,
   "weight_zero_policy": "deprioritize",
   "zero_model_policy": "inactive",
   "pool_mode_enabled": true,
-
   "auto_recover_enabled": true,
-  "auto_recover_cron": "*/30 * * * *",
+  "auto_recover_cron": "0 3 * * 0",
   "auto_pause_on_expired": false,
-
   "http_timeout": 30,
   "http_retries": 3,
-
   "group_prefix": "CPA",
-  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "model_probe_enabled": false,
+  "online_probe_hosts": {},
+  "prune_stale_accounts": true
 }

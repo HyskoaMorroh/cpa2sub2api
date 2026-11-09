@@ -39,9 +39,13 @@ if [ -z "${SUB2API_ADMIN_KEY:-}" ]; then
 fi
 
 # config.yaml 可选：没有就走 CPA_BASE_URL 在线拉。
-if [ ! -r "$APP_DIR/config.yaml" ]; then
+if [ -e "$APP_DIR/config.yaml" ] && [ ! -f "$APP_DIR/config.yaml" ]; then
+    log "错误：config.yaml 不是普通文件；请修正只读文件挂载。"
+    exit 1
+fi
+if [ ! -f "$APP_DIR/config.yaml" ] || [ ! -r "$APP_DIR/config.yaml" ]; then
     if [ -n "${CPA_BASE_URL:-}" ]; then
-        log "本地无 config.yaml，将经 CPA_BASE_URL 在线拉取：${CPA_BASE_URL}"
+        log "本地无 config.yaml，将经已配置的 CPA 管理接口在线拉取。"
     else
         log "错误：既没有 $APP_DIR/config.yaml，也没有设置 CPA_BASE_URL"
         log "  容器部署请确认 compose 里有这一行挂载："
@@ -63,7 +67,9 @@ run_once() {
     # 跑完、打印"已取消，什么都没写"、**退出码还是 0**，看起来成功实则没写数据。
     # 容器/cron 里没有人能敲 y，所以这里显式开启自动确认。
     # 注意它只在导入那一处生效，不会顺带授权「全部清空」那个破坏性操作。
-    ( cd "$APP_DIR" && ASSUME_YES=1 python "$APP_DIR/一键导入.py" )
+    # Compose may keep stdin open without a TTY. Automatic runs must receive
+    # EOF explicitly; this shared function also covers every interval/cron run.
+    ( cd "$APP_DIR" && ASSUME_YES=1 python "$APP_DIR/一键导入.py" < /dev/null )
     rc=$?
     if [ "$rc" -eq 0 ]; then
         log "同步完成"

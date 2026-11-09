@@ -1,0 +1,15 @@
+CLIProxyAPI v8.0.60 (MIT)
+
+This image bundles the unmodified official /CLIProxyAPI/CLIProxyAPI binary as
+/usr/local/bin/cpa-consumer for the explicitly enabled optional request relay.
+It is not started by the default importer entrypoint.
+
+Official source: https://github.com/router-for-me/CLIProxyAPI/tree/v8.0.60
+License source: https://raw.githubusercontent.com/router-for-me/CLIProxyAPI/v8.0.60/LICENSE
+Official image: eceasy/cli-proxy-api
+Pinned multi-platform index:
+sha256:873ec3df3b673a82f7d956d4636c7736b0c961dc6ee28f9fb403238b2898dc0d
+
+The complete upstream MIT license is in CLIProxyAPI.LICENSE beside this notice.
+Bundling the consumer does not confer client identity, signatures, account
+entitlement, or access to provider-restricted client groups.

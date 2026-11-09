@@ -1,282 +1,188 @@
-# ====================================
-# Docker Compose 配置
-# CPA2SUB2API + Mihomo 代理
-# ====================================
-#
-# 部署方式是"VPS 只拉镜像，宿主不预置任何文件"，所以本文件里**不应出现**
-# 对宿主预置文件的 bind mount（例如 ./mihomo/config.yaml）。mihomo 的配置
-# 由 mihomo-init 容器从镜像内的模板物化到命名卷，mihomo 容器挂同一个卷读它。
-#
-# 启动：
-#   docker compose --profile mihomo up -d      # 带代理
-#   docker compose up -d cpa2sub2api           # 不带代理（直连）
-#
-# ====================================
-
+# 独立部署模板。VPS 整栈使用部署根的 docker-compose.yml。
+# 本文件只拉远程镜像；本机构建请显式执行 docker build。
+# 默认导入一次并退出0，不把一次性工具配置为自动重启。
+# 无代理：docker compose up -d cpa2sub2api
+# 独立代理：docker compose --profile mihomo up -d
+# 已有共享 mihomo 时不要再启动本文件的代理服务。
 services:
-  # ====================================
-  # CPA2SUB2API 服务
-  # ====================================
   cpa2sub2api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # 镜像名由环境变量决定，与 .github/workflows/docker-publish.yml 用的是
-    # 同一组名字，避免"CI 推到 A、VPS 拉 B"这种静默不一致。
-    # 在 .env 里设：
-    #   DOCKERHUB_USERNAME=你的用户名
-    #   DOCKERHUB_IMAGE=cpa2sub2api      # 可选，默认用仓库名
-    image: ${DOCKERHUB_USERNAME:?请在 .env 里设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
-    container_name: cpa2sub2api
-
-    # CI 反复覆盖同一个 :latest 标签。Docker 的默认拉取策略是"本地没有才拉"，
-    # 所以 `up -d` **不会**自动取到新镜像 —— 表现为"改了代码、推了 CI，
-    # VPS 拉到的还是旧镜像"，而且界面上看不出任何报错。
-    # always = 每次 up 都先拉一次（拉不到才用本地）。
+    image: ${DOCKERHUB_USERNAME:?请设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
     pull_policy: always
-
-    # 以 root 运行。原因：镜像里是 USER app（uid 1000），而
-    # `./out` 这个 bind mount 在 VPS 上的属主是 root:root（用 root 跑
-    # docker compose 时的默认结果），uid 1000 写不进去 →
-    # import-plan.json / 对照表.md 全部写失败。
-    # 本机 Windows + Docker Desktop 走 9p/gRPC-FUSE，bind mount 的权限位
-    # 不生效（表现为谁都能写），所以本地一直是绿的，只有 VPS 上才暴露。
-    # 想按 uid 1000 跑就先把宿主目录 chown 1000:1000，然后删掉这一行。
-    #
-    # 2026-09-19 补：改成 root 之后曾经**直接崩** —— 镜像里的依赖是
-    # `pip install --user` 装进 /home/app/.local 的，而 --user 目录按 HOME
-    # 解析，root 的 HOME 是 /root，于是 `import yaml` 报 ModuleNotFoundError。
-    # 已在 Dockerfile 里用 `ENV PYTHONUSERBASE=/home/app/.local` 修掉（该设置
-    # 与 HOME 无关，root 与 app 都生效）。改这一行前先确认那个 ENV 还在。
-    user: "${IMPORTER_UID:-0}:${IMPORTER_GID:-0}"
-
-    env_file:
-      - .env
-
+    user: "${IMPORTER_UID:-1000}:${IMPORTER_GID:-1000}"
+    env_file: [.env]
     environment:
-      # 代理兜底。注意：这个值必须能被 tool.py 读到 —— 它的读取路径是
-      # load_settings() 的环境变量映射（FALLBACK_PROXY -> fallback_proxy），
-      # 不是 设置.json。容器里没有 设置.json，全靠这个环境变量。
-      - FALLBACK_PROXY=${FALLBACK_PROXY:-http://mihomo:7890}
-      # 时区。镜像基于 python:3.11-slim，没装 tzdata 也没设 TZ 时容器跑 UTC。
-      # 不带 TZ 的后果不是功能错，而是**排障时日志时间对不上**：
-      # entrypoint.sh 的 $(date ...)、mihomo 配置备份的时间戳都按 UTC 记，
-      # 比本地（CST）少 8 小时。
-      - TZ=${TZ:-Asia/Shanghai}
-
+      FALLBACK_PROXY: ${FALLBACK_PROXY:-http://mihomo:7890}
+      SETTINGS_PATH: /app/state/设置.json
+      MODEL_PROBE_ENABLED: ${MODEL_PROBE_ENABLED:-false}
+      MODEL_PROBE_HARD_DISABLED: ${MODEL_PROBE_HARD_DISABLED:-false}
+      ONLINE_PROBE_HOSTS: ${ONLINE_PROBE_HOSTS:-}
+      AUTO_RECOVER_CRON: ${AUTO_RECOVER_CRON:-0 3 * * 0}
+      RUN_INTERVAL_SECONDS: ${RUN_INTERVAL_SECONDS:-0}
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
-      # CPA 配置文件（只读）。
-      #
-      # 两个坑都要避开：
-      #  1) 宿主没有这个文件时 Docker 会建一个**同名空目录**顶上去。而
-      #     entrypoint.sh 的 `[ ! -r ... ]` 对目录也返回真，拦不住；
-      #     tool.py 的 os.path.exists() 同样为真，最后在 io.open() 抛
-      #     IsADirectoryError。所以要么保证文件存在，要么改用 CPA_BASE_URL。
-      #  2) `:Z` 是 SELinux 重打标签。CentOS / RHEL / AlmaLinux 上不加会
-      #     Permission denied（宿主安全上下文对不上容器）；Windows 与
-      #     普通 Ubuntu 上加了也无害（`:z`/`:Z` 只对启用了 SELinux 的宿主
-      #     生效）。这个项目的主要部署目标就是 CentOS。
-      #
-      # 宿主确实只有目录没有文件时，把这一段换成 CPA_BASE_URL 走管理接口拉。
-      - ./config.yaml:/app/config.yaml:ro,Z
-
-      # 输出目录（读写）。`:Z` 的理由同上。
-      - ./out:/app/out:Z
-
-      # 设置文件（可选）。不存在时不挂即可，环境变量优先。
-      # - ./设置.json:/app/设置.json:ro,Z
-
-    networks:
-      - cpa2sub2api-network
-
-    depends_on:
-      # 只等"起来了"，不等"健康"。原因见 mihomo 服务的健康检查注释：
-      # 节点全挂时 mihomo 进程本身是健康的（端口在听、API 有响应），
-      # 而 healthcheck 因为无法出网会报 unhealthy —— 用 service_healthy
-      # 会让本容器永远不启动，把"代理不好用"放大成"整个工具跑不起来"。
-      mihomo:
-        condition: service_started
-
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-
+      # z：同一真实配置也供 CPA/upstream-importer 使用，CentOS 应共享标签。
+      - ./config.yaml:/app/config.yaml:ro,z
+      - cpa2sub2api-out:/app/out:Z
+      - cpa2sub2api-state:/app/state
+    networks: [cpa2sub2api-network]
+    restart: "no"
     healthcheck:
-      # 只验证"代码能加载"：不碰网络、不依赖 mihomo 是否可用。
-      # 不用 service_healthy 做 depends_on 的判据（见上面的说明），
-      # 这里只为 `docker compose ps` 提供一个人能看懂的状态。
-      test: ["CMD", "python", "-c", "import tool, yaml, model_selection"]
+      test: [CMD, python, -c, "import tool, yaml, model_selection, model_probe, probe_policy"]
       interval: 60s
-      timeout: 20s
+      timeout: 10s
       retries: 3
-      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
 
-    restart: unless-stopped
-    stdin_open: true
-    tty: true
-
-  # ====================================
-  # Mihomo 配置自举（init 容器，跑完即退）
-  # ====================================
+  # 可选独立代理。所有脚本、模板、内核都在本项目镜像中。
+  # 共享部署应直接复用 upstream-importer 的 mihomo 和 mihomo-init。
   mihomo-init:
-    # 镜像名由环境变量决定，与 .github/workflows/docker-publish.yml 用的是
-    # 同一组名字，避免"CI 推到 A、VPS 拉 B"这种静默不一致。
-    # 在 .env 里设：
-    #   DOCKERHUB_USERNAME=你的用户名
-    #   DOCKERHUB_IMAGE=cpa2sub2api      # 可选，默认用仓库名
-    image: ${DOCKERHUB_USERNAME:?请在 .env 里设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: cpa2sub2api-mihomo-init
-    profiles: ["mihomo"]
+    image: ${DOCKERHUB_USERNAME:?请设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
+    profiles: [mihomo]
     pull_policy: always
-
-    # 用本镜像当 init 容器：mihomo 官方镜像里**没有 shell/python/curl**
-    # （只有 busybox 的少量工具），它自己没法把模板展开成 config.yaml。
-    # 本镜像有 python3 和 sh。
-    entrypoint: ["/app/mihomo-manager/bootstrap-mihomo.sh"]
-    user: "0:0"
+    user: '0:0'
+    entrypoint: [/bin/sh, /app/mihomo-manager/bootstrap-mihomo.sh]
+    env_file: [.env]
+    environment:
+      MIHOMO_TARGET_DIR: /root/.config/mihomo
+      MIHOMO_AUTOMATIC_TESTS: ${MIHOMO_AUTOMATIC_TESTS:-false}
+    volumes: [mihomo-config:/root/.config/mihomo]
+    networks: [cpa2sub2api-network]
     restart: "no"
 
-    # env_file 是必须的，不能只靠下面的 environment 逐项透传：
-    # MIHOMO_SUBSCRIPTIONS 的值形如 `wog=https://...;wogb=https://...`，
-    # 里面同时有 `=` 和 `;`，compose 的 ${VAR} 插值处理不了这种内容，
-    # 而 mihomo-manager/README.md 推荐的正是这种写法。
-    # 少了它 → init 容器拿到的订阅变量为空 → 模板里的占位符展不开 →
-    # bootstrap 打印"未展开的占位符"并以 code 1 退出 → mihomo 因为
-    # service_completed_successfully 永远不启动（表面上只是"代理没生效"）。
-    env_file:
-      - .env
-
-    environment:
-      - MIHOMO_TARGET_DIR=/mihomo-config
-      - MIHOMO_SECRET=${MIHOMO_SECRET:-}
-      - MIHOMO_SUBSCRIPTIONS=${MIHOMO_SUBSCRIPTIONS:-}
-      - MIHOMO_SUB_WOG=${MIHOMO_SUB_WOG:-}
-      - MIHOMO_SUB_WOGB=${MIHOMO_SUB_WOGB:-}
-      - MIHOMO_FORCE_REBUILD=${MIHOMO_FORCE_REBUILD:-}
-      - TZ=${TZ:-Asia/Shanghai}
-
-    volumes:
-      - mihomo-config:/mihomo-config
-
-    networks:
-      - cpa2sub2api-network
-
-  # ====================================
-  # Mihomo 代理服务
-  # ====================================
-  mihomo:
-    # 同一个本项目镜像：里面装了 mihomo 二进制与地理数据
-    # （Dockerfile 里 `COPY --from=mihomo /mihomo /usr/local/bin/mihomo`）。
-    # 这里只是把 entrypoint 换成 mihomo 本体，配置由 mihomo-init 写进共享卷。
-    #
-    # 不再用 metacubex/mihomo:latest 的原因：那样部署要拉两个镜像，
-    # 而且 healthcheck 脚本得同时兼容两种基座。同镜像两角色还有一个好处 ——
-    # 版本只有一处，不会出现"内核 v1.19.31、脚本按 v1.19.20 的 API 写"这类漂移。
-    image: ${DOCKERHUB_USERNAME:?请在 .env 里设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: mihomo
-    profiles: ["mihomo"]
+  # 原init先生成配置，本项目只修改自动节点检测策略。
+  mihomo-policy-init:
+    image: ${DOCKERHUB_USERNAME:?请设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
+    profiles: [mihomo]
     pull_policy: always
-
-    # root：要往配置目录写 cache.db，而命名卷首次由 Docker 以 root 建出
-    user: "0:0"
-    entrypoint: ["mihomo"]
-    command: ["-d", "/root/.config/mihomo"]
-
-    ports:
-      # 只绑回环，仅用于宿主机 curl 验证。
-      # 容器之间走 Docker 网络直连容器 IP（服务名 mihomo），不经过这里。
-      #
-      # 注意：宿主 7890 被别的代理软件（Clash 等）占着时，这一段会让
-      # `docker compose --profile mihomo up` 直接失败（端口冲突）。
-      # 本机实测就撞到过：7890 是 clash-win64。这时要么停掉它，
-      # 要么把下面的宿主端口改掉（容器内的 7890 不用动，
-      # cpa2sub2api 走的是服务名 mihomo:7890）。
-      - "${MIHOMO_BIND:-127.0.0.1}:${MIHOMO_HTTP_PORT:-7890}:7890"
-      - "${MIHOMO_BIND:-127.0.0.1}:${MIHOMO_API_PORT:-9090}:9090"
-
-    volumes:
-      # 命名卷，不是 bind mount：宿主不需要预置任何文件，配置由
-      # mihomo-init 从镜像内的模板物化进来。
-      - mihomo-config:/root/.config/mihomo
-
-    networks:
-      # 服务别名：外部栈（CPA / sub2api）里写死的 proxy-url 通常就是
-      # http://mihomo:7890，别名保证它们在别的网络里也能解析到这个容器。
-      #
-      # 这里只挂自己的网络，不挂 default：compose 的 networks 映射**键**
-      # 不支持变量插值（实测报 "additional properties not allowed"），
-      # 想并入外部栈的网络时用下面的 external-network 覆盖方式，
-      # 见文件末尾 networks 段的说明。
-      cpa2sub2api-network:
-        aliases:
-          - mihomo
-
+    user: '0:0'
+    entrypoint: [/bin/sh, /app/mihomo-manager/bootstrap-mihomo.sh]
+    environment:
+      MIHOMO_POLICY_ONLY: '1'
+      MIHOMO_AUTOMATIC_TESTS: ${MIHOMO_AUTOMATIC_TESTS:-false}
+      MIHOMO_TARGET_DIR: /mihomo-config
+    volumes: [mihomo-config:/mihomo-config]
+    network_mode: none
     depends_on:
-      mihomo-init:
-        condition: service_completed_successfully
+      mihomo-init: {condition: service_completed_successfully}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
 
-    # 健康检查调 healthcheck.sh —— 它不只判活，还会改选路。
-    #
-    # 为什么不能只判活：机场节点全挂时 mihomo 进程活得很好（端口在听、
-    # API 有响应、AUTO 组里还列着节点名），日志里看不出异常，但所有配了
-    # proxy-url 的上游都会走进这个没有出口的代理里排队到超时。
-    # 脚本会调 9090 的 `PUT /proxies/PROXY {"name":"DIRECT"}` 把出口降级
-    # （裸连总比全挂好），恢复后自动切回 AUTO。
-    #
-    # 脚本要在两种基座里都能跑：busybox（metacubex/mihomo）与本镜像的
-    # Debian slim。Debian 装了 busybox 也**不会**自动有 /usr/bin/nc
-    # （实测：have busybox，MISS nc），所以脚本对 nc/wget 做了
-    # "命令探测 + 回退到 `busybox <applet>`"。本镜像的 Dockerfile 因此
-    # 额外装了 busybox 与 wget 两个包（合计约 1.3 MB）。
+  mihomo:
+    image: ${DOCKERHUB_USERNAME:?请设置 DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
+    profiles: [mihomo]
+    pull_policy: always
+    user: '0:0'
+    entrypoint: [mihomo]
+    command: [-d, /root/.config/mihomo]
+    env_file: [.env]
+    environment:
+      MIHOMO_AUTOMATIC_TESTS: ${MIHOMO_AUTOMATIC_TESTS:-false}
+    volumes: [mihomo-config:/root/.config/mihomo]
+    ports:
+      - '${MIHOMO_BIND:-127.0.0.1}:${MIHOMO_HTTP_PORT:-7890}:7890'
+      - '${MIHOMO_BIND:-127.0.0.1}:${MIHOMO_API_PORT:-9090}:9090'
+    networks: [cpa2sub2api-network]
+    depends_on:
+      mihomo-init: {condition: service_completed_successfully}
+      mihomo-policy-init: {condition: service_completed_successfully}
     healthcheck:
       test: ["CMD", "sh", "/root/.config/mihomo/healthcheck.sh"]
       interval: 60s
       timeout: 40s
       retries: 2
       start_period: 30s
-
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-
     restart: unless-stopped
 
+
+  # Optional local authorization panel; the default CLI remains unchanged.
+  probe-ui:
+    image: ${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
+    profiles: [probe-ui]
+    pull_policy: always
+    user: "${IMPORTER_UID:-1000}:${IMPORTER_GID:-1000}"
+    entrypoint: [python, /app/probe_web.py]
+    command: [serve, --bind, 0.0.0.0, --port, '8775']
+    environment:
+      PROBE_UI_TOKEN: ${PROBE_UI_TOKEN:-}
+      PROBE_UI_ORIGIN: ${PROBE_UI_ORIGIN:-http://127.0.0.1:8775}
+      REQUEST_RELAY_ENABLED: ${REQUEST_RELAY_ENABLED:-false}
+      REQUEST_RELAY_FORCE_ALL_ACCOUNTS: ${REQUEST_RELAY_FORCE_ALL_ACCOUNTS:-false}
+      REQUEST_RELAY_BASE_URL: ${REQUEST_RELAY_BASE_URL:-http://request-relay:8380}
+      REQUEST_RELAY_STATE_DIR: /app/state/relay
+      REQUEST_RELAY_SOURCE_SCOPE: ${REQUEST_RELAY_SOURCE_SCOPE:-default}
+      REQUEST_RELAY_WEIGHTED_BUCKET: ${REQUEST_RELAY_WEIGHTED_BUCKET:-false}
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://sub2api:8080}
+      SUB2API_ADMIN_KEY: ${SUB2API_ADMIN_KEY:-}
+      SETTINGS_PATH: /app/state/设置.json
+      MODEL_PROBE_ENABLED: ${MODEL_PROBE_ENABLED:-false}
+      MODEL_PROBE_HARD_DISABLED: ${MODEL_PROBE_HARD_DISABLED:-false}
+      ONLINE_PROBE_HOSTS: ${ONLINE_PROBE_HOSTS:-}
+      AUTO_RECOVER_CRON: ${AUTO_RECOVER_CRON:-0 3 * * 0}
+      LOG_LEVEL: INFO
+      LOG_TO_FILE: 'false'
+      TZ: ${TZ:-Asia/Shanghai}
+    ports: ['127.0.0.1:${PROBE_UI_PORT:-8775}:8775']
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro,z
+      - cpa2sub2api-state:/app/state
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [cpa2sub2api-network]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import os,urllib.request,urllib.parse; origin=os.environ.get('PROBE_UI_ORIGIN') or 'http://127.0.0.1:8775'; req=urllib.request.Request('http://127.0.0.1:8775/', headers={'Host':urllib.parse.urlsplit(origin).netloc}); assert urllib.request.urlopen(req, timeout=3).status == 200"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+
+  # Private inference front; no host port and no startup model request.
+  request-relay:
+    image: ${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
+    profiles: [request-relay]
+    pull_policy: always
+    user: "${IMPORTER_UID:-1000}:${IMPORTER_GID:-1000}"
+    entrypoint: [python, /app/request_relay.py]
+    command: [serve]
+    environment:
+      MODEL_PROBE_ENABLED: ${MODEL_PROBE_ENABLED:-false}
+      MODEL_PROBE_HARD_DISABLED: ${MODEL_PROBE_HARD_DISABLED:-false}
+      ONLINE_PROBE_HOSTS: ${ONLINE_PROBE_HOSTS:-}
+      REQUEST_RELAY_STATE_DIR: /app/state/relay
+      REQUEST_RELAY_BIND: 0.0.0.0
+      REQUEST_RELAY_PORT: '8380'
+      REQUEST_RELAY_CONSUMER_BIN: /usr/local/bin/cpa-consumer
+      REQUEST_RELAY_TIMEOUT: ${REQUEST_RELAY_TIMEOUT:-600}
+      REQUEST_RELAY_MAX_RESPONSE_BYTES: ${REQUEST_RELAY_MAX_RESPONSE_BYTES:-67108864}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro,z
+      - cpa2sub2api-state:/app/state
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [cpa2sub2api-network]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, /app/request_relay.py, health]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+
+
 networks:
-  cpa2sub2api-network:
-    driver: bridge
-    ipam:
-      config:
-        # 子网可覆盖。写死 172.28.0.0/16 在 VPS 上是常见故障源：
-        # 目标机已有容器占用同一网段时，`docker compose up` 直接失败
-        # （Pool overlaps with other one on this address space），
-        # 而开发机上通常只有一两个 stack，一直空着看不出问题。
-        # 撞了就在 .env 里设 CPA2SUB2API_SUBNET=172.29.0.0/16。
-        - subnet: ${CPA2SUB2API_SUBNET:-172.28.0.0/16}
-
-  # 与外部栈共享的网络（可选）。
-  #
-  # 独立部署（本文件自带 mihomo、sub2api 从外面来）时，把
-  # docker-compose.cpa2sub2api.yml 叠加上来即可：那一份把本服务接到外部
-  # 已存在的 sub2api-network 上，并以 external: true 引用。
-  # 两份文件分工明确，本文件不重复定义外部网络，避免"网络名冲突/重复定义"。
-
+  # 让 Docker 分配子网，避免与已有 VPS 网络固定网段冲突。
+  cpa2sub2api-network: {driver: bridge}
 volumes:
-  # mihomo 的配置与节点缓存。用命名卷而不是宿主目录，
-  # 是为了让部署保持"VPS 只拉镜像"这一条不变。
-  mihomo-config:
+  cpa2sub2api-out: {}
+  cpa2sub2api-state: {}
+  mihomo-config: {}

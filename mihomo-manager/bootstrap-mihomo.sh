@@ -23,6 +23,8 @@
 #   MIHOMO_SUBSCRIPTIONS   订阅清单，多行或分号分隔的 `名称=URL`
 #   MIHOMO_SUB_<名称>      单个订阅的 URL（与上面二选一，大写名称）
 #   MIHOMO_FORCE_REBUILD   非空则强制用模板覆盖现有 config.yaml
+#   MIHOMO_AUTOMATIC_TESTS false 时关闭 provider / 自动组的节点测速；未设或 true 保留
+#   MIHOMO_POLICY_ONLY    1 时只处理已有配置；不复制脚本、地理数据或物化订阅
 
 set -eu
 
@@ -33,6 +35,108 @@ CONFIG="$DST_DIR/config.yaml"
 
 log() { echo "[mihomo-init] $*"; }
 die() { echo "[mihomo-init] ERROR: $*" >&2; exit 1; }
+
+# 布尔参数先验证，非法参数不能在同步其他文件后才失败。
+_automatic_tests=$(printf '%s' "${MIHOMO_AUTOMATIC_TESTS:-true}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+case "$_automatic_tests" in
+    1|true|yes|on|0|false|no|off) ;;
+    *) die "MIHOMO_AUTOMATIC_TESTS 必须是明确的布尔值" ;;
+esac
+
+apply_automatic_test_policy() {
+python3 - "$CONFIG" <<'PY_POLICY'
+import os
+from pathlib import Path
+import stat
+import sys
+import tempfile
+
+setting = os.environ.get('MIHOMO_AUTOMATIC_TESTS', 'true').strip().lower()
+if setting in ('1', 'true', 'yes', 'on'):
+    sys.exit(0)
+if setting not in ('0', 'false', 'no', 'off'):
+    print('[mihomo-policy] invalid_automatic_test_setting', file=sys.stderr)
+    sys.exit(1)
+
+temporary = None
+try:
+    import yaml
+    path = Path(sys.argv[1])
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('regular_existing_config_required')
+    original = path.read_bytes()
+    metadata = path.stat()
+    configuration = yaml.safe_load(original)
+    if not isinstance(configuration, dict):
+        raise ValueError('config_mapping_required')
+    providers = configuration.get('proxy-providers', {})
+    groups = configuration.get('proxy-groups', [])
+    if providers is None:
+        providers = {}
+    if groups is None:
+        groups = []
+    if not isinstance(providers, dict) or not isinstance(groups, list):
+        raise ValueError('invalid_provider_or_group_structure')
+    changed = False
+    for provider in providers.values():
+        if not isinstance(provider, dict):
+            raise ValueError('invalid_provider')
+        health = provider.get('health-check')
+        if health is not None and not isinstance(health, dict):
+            raise ValueError('invalid_provider_health_check')
+        if health is not None and health.get('enable') is not False:
+            health['enable'] = False
+            changed = True
+    scheduling_fields = ('url', 'interval', 'lazy', 'timeout', 'max-failed-times',
+                         'tolerance', 'strategy', 'expected-status')
+    for group in groups:
+        if not isinstance(group, dict):
+            raise ValueError('invalid_group')
+        if group.get('type') in ('url-test', 'fallback', 'load-balance'):
+            group['type'] = 'select'
+            for field in scheduling_fields:
+                group.pop(field, None)
+            changed = True
+    if changed:
+        rendered = yaml.safe_dump(configuration, allow_unicode=True, sort_keys=False)
+        # Parse the complete candidate before replacing the existing file.
+        if yaml.safe_load(rendered) != configuration:
+            raise ValueError('policy_render_drift')
+        descriptor, temporary = tempfile.mkstemp(prefix='.mihomo-policy-', dir=str(path.parent))
+        with os.fdopen(descriptor, 'w', encoding='utf8', newline='\n') as stream:
+            stream.write(rendered)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
+        if hasattr(os, 'chown'):
+            os.chown(temporary, metadata.st_uid, metadata.st_gid)
+        if path.read_bytes() != original:
+            raise ValueError('config_changed_during_policy')
+        os.replace(temporary, path)
+        temporary = None
+    print('[mihomo-policy] automatic_node_tests_disabled')
+except Exception:
+    print('[mihomo-policy] config_policy_failed_original_preserved', file=sys.stderr)
+    sys.exit(1)
+finally:
+    if temporary is not None:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+PY_POLICY
+}
+
+# 共享 importer 先生成配置，本项目只做离线策略；保留其 health/fallback 脚本。
+case "${MIHOMO_POLICY_ONLY:-0}" in
+    1|true|yes|on)
+        [ -f "$CONFIG" ] && [ ! -L "$CONFIG" ] || die "policy-only 需要已有普通 config.yaml"
+        apply_automatic_test_policy
+        exit 0
+        ;;
+    0|false|no|off|'') ;;
+    *) die "MIHOMO_POLICY_ONLY 必须是明确的布尔值" ;;
+esac
 
 [ -f "$TEMPLATE" ] || die "模板不存在: $TEMPLATE（镜像构建可能漏拷了 mihomo-manager）"
 
@@ -82,6 +186,7 @@ fi
 
 # ---- 已有配置且未要求重建：保留 ----
 if [ -f "$CONFIG" ] && [ -z "${MIHOMO_FORCE_REBUILD:-}" ]; then
+    apply_automatic_test_policy
     log "配置已存在，保留不覆盖（要重建设 MIHOMO_FORCE_REBUILD=1）"
     log "  $CONFIG"
     exit 0
@@ -276,5 +381,7 @@ if leftover:
           "mihomo 会因 URL 非法而启动失败" % ", ".join(sorted(leftover)))
     sys.exit(1)
 PY
+
+apply_automatic_test_policy
 
 log "自举完成"

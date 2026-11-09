@@ -13,7 +13,7 @@
 # 所以由本镜像充当 init 与运行两个角色：
 #   · `entrypoint: sh /app/mihomo-manager/bootstrap-mihomo.sh` → 物化配置进卷
 #   · `entrypoint: mihomo -d /root/.config/mihomo`            → 长驻代理
-# 这样「上传三个配置文件就够」这个约束才成立。
+# 这样「上传四个配套部署文件就够」这个约束才成立。
 #
 # mihomo 是 Go 编的纯静态二进制（实测 file 显示 static，不 link musl 运行库），
 # 所以从 metacubex/mihomo（Alpine）COPY 到本镜像的 Debian/glibc 基座上能直接跑
@@ -29,14 +29,47 @@
 # **必须声明在第一个 FROM 之前**：只有"全局 ARG"（位于任何 FROM 之上）
 # 才能被后面的 FROM 引用；写在 FROM 之后的 ARG 属于那个 stage 的局部作用域，
 # 对下一个 FROM 不可见，构建会报 "base name should not be blank"。
-ARG MIHOMO_IMAGE=metacubex/mihomo:latest
+ARG MIHOMO_IMAGE=metacubex/mihomo@sha256:9211361a3ed85305383288d38c05e85862d6d5a590c10007c37fc059cca82e9c
+ARG PYTHON_IMAGE=python@sha256:65bd3d9f1d7fa268dd1909973ba7eb4bdf41f6dcf2cfbe76ba9528b170f3fd79
+ARG CPA_CONSUMER_BUILD_IMAGE=golang:1.26.10-bookworm@sha256:5de7c99eb78ca5e515a4c340235d0955ec5964a5071c492c15503d7c267da473
 
 FROM ${MIHOMO_IMAGE} AS mihomo
+
+# The relay preserves the pinned native executor and its selected wire policy.
+# This project-local patch only disables redirects for its diagnostic auth
+# namespaces. Source/patch/build/binary evidence is included in the runtime.
+FROM ${CPA_CONSUMER_BUILD_IMAGE} AS cpa-consumer-source
+ARG CPA_CONSUMER_BUILD_IMAGE
+ENV CPA_CONSUMER_BUILD_IMAGE=${CPA_CONSUMER_BUILD_IMAGE} GOTOOLCHAIN=local
+WORKDIR /build/consumer-src
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential git python3 && \
+    rm -rf /var/lib/apt/lists/*
+RUN git init . && git config core.autocrlf false && \
+    git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && \
+    git fetch --depth 1 origin 91e0dee827abf476f9f86246f68c500a112f7155 && \
+    git checkout --detach FETCH_HEAD && \
+    test "$(git rev-parse HEAD)" = 91e0dee827abf476f9f86246f68c500a112f7155
+COPY Dockerfile /build/patches/Dockerfile
+COPY .dockerignore /build/patches/.dockerignore
+COPY requirements.txt /build/patches/requirements.txt
+COPY third_party/patches/consumer_patch_manifest.json /build/patches/consumer_patch_manifest.json
+COPY third_party/patches/apply_consumer_patch.py /build/patches/apply_consumer_patch.py
+COPY third_party/patches/diagnostic_redirect.go /build/patches/diagnostic_redirect.go
+COPY third_party/patches/diagnostic_redirect_test.go /build/patches/diagnostic_redirect_test.go
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+FROM cpa-consumer-source AS cpa-consumer
+RUN python3 /build/patches/apply_consumer_patch.py apply
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go test ./internal/runtime/executor/helps -run '^TestCPA2Sub2APIDiagnostic' -count=1
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    python3 /build/patches/apply_consumer_patch.py build && \
+    python3 /build/patches/apply_consumer_patch.py provenance
 
 # ====================================
 # 阶段 1: 基础镜像
 # ====================================
-FROM python:3.11-slim as base
+FROM ${PYTHON_IMAGE} AS base
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1 \
@@ -70,7 +103,7 @@ RUN apt-get update && \
 # ====================================
 # 阶段 2: 依赖安装
 # ====================================
-FROM base as builder
+FROM base AS builder
 
 # 设置工作目录
 WORKDIR /build
@@ -85,10 +118,13 @@ RUN pip install --user --no-warn-script-location -r requirements.txt
 # ====================================
 # 阶段 3: 运行时镜像
 # ====================================
-FROM base as runtime
+FROM base AS runtime
 
 # 创建非 root 用户
 RUN useradd -m -u 1000 -s /bin/bash app
+# useradd may use HOME_MODE=0700. Root with cap_drop: ALL cannot bypass
+# that directory, so even PYTHONUSERBASE would become unreadable.
+RUN chmod 0755 /home/app
 
 # 设置工作目录
 WORKDIR /app
@@ -125,14 +161,30 @@ ENV PYTHONUSERBASE=/home/app/.local
 # 放在 /usr/local/share/mihomo 而不是默认目录，避免"卷挂上去把镜像里那份遮掉"
 # 这种依赖挂载顺序的隐式行为。
 COPY --from=mihomo /mihomo /usr/local/bin/mihomo
+COPY --from=cpa-consumer /CLIProxyAPI/CLIProxyAPI /usr/local/bin/cpa-consumer
 COPY --from=mihomo /root/.config/mihomo/geoip.dat \
      /root/.config/mihomo/geosite.dat \
      /root/.config/mihomo/geoip.metadb \
      /usr/local/share/mihomo/
-RUN chmod +x /usr/local/bin/mihomo
+RUN chmod +x /usr/local/bin/mihomo /usr/local/bin/cpa-consumer
 
 # 复制应用代码
-COPY --chown=app:app . .
+# Only runtime sources enter the image. Private deployment files, screenshots,
+# local reports and tutorials cannot be included by an accidental new file.
+COPY --chown=app:app tool.py run.py extract.py pricing.py model_selection.py upstream_contract.py tls_diagnostic_transaction.py automatic_probe_budget.py \
+     model_probe.py probe_policy.py new_remap_priority.py 一键导入.py entrypoint.sh ./
+COPY --chown=app:app mihomo-manager/bootstrap-mihomo.sh \
+     mihomo-manager/update-mihomo-subscriptions.sh ./mihomo-manager/
+COPY --chown=app:app mihomo-manager/mihomo/config.template.yaml \
+     mihomo-manager/mihomo/healthcheck.py \
+     mihomo-manager/mihomo/healthcheck.sh ./mihomo-manager/mihomo/
+COPY --chown=app:app probe_web.py request_relay.py ./
+COPY --chown=app:app probe_web_static/index.html probe_web_static/app.js \
+     probe_web_static/styles.css ./probe_web_static/
+COPY --chown=app:app relay/__init__.py relay/config.py relay/protocol.py \
+     relay/server.py relay/transport.py ./relay/
+COPY --chown=app:app third_party/CLIProxyAPI.LICENSE third_party/CLIProxyAPI.NOTICE.txt ./third_party/
+COPY --from=cpa-consumer /build/consumer-provenance.json ./third_party/CLIProxyAPI.PROVENANCE.json
 
 # mihomo 自举脚本与容器入口都必须以可执行的方式进镜像：
 #   · mihomo-init 容器用 bootstrap-mihomo.sh 当 entrypoint；
@@ -149,17 +201,19 @@ RUN chmod +x /app/entrypoint.sh \
              /app/mihomo-manager/mihomo/healthcheck.sh
 
 # 创建输出目录
-RUN mkdir -p /app/out && chown app:app /app/out
+RUN mkdir -p /app/out /app/state && chown app:app /app/out /app/state
 
 # 设置 PATH
 ENV PATH=/home/app/.local/bin:$PATH
+ENV SETTINGS_PATH=/app/state/设置.json
+ENV REQUEST_RELAY_STATE_DIR=/app/state/relay
 
 # 切换到非 root 用户
 USER app
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)"
+    CMD python -c "import tool, yaml, model_selection, model_probe, probe_policy, upstream_contract"
 
 # 默认命令：**非交互**地把 config.yaml 同步进 sub2api。
 #

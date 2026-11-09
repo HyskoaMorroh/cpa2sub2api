@@ -241,7 +241,7 @@ check("D2 gemini 保留同版本全部 pro 变体",
 model_selection.reset_fallback_notes()
 out = model_selection.select_highest_models(D("gemini-3.5-flash"), "gemini")
 notes = model_selection.collect_fallback_notes()
-check("D3 gemini 全 flash 时回退并出声", names(out) == ["gemini-3.5-flash"] and notes,
+check("D3 gemini 全 flash 时阻止全部并出声", names(out) == [] and notes,
       "notes=%r" % notes)
 
 # claude
@@ -274,29 +274,30 @@ out = model_selection.select_highest_models(
 check("D8 codex 门槛未注入时跟随观测到的最高代",
       set(names(out)) == {"gpt-7", "gpt-7-sol"}, "%r" % names(out))
 
-# codex 不再误吃 gpt-60
+# DOCX P15/P18：动态数值最高，不把60误解析成6，也不把源码门槛当未来版本上限。
 out = model_selection.select_highest_models(
     D("gpt-6", "gpt-60"), "openai", source_section="codex-api-key", series={"openai": 6})
-check("D9 gpt-60 不被当成第 6 代", "gpt-60" not in names(out), "%r" % names(out))
+check("D9 gpt-60 按真实第60代而非第6代动态就高",
+      model_selection.openai_gpt_major("gpt-60") == 60 and names(out) == ["gpt-60"], "%r" % names(out))
 
 # openai（多族）
 # gpt-6.0 与 gpt-6.0-preview 同族同版本 -> 都要留（"同等级系列全部勾选"）
-# gpt-5.6 属 gpt-5 族 -> 该族最高，留
+# DOCX P18/P19：整个 GPT 是一族；较旧主代仅在同族次代实测成功时补入。
 # o3-max 留；o3-mini 被需求①砍掉（"所有带 mini、flash、fast 的模型都不勾选"）
 out = model_selection.select_highest_models(
     D("gpt-6.0", "gpt-6.0-preview", "gpt-5.6", "o3-mini", "o3-max"),
     "openai", source_section="openai-compatibility", series={"openai": 6})
 check("D10 openai 多族并存、同族同版本全留（mini 除外）",
-      set(names(out)) == {"gpt-6.0", "gpt-6.0-preview", "gpt-5.6", "o3-max"},
+      set(names(out)) == {"gpt-6.0", "gpt-6.0-preview", "o3-max"},
       "%r" % names(out))
 # 需求①：低档词过滤在分族之前做，所以 o3-mini 不会经 o3 族漏出来
 check("D10c o3-mini 被需求①砍掉", "o3-mini" not in names(out), "%r" % names(out))
-# gpt-5 族内低版本必须被砍（gpt-5.5 < gpt-5.6）
+# GPT 全族只留目录数值最高，未实测不能补较旧主代。
 out = model_selection.select_highest_models(
     D("gpt-6.0", "gpt-5.6", "gpt-5.5", "gpt-5.5-mini"), "openai",
     source_section="openai-compatibility", series={"openai": 6})
 check("D10b 同族低版本被砍",
-      set(names(out)) == {"gpt-6.0", "gpt-5.6"}, "%r" % names(out))
+      set(names(out)) == {"gpt-6.0"}, "%r" % names(out))
 
 out = model_selection.select_highest_models(
     D("gpt-4o", "gpt-4o-mini", "gpt-4.1"), "openai",
@@ -374,8 +375,8 @@ d = tool.build_domain_scoped_cooldown([{"status-code": 403,
 codes = [x["error_code"] for x in rules + d]
 check("H1 402 域名级规则已生成", 402 in [x["error_code"] for x in d],
       "%r" % [x["error_code"] for x in d])
-check("H2 402 冷却时长 180 分钟",
-      [x["duration_minutes"] for x in d if x["error_code"] == 402] == [180])
+check("H2 402 冷却时长 15 分钟（修改要求P8）",
+      [x["duration_minutes"] for x in d if x["error_code"] == 402] == [15])
 check("H3 关键词是短语而非裸单词（不会误伤）",
       all((" " in k) or len(k) >= 4 for x in d for k in x["keywords"]),
       "%r" % [k for x in d for k in x["keywords"]])
@@ -387,10 +388,10 @@ issued = [x["error_code"] for x in
           acc2["credentials"].get("temp_unschedulable_rules") or []]
 check("H4 下发的规则里 error_code 不重复", len(issued) == len(set(issued)),
       "%r" % issued)
-check("H5 402 以域名级那条为准（180 而非 60）",
+check("H5 402 域名级与单key规则均为15分钟",
       [x["duration_minutes"] for x in
        acc2["credentials"]["temp_unschedulable_rules"]
-       if x["error_code"] == 402] == [180])
+       if x["error_code"] == 402] == [15])
 
 print()
 print("=" * 70)
@@ -797,10 +798,10 @@ check("Q4 healthcheck.sh 只用 busybox 可用命令（wget + nc）",
 _init_block = (_dc.split("mihomo-init:")[1].split("\n  mihomo:")[0]
                if "mihomo-init:" in _dc else "")
 check("Q5 本机 compose 里 mihomo-init 接了 env_file", "env_file" in _init_block, "")
-check("Q6 docker-compose 的 bind mount 带 :Z（CentOS SELinux）",
-      ":ro,Z" in _dc and ":/app/out:Z" in _dc, "")
-check("Q7 子网可通过变量覆盖（VPS 网段冲突）",
-      "CPA2SUB2API_SUBNET" in _dc, "")
+check("Q6 共享配置SELinux标签与独立产物/状态卷（CentOS）",
+      ":ro,z" in _dc and ":/app/out" in _dc and ":/app/state" in _dc, "")
+check("Q7 子网由Docker分配或可通过变量覆盖（VPS网段冲突）",
+      "subnet:" not in _dc or "CPA2SUB2API_SUBNET" in _dc, "")
 check("Q8 有 pull_policy（否则 up -d 不会拉新镜像）",
       "pull_policy: always" in _dc, "")
 
@@ -891,7 +892,7 @@ _silent_now = [
     ("代理兜底失败", "代理兜底到底试没试过是排查 5xx 的常问项"),
     ("重查分组列表也失败", "拿不到 group_id 会让账号不知去哪"),
     ("重查代理列表也失败", "拿不到 proxy_id 会静默直连（不产生代理）"),
-    ("探活计划失败", "区分'查不到'与'查到但没成功'决定要不要启用账号"),
+    ("本轮即时探活或状态读取失败", "即时恢复探活读取失败须可见，历史计划不授权恢复"),
     ("漂移诊断失败", "'把失败当成功'最误导人"),
 ]
 _missing = [n for n, _ in _silent_now if n not in _src]
@@ -916,8 +917,8 @@ check("S14 探测语料已改成随机池（无硬编码 \"hi\"）",
       '"hi"' not in _mp or "硬写" in _mp,
       "仍出现字面 \"hi\" 作为请求体")
 check("S15 探测语料池存在且中英双语",
-      "probe_prompts" in _mp and "你好，今天天气如何？" in _mp
-      and "Hi, how are you?" in _mp)
+      "probe_prompts" in _mp and "计算2加3，仅返回整数。" in _mp
+      and "Calculate 2 plus 3" in _mp)
 
 # S16: 运行时验证 —— 连续两次构造请求，语料应当会变（随机抽取生效）
 _try = set()

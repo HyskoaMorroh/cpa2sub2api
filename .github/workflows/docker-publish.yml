@@ -56,8 +56,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Build the same fixed native consumer used by the published image once.
+  # Only its binary/provenance and synthetic proof enter the temporary artifact.
+  native:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建实际原生测试镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: cpa2sub2api-ci:${{ github.sha }}
+          cache-from: type=gha,scope=cpa-native-ci
+          cache-to: type=gha,scope=cpa-native-ci,mode=max
+
+      - name: 真实原生功能、来源与四协议传输验证
+        shell: bash
+        run: |
+          set -euo pipefail
+          ci_image="cpa2sub2api-ci:${GITHUB_SHA}"
+          ci_output="${RUNNER_TEMP}/native-consumer"
+          mkdir -p "$ci_output"
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,exec,nosuid,size=128m \
+            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/repo,readonly" \
+            --entrypoint python "$ci_image" /repo/scripts/ci/verify_native.py \
+            --repo /repo --binary /usr/local/bin/cpa-consumer \
+            --provenance /app/third_party/CLIProxyAPI.PROVENANCE.json > "$ci_output/verification.json"
+          ci_container="$(docker create --entrypoint /bin/true "$ci_image")"
+          trap 'docker rm -f "$ci_container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$ci_container:/usr/local/bin/cpa-consumer" "$ci_output/cpa-consumer"
+          docker cp "$ci_container:/app/third_party/CLIProxyAPI.PROVENANCE.json" "$ci_output/CLIProxyAPI.PROVENANCE.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-consumer-${{ github.sha }}
+          path: ${{ runner.temp }}/native-consumer
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
   # ── 先测再构建。测试失败就不该产出镜像 ────────────────────────────
   test:
+    needs: native
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -70,17 +119,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 隔离每个 Python 测试任务的运行状态
+        shell: bash
+        env:
+          CI_PYTHON_VERSION: ${{ matrix.python }}
+        run: |
+          printf 'SETTINGS_PATH=%s/ci-settings-%s.json\n' "$RUNNER_TEMP" "$CI_PYTHON_VERSION" >> "$GITHUB_ENV"
+          printf 'REQUEST_RELAY_STATE_DIR=%s/ci-relay-%s\n' "$RUNNER_TEMP" "$CI_PYTHON_VERSION" >> "$GITHUB_ENV"
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-consumer-${{ github.sha }}
+          path: ${{ runner.temp }}/native-consumer
+
       - name: 装依赖
-        run: pip install "PyYAML>=6.0.1"
+        run: |
+          pip install -r requirements.txt
+          # Test-only local TLS certificates; not part of the runtime image.
+          pip install "cryptography; python_version >= '3.10'"
+
+      - name: 核实矩阵使用同一实际原生二进制
+        if: matrix.python != '3.9'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x "$RUNNER_TEMP/native-consumer/cpa-consumer"
+          python scripts/ci/verify_native.py --feature-only \
+            --binary "$RUNNER_TEMP/native-consumer/cpa-consumer" \
+            --provenance "$RUNNER_TEMP/native-consumer/CLIProxyAPI.PROVENANCE.json"
 
       - name: 语法编译（先于测试 —— 编译不过就没必要跑）
         run: |
-          python -m compileall -q tool.py model_selection.py \
-            new_remap_priority.py pricing.py extract.py run.py 一键导入.py tests
+          python -m compileall -q tool.py model_selection.py model_probe.py probe_policy.py probe_web.py request_relay.py relay \
+            new_remap_priority.py pricing.py extract.py run.py 一键导入.py scripts/ci tests
 
       - name: 代码规范（只拦语法错误与未定义名称）
         run: |
@@ -88,8 +163,19 @@ jobs:
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 
       - name: 回归测试
-        # 纯函数测试，不联网、不读写 out/
-        run: python tests/test_fixes.py
+        # 3.9 checks base compatibility; full runtime lanes must not hide skips.
+        run: |
+          python - <<'PY'
+          import sys
+          import unittest
+          suite = unittest.defaultTestLoader.discover('tests', pattern='test*.py')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          full_runtime = sys.version_info >= (3, 10)
+          print('runtime_requires_zero_skips=%s tests=%d skipped=%d' %
+                (full_runtime, result.testsRun, len(result.skipped)))
+          sys.exit(0 if result.wasSuccessful() and result.testsRun > 0
+                   and (not full_runtime or not result.skipped) else 1)
+          PY
 
   # ── 构建多架构镜像 ────────────────────────────────────────────────
   build:
@@ -165,6 +251,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=long
 
       - name: 构建并推送
         uses: docker/build-push-action@v6
@@ -177,7 +264,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # 构建缓存：多架构构建很贵，缓存能显著缩短后续构建
-          cache-from: type=gha
+          cache-from: |
+            type=gha
+            type=gha,scope=cpa-native-ci
           cache-to: type=gha,mode=max
 
       - name: 构建摘要
@@ -197,4 +286,4 @@ jobs:
             echo '```bash'
             echo "docker pull ${{ env.DOCKERHUB_USER }}/${{ env.DOCKERHUB_REPO }}:latest"
             echo '```'
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"

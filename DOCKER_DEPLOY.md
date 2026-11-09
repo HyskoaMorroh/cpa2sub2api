@@ -6,6 +6,42 @@ Actions 构建推 Docker Hub → VPS 拉镜像运行。**VPS 上不需要源码*
 
 更完整的图文说明见 [`tutorial.html`](tutorial.html)。
 
+本工具提供两个同镜像的可选服务：`probe-ui`（站级授权面板，宿主仅回环8775）和 `request-relay`（固定官方源码构建的CPA consumer，包含本项目诊断重定向安全补丁，不映射宿主端口）。公开模板默认关闭两者；需要 CPA 独有行为的输入必须启用 relay，不能静默丢字段后直连。完整字段、TLS/scope、来源认领及迁移合同以[主 README](README.md#可选-request-relay让原-cpa-运行时消费参数)和[教程](tutorial.html#s6-relay)为准。
+
+镜像内 `/app/third_party/CLIProxyAPI.PROVENANCE.json` 记录consumer固定上游commit、构建镜像、二进制/输入SHA、CGO、Go版本和架构。功能标识 `cpa2sub2api-diagnostic-no-redirect-v1` 对诊断关闭重定向，不改变普通业务原配置；重试为0本身不代表没有重定向。周计划诊断model标记由工具自动生成，认证、route/model及双闸验证后才消费；不要人工拼接带斜线的Gemini模型标记。新镜像应同时核验来源记录、实际consumer与relay代际，不能只拉原版CPA镜像就假定包含本项目诊断补丁。
+
+```bash
+# 首次先只读预览本地配置，不访问管理端/上游、不发布relay状态
+docker compose run --rm cpa2sub2api python tool.py import --preview
+# 输入需要relay时，先在私有.env同时设置：
+# REQUEST_RELAY_ENABLED=true 和 COMPOSE_PROFILES=request-relay
+# 无状态的首次服务暂时unready正常；不要用healthy依赖阻断首次导出
+docker compose up -d request-relay
+# 原子导出 → 实际consumer代际就绪 → 账号创建/同步
+docker compose run --rm cpa2sub2api python tool.py import --yes
+# 仅在已配置强随机PROBE_UI_TOKEN和精确PROBE_UI_ORIGIN后启动面板
+docker compose --profile probe-ui up -d probe-ui
+```
+
+`--host upstream.example.invalid --preview` / `--yes` 只添加/同步该站，不清理其他站；无 `--host` 是全量输入。Web 开启只保存授权，关闭先保存再尽力校准旧计划，检查 `saved` / `applied`；环境 `MODEL_PROBE_ENABLED=false` 始终是硬闸。多个来源使用不同稳定 scope 和不同 state_dir/卷。以上是部署合同，不是某个真实环境已经验收的结论。
+
+Web关闭后的逐账号校准可能等待管理端限流窗口；网页120秒超时后先刷新核实，不能把超时提示当作未保存，也不能把保存成功当作旧计划已停止。relay模式的显式诊断与恢复只读已有`CURRENT`，地址、目录、scope、权重模式或代际变化时旧证据失效。每次consumer启动使用独立空OAuth目录，原配置和私有令牌仍保留在state卷；正常重启无需删除该卷。
+
+### 官方版本信息与受控升级
+
+`import --preview` 和显式离线检查不请求 GitHub；预览也不访问管理端或模型上游。公开模板 `FETCH_UPSTREAM_SRC=true` 让正常线上执行按TTL自动查询官方最新稳定 tag/commit与候选源码，默认每7天；缓存新鲜时不重复HTTP。设 false 则只用本地证据。也可显式检查和刷新：
+
+```bash
+docker compose run --rm cpa2sub2api python tool.py upstream inspect
+docker compose run --rm cpa2sub2api python tool.py upstream refresh --offline
+docker compose run --rm cpa2sub2api python tool.py upstream refresh
+docker compose run --rm cpa2sub2api python tool.py upstream refresh --latest
+```
+
+`inspect` 零网络、零缓存写入；`refresh --offline` 只用已有完整且SHA匹配的固定源码；`refresh` 显式刷新固定版本；`refresh --latest` 取得官方最新稳定版及候选源码，不能与 `--offline` 同用。可加 `--kind cpa` 或 `--kind sub2api`，默认检查全部。
+
+源码缓存位于 out 卷的 `upstream-cache/<kind>/<commit>/<generation>/manifest.json`，最新版本报告为 `upstream-cache/release-evidence.json`，固定源码刷新报告为同目录的 `source-cache-evidence.json`。`UPSTREAM_CACHE_TTL_SECONDS=604800` 对应设置键 `upstream_cache_ttl_seconds`（默认7天）；过期固定缓存可离线复用并显示 stale，不能据此称最新。未激活的新版本候选不阻止仍匹配固定合同的导入；实际使用的sourcehash漂移、未知受管字段或旧计划固定身份不匹配才会阻止实际导入及清理。首次空out卷仍可按镜像内合同运行，不要求下载Go源码。发现可用新版本不升级正在运行的 consumer 或 sub2api；先完成新合同语义适配、固定consumer摘要及基线SHA和容器/真实管理页/调用链验证，再发布和拉取已验证镜像。删除报告不能使新源码变兼容。详细字段合同和回滚步骤见[README](README.md#上游版本信息与字段合同)。
+
 ---
 
 ## 目录
@@ -45,7 +81,7 @@ Actions 构建推 Docker Hub → VPS 拉镜像运行。**VPS 上不需要源码*
    读 CPA 的 config.yaml ──► 写 sub2api 的账号/分组/代理/定价
 ```
 
-**三个服务**：
+**默认工具与可选代理服务**（另有上文两个可选 profile）：
 
 | 服务 | 性质 | 说明 |
 |---|---|---|
@@ -210,6 +246,8 @@ mihomo（读同一个命名卷里的 config.yaml，长驻）
 ```bash
 MIHOMO_SECRET=自己生成的随机串
 MIHOMO_SUBSCRIPTIONS=wog=https://机场订阅地址
+MIHOMO_AUTOMATIC_TESTS=false
+MIHOMO_SHARED_VOLUME=mihomo-data  # 共享叠加模板：父compose配置卷key
 ```
 
 或每个订阅一个变量：
@@ -220,6 +258,21 @@ MIHOMO_SUB_WOGB=https://另一个订阅地址
 ```
 
 两种可混用，`MIHOMO_SUB_<名称>` 优先。
+
+### 4.2.1 关闭节点自动检测的共享栈策略
+
+`MIHOMO_AUTOMATIC_TESTS=false` 关闭 provider 节点健康检测和 url-test，自动检测组转为手工 `select`，保留节点、过滤和规则。模型账号在线检测由总闸和站级授权另外控制，两者不互相授权。
+
+共享父栈保留 upstream-importer 原 init 和 kernel 镜像，在原 init 完成后运行本项目镜像的 `mihomo-policy-init`。该服务使用 `MIHOMO_POLICY_ONLY=1`，无网络、同一配置卷，只原子处理已有配置；失败时 kernel 继续等待。它不覆盖原中立连通性健康脚本、地理数据和手工 fallback。
+
+```bash
+# 私有.env中设MIHOMO_AUTOMATIC_TESTS=false，先核实共享卷
+docker compose stop mihomo
+docker compose up -d --force-recreate mihomo-init mihomo-policy-init mihomo
+docker compose ps -a mihomo-init mihomo-policy-init mihomo
+```
+
+恢复自动节点检测时，明确设置 true，并恢复组的自动类型和 provider health-check，或使用已备份配置/受控重建，再按上述次序启动；仅改变量不能把 select 自动还原。独立模板和共享叠加模板均带此策略，共享模板保留父栈原镜像。
 
 ### 4.3 验证（四步，缺一不可）
 
@@ -300,7 +353,7 @@ docker compose run --rm cpa2sub2api python run.py
 | `out/import-record.json` | 执行结果记录 |
 
 **导入前先抽查 `out/对照表.md` 的「放行模型」列** —— 那就是真正写进 sub2api
-的白名单，与线上生效的完全一致。
+的计划白名单；仍须在实际管理页与消费者读回核实。
 
 ### 5.4 日志
 

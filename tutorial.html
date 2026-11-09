@@ -7,7 +7,7 @@
 <style>
   :root{
     --bg:#0A0D12; --bg2:#0F131C; --bg3:#161D2B; --bg4:#1E2636;
-    --fg:#E5E7EB; --fg2:#9CA3AF; --fg3:#6B7280;
+    --fg:#E5E7EB; --fg2:#B3BECE; --fg3:#94A3B8;
     --cyan:#38BDF8; --emerald:#6EE7B7; --amber:#FBBF24;
     --violet:#A78BFA; --rose:#FB7185; --red:#EF4444;
     --line:rgba(255,255,255,.10);
@@ -33,15 +33,14 @@
   /* ── 标题层级：颜色区分每一层 ─────────────────────────── */
   h1{
     font-size:clamp(1.9rem,4.6vw,2.7rem); line-height:1.2; letter-spacing:-.02em;
-    background:linear-gradient(90deg,var(--cyan),var(--violet) 60%,var(--emerald));
-    -webkit-background-clip:text; background-clip:text; color:transparent;
+    color:var(--fg); text-wrap:balance;
     margin-bottom:.6rem;
   }
   .lede{color:var(--fg2); font-size:1.02rem; margin-bottom:2.2rem}
   h2{
     font-size:clamp(1.35rem,3vw,1.8rem); color:var(--cyan);
     margin-top:3.4rem; margin-bottom:1.1rem; padding:.35rem 0 .35rem 1rem;
-    border-left:5px solid var(--cyan); border-radius:3px;
+    border-left:1px solid var(--cyan); border-radius:3px;
     background:linear-gradient(90deg,rgba(56,189,248,.10),transparent);
   }
   h3{
@@ -75,16 +74,20 @@
     transition:transform .14s,opacity .14s;
   }
   .cw .cp:hover{opacity:1; transform:translateY(-1px)}
+  .inline-copy{display:inline-flex; align-items:baseline; gap:.4rem; max-width:100%}
+  .inline-copy code{min-width:0; white-space:normal; overflow-wrap:anywhere}
+  .inline-copy .cp{flex:none; background:var(--cyan); color:#06131c; border:0;
+    padding:.15rem .4rem; border-radius:5px; font-size:.72rem; font-weight:800; cursor:pointer}
   pre{
     background:var(--bg); border:1px solid var(--line);
-    border-left:3px solid var(--cyan); border-radius:var(--r);
+    border-left:1px solid var(--cyan); border-radius:var(--r);
     padding:1.15rem 1.2rem; overflow-x:auto;
     font-size:.845rem; line-height:1.65; color:#D7E3F4;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   }
 
   /* ── 提示框 ───────────────────────────────────────────── */
-  .box{border-radius:var(--r); padding:.95rem 1.15rem; margin:1.1rem 0; border-left:4px solid}
+  .box{border-radius:var(--r); padding:.95rem 1.15rem; margin:1.1rem 0; border-left:1px solid}
   .box > b:first-child{display:block; margin-bottom:.3rem}
   .note{background:rgba(56,189,248,.09); border-color:var(--cyan)}
   .note > b:first-child{color:var(--cyan)}
@@ -152,16 +155,58 @@
   footer{margin-top:3.4rem; padding-top:1.5rem; border-top:1px solid var(--line);
          color:var(--fg3); font-size:.86rem}
   footer p{margin-bottom:.5rem}
+  :focus-visible{outline:3px solid var(--amber);outline-offset:4px}
+  ::selection{background:#285A75;color:#fff}
+  .skip-link{position:fixed;top:-5rem;left:1rem;z-index:20;padding:.6rem 1rem;background:var(--amber);color:#0A0D12}
+  .skip-link:focus{top:1rem}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  .policy-summary{border:1px solid var(--emerald);padding:1.2rem;margin:1.5rem 0 2rem;background:rgba(110,231,183,.06);border-radius:var(--r)}
+  .policy-summary h2{margin-top:0;border:0;padding:0;background:none;color:var(--emerald)}
+  p,li{overflow-wrap:anywhere}
+  code{overflow-wrap:anywhere;word-break:break-word}
+  pre{tab-size:2}
+  pre code{background:none;border:0;padding:0;color:inherit;font-size:inherit}
+  .note.note-warn{overflow-x:auto}
+  @media(max-width:480px){body{padding:.65rem}.wrap{padding:1rem}.grid{grid-template-columns:1fr}pre{padding:2.8rem .8rem .9rem;font-size:.78rem}}
+  @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{transition:none!important}}
+
+  details{margin:1.2rem 0;padding:1rem;border:1px solid var(--line);border-radius:var(--r)}
+  summary{cursor:pointer;color:var(--emerald);font-weight:700}
+  details[open]>summary{margin-bottom:1rem}
+  .mobile-illustration{display:none}
+  .mobile-illustration .demo-row{padding:.8rem 0;border-bottom:1px solid var(--line)}
+  .mobile-illustration .demo-row:last-child{border-bottom:0}
+  .mobile-illustration strong{display:block;color:var(--cyan)}
+  .mobile-illustration .demo-state{color:var(--emerald)}
+  .mobile-illustration .demo-warning{color:var(--amber)}
+  .mobile-illustration .demo-lock{color:var(--rose)}
+  .mobile-illustration ol{margin:.7rem 0 .5rem 1.2rem}
+  @media(max-width:600px){.responsive-illustration>svg{display:none}.mobile-illustration{display:block;font-size:.94rem}}
+
+  h3.doc-subheading{font-size:1.03rem;color:var(--amber);margin-top:1.5rem;margin-bottom:.55rem}
+  h3.doc-subheading::before{content:"▍";color:var(--amber);margin-right:.35rem;opacity:.7}
+  .card h3.doc-subheading{margin-top:0;color:var(--cyan)}
+  .bd-new{color:#C4B5FD}
+  .danger>b:first-child{color:var(--rose)}
 </style>
 </head>
 <body>
-<div class="wrap">
+<a class="skip-link" href="#main">跳到教程正文</a>
+<main class="wrap" id="main">
+<p id="copy-status" class="sr-only" role="status" aria-live="polite"></p>
 
 <h1>CPA2SUB2API 部署与使用教程</h1>
 <p class="lede">
   把 CPA / CPAMP 生成的 <code>config.yaml</code> 批量灌进 sub2api。
-  支持按域名分桶的优先级调度、智能健康度重排、模型「就高原则」、并发导入与定时探活。
+  支持全量/单站导入、存量参数修正、模型与优先级、独立 Web 授权面板，以及可选官方 CPA request-relay。
 </p>
+
+<section class="policy-summary" aria-labelledby="current-defaults">
+<h2 id="current-defaults">先确认：默认不向上游探测</h2>
+<p>普通导入可离线分析配置，并调用 sub2api 管理 API。只有<b>总闸开启、站点已授权、且不在永久禁探名单</b>时，才允许向该站发送模型/TLS等检测请求。使用代理或批量开启都不能绕过永久禁探。</p>
+<p><code>MODEL_PROBE_ENABLED=false</code> 只为未保存总闸提供默认关闭；已保存master true/false优先。<code>MODEL_PROBE_HARD_DISABLED=true</code> 是独立硬禁，不能通过保存授权或代理绕过；站授权默认为空。恢复计划默认 <code>0 3 * * 0</code>，按目标调度器时区每周执行。旧半小时任务也需停用或迁移。</p>
+<p><a href="#s6-import">先只读预览</a> · <a href="#s6-web">Web 每站/批量开关</a> · <a href="#s6-relay">request-relay</a> · <a href="#s6-probes">管理每站开关与批量授权</a> · <a href="#s6-prune">修正与删除陈旧账号</a> · <a href="#s3-upgrade">升级与回滚</a> · <a href="#s11">真实容器与前端验收</a></p>
+</section>
 
 <div class="toc">
   <strong>目录</strong>
@@ -174,11 +219,18 @@
     <li><a href="#s5-5">代理本体：同镜像起两个容器</a></li>
     <li><a href="#s5-6">出口真的废了会自动降级</a></li>
     <li><a href="#s6">执行导入</a></li>
+    <li><a href="#s6-probes">CLI 线上检测开关</a></li>
+    <li><a href="#s6-web">Web 每站与批量授权</a></li>
+    <li><a href="#s6-relay">request-relay 与首次启用</a></li>
+    <li><a href="#s6-tls">显式 TLS / 代理 / Responses WS</a></li>
+    <li><a href="#s6-scope">多来源与旧账号认领</a></li>
+    <li><a href="#s6-prune">修正与清理陈旧账号</a></li>
+    <li><a href="#s3-upgrade">升级与回滚</a></li>
     <li><a href="#s7">工作原理</a></li>
     <li><a href="#s8">故障排查</a></li>
     <li><a href="#s8-0">先把日志打开</a></li>
     <li><a href="#s9">附录：环境变量表</a></li>
-    <li><a href="#s10">站方只认特定客户端：怎么让导入后的路由等价于直连</a></li>
+    <li><a href="#s10">直连与中转不一致的排查</a></li>
     <li><a href="#s11">VPS 部署验收清单</a></li>
   </ol>
 </div>
@@ -209,7 +261,7 @@
     </linearGradient>
     <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3"
             orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+      <path d="M0,0 L0,6 L8,3 z" fill="#94A3B8"/>
     </marker>
     <marker id="arv" markerWidth="9" markerHeight="9" refX="7" refY="3"
             orient="auto" markerUnits="strokeWidth">
@@ -217,7 +269,7 @@
     </marker>
   </defs>
 
-  <text x="450" y="26" fill="#6B7280" font-size="13" text-anchor="middle"
+  <text x="450" y="26" fill="#94A3B8" font-size="13" text-anchor="middle"
         font-family="monospace">运行时调用链</text>
 
   <!-- 客户端 -->
@@ -225,27 +277,27 @@
   <text x="90" y="76" fill="#E5E7EB" font-size="14" text-anchor="middle">客户端</text>
   <text x="90" y="93" fill="#9CA3AF" font-size="11" text-anchor="middle">Claude Code / Codex</text>
 
-  <line x1="150" y1="78" x2="196" y2="78" stroke="#6B7280" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="150" y1="78" x2="196" y2="78" stroke="#94A3B8" stroke-width="1.6" marker-end="url(#ar)"/>
 
   <rect x="200" y="52" width="110" height="52" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
   <text x="255" y="76" fill="#E5E7EB" font-size="14" text-anchor="middle">Cloudflare</text>
   <text x="255" y="93" fill="#FBBF24" font-size="11" text-anchor="middle">120s 回源超时</text>
 
-  <line x1="310" y1="78" x2="356" y2="78" stroke="#6B7280" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="310" y1="78" x2="356" y2="78" stroke="#94A3B8" stroke-width="1.6" marker-end="url(#ar)"/>
 
   <rect x="360" y="40" width="120" height="76" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
   <text x="420" y="66" fill="#E5E7EB" font-size="14" text-anchor="middle">sub2api</text>
   <text x="420" y="84" fill="#9CA3AF" font-size="11" text-anchor="middle">:8080 网关</text>
   <text x="420" y="101" fill="#6EE7B7" font-size="11" text-anchor="middle">调度 · 计费</text>
 
-  <line x1="480" y1="78" x2="526" y2="78" stroke="#6B7280" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="480" y1="78" x2="526" y2="78" stroke="#94A3B8" stroke-width="1.6" marker-end="url(#ar)"/>
 
   <rect x="530" y="40" width="130" height="76" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
   <text x="595" y="66" fill="#E5E7EB" font-size="14" text-anchor="middle">CPA</text>
   <text x="595" y="84" fill="#9CA3AF" font-size="11" text-anchor="middle">cli-proxy-api :8317</text>
   <text x="595" y="101" fill="#6EE7B7" font-size="11" text-anchor="middle">凭据池</text>
 
-  <line x1="660" y1="78" x2="706" y2="78" stroke="#6B7280" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="660" y1="78" x2="706" y2="78" stroke="#94A3B8" stroke-width="1.6" marker-end="url(#ar)"/>
 
   <rect x="710" y="40" width="160" height="76" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
   <text x="790" y="66" fill="#E5E7EB" font-size="14" text-anchor="middle">各上游站点</text>
@@ -265,7 +317,7 @@
 
   <!-- 分隔线 -->
   <line x1="30" y1="268" x2="870" y2="268" stroke="#1E2636" stroke-width="2"/>
-  <text x="450" y="292" fill="#6B7280" font-size="13" text-anchor="middle"
+  <text x="450" y="292" fill="#94A3B8" font-size="13" text-anchor="middle"
         font-family="monospace">本工具的位置（一次性运维，不进请求路径）</text>
 
   <!-- 工具 -->
@@ -289,46 +341,46 @@
 
 <div class="grid">
   <div class="card">
-    <h4>14 项参数全覆盖</h4>
+    <h3 class="doc-subheading">按消费者同步受管参数</h3>
     <p>credentials、priority、concurrency、auto_pause_on_expired、proxy_id、请求头、冷却规则、Websockets、模型白名单等一次性迁移。</p>
   </div>
   <div class="card">
-    <h4>按域名分桶</h4>
+    <h3 class="doc-subheading">按域名分桶</h3>
     <p>同一上游的多个 KEY 互为备份、落进同一优先级桶；只有整桶不可用才降级到下一个域名。</p>
   </div>
   <div class="card">
-    <h4>健康度重排 <span class="bd bd-new">已修</span></h4>
+    <h3 class="doc-subheading">健康度重排 <span class="bd bd-new">已修</span></h3>
     <p>按 sub2api 实测的可调度率 60% + 活跃率 40% 重排优先级，分组内桶号唯一。</p>
   </div>
   <div class="card">
-    <h4>模型就高原则 <span class="bd bd-fix">已修</span></h4>
+    <h3 class="doc-subheading">模型就高原则 <span class="bd bd-fix">已修</span></h3>
     <p>codex 与 openai 分开处理，代际门槛从上游源码反推，不写死版本号。</p>
   </div>
   <div class="card">
-    <h4>并发导入</h4>
+    <h3 class="doc-subheading">并发导入</h3>
     <p>建号 / 探活 / 定价三条链路都走线程池，worker 数可配且自动钳上限。</p>
   </div>
   <div class="card">
-    <h4>反测活</h4>
-    <p>探活用自然语料，并给每个账号错开探活时刻，避免「全体同时探活」这一机器特征。</p>
+    <h3 class="doc-subheading">探测默认关闭</h3>
+    <p>总闸与站授权同时开启才检测，永久禁探站不例外；授权恢复计划改为周频并错峰。</p>
   </div>
 </div>
 
 <div class="box note">
   <b>关于 CPA / CPAMP / sub2api</b>
   这三个项目都是第三方作品，本工具<b>不修改它们</b>。
-  所有调度与容灾的改进都落在<b>本工具写入 sub2api 的数据</b>上。
+  本工具校正可由管理 API 控制的字段；第三方网关的选号、重试和协议能力仍受其实际版本限制。
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s2">二、环境要求</h2>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>项目</th><th>要求</th><th>说明</th></tr></thead>
   <tbody>
-    <tr><td>Python</td><td>3.8+</td><td>Docker 镜像用 3.11</td></tr>
-    <tr><td>依赖</td><td>PyYAML 6.0+</td><td>唯一的第三方依赖</td></tr>
+    <tr><td>Python</td><td>直连 CLI / compiler：3.9+；relay：3.10+</td><td>推荐使用镜像内 3.11，避免本地版本差异</td></tr>
+    <tr><td>依赖</td><td>按 requirements.txt 安装</td><td>基础 PyYAML；relay runtime 另需 aiohttp 与 curl_cffi</td></tr>
     <tr><td>sub2api</td><td>可访问 + 管理员密钥</td><td>必填</td></tr>
     <tr><td>CPA / CPAMP</td><td>可选</td><td>本地没有 <code>config.yaml</code> 时用它在线拉取</td></tr>
     <tr><td>Docker</td><td>20.10+</td><td>含 compose v2</td></tr>
@@ -341,7 +393,7 @@
 
 <p>
   部署模型是<b>「VPS 只拉远程镜像」</b>：本机改代码 → 推 GitHub →
-  GitHub Actions 构建推 Docker Hub / GHCR → VPS 拉镜像运行。
+  GitHub Actions 构建推 Docker Hub / GHCR（以工作流为准） → VPS 拉镜像运行。
   所以 VPS 上<b>不需要源码</b>，只需要镜像和几个配置文件。
 </p>
 
@@ -372,7 +424,7 @@
   <text x="540" y="72" fill="#E5E7EB" font-size="14" text-anchor="middle">镜像仓库</text>
   <text x="540" y="92" fill="#6EE7B7" font-size="11" text-anchor="middle">amd64 + arm64</text>
   <text x="540" y="110" fill="#9CA3AF" font-size="11" text-anchor="middle">Docker Hub / GHCR</text>
-  <text x="540" y="130" fill="#6B7280" font-size="10" text-anchor="middle">名称由仓库变量决定</text>
+  <text x="540" y="130" fill="#94A3B8" font-size="10" text-anchor="middle">名称由仓库变量决定</text>
 
   <line x1="630" y1="95" x2="686" y2="95" stroke="#38BDF8" stroke-width="1.8" marker-end="url(#ar2)"/>
   <text x="658" y="86" fill="#38BDF8" font-size="11" text-anchor="middle">pull</text>
@@ -387,10 +439,10 @@
   <text x="450" y="220" fill="#FBBF24" font-size="12" text-anchor="middle">
     ⚠ VPS 拉取用 pull_policy: always —— 否则推了新 :latest 也拉不到
   </text>
-  <text x="450" y="252" fill="#6B7280" font-size="11" text-anchor="middle">
+  <text x="450" y="252" fill="#94A3B8" font-size="11" text-anchor="middle">
     默认策略 missing 只看本地有没有同名 tag，不比对 registry 上的 digest
   </text>
-  <text x="450" y="274" fill="#6B7280" font-size="11" text-anchor="middle">
+  <text x="450" y="274" fill="#94A3B8" font-size="11" text-anchor="middle">
     → 这正是「改了代码但 VPS 跑的还是旧镜像」的直接原因
   </text>
 </svg>
@@ -403,13 +455,16 @@
 <div class="step"><span class="sn">1</span><span class="st">拉取镜像</span></div>
 
 <p>镜像名由<b>你自己的</b>环境变量决定，不是写死的。先在 <code>.env</code> 里设好：</p>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># .env —— 镜像来源
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># .env —— 镜像来源
 DOCKERHUB_USERNAME=你的DockerHub用户名
-DOCKERHUB_IMAGE=cpa2sub2api        # 可选，留空则用仓库名</pre></div>
+DOCKERHUB_IMAGE=cpa2sub2api        # 可选，留空则用仓库名
+CPA2SUB2API_IMAGE_TAG=latest       # 可改成已发布的固定SHA标签</pre></div>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>docker pull $DOCKERHUB_USERNAME/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest</pre></div>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">cd /opt/deploy
+docker compose config --quiet
+docker compose pull cpa2sub2api</pre></div>
 
 <div class="box note">
   <b>这一组变量同时决定 CI 往哪里推</b>
@@ -426,15 +481,15 @@ DOCKERHUB_IMAGE=cpa2sub2api        # 可选，留空则用仓库名</pre></div>
 
 <p>在部署根目录（如 <code>/opt/deploy</code>）放这些文件：</p>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>文件</th><th>作用</th><th>是否必需</th></tr></thead>
   <tbody>
     <tr><td><code>.env</code></td><td>连接信息与开关</td><td>必需</td></tr>
     <tr><td><code>config.yaml</code></td><td>CPA / CPAMP 的产物，导入的源数据</td><td>必需（或用 CPA_BASE_URL 在线拉）</td></tr>
     <tr><td><code>docker-compose.yml</code></td><td>服务编排</td><td>必需</td></tr>
-    <tr><td><code>nginx.conf</code></td><td>反向代理</td><td>本项目<b>不需要</b>（它不是 HTTP 服务）</td></tr>
-    <tr><td><code>mihomo/</code></td><td>代理配置（由 mihomo-init 自举生成）</td><td>用代理时必需</td></tr>
+    <tr><td><code>nginx.conf</code></td><td>共享栈反向代理</td><td>父栈四个实际部署文件之一；Web授权面板为可选profile，优先回环/SSH隧道访问</td></tr>
+    <tr><td><code>mihomo-manager/</code></td><td>代理脚本</td><td>已在镜像内，不上传VPS宿主目录；配置由init写命名卷</td></tr>
   </tbody>
 </table>
 </div>
@@ -445,10 +500,10 @@ DOCKERHUB_IMAGE=cpa2sub2api        # 可选，留空则用仓库名</pre></div>
   不进请求路径。所以 <code>nginx.conf</code> 里<b>不需要</b>为它加 server 块。
 </div>
 
-<h4>2.1 <code>.env</code> 里本项目需要的项</h4>
+<h3 class="doc-subheading">2.1 <code>.env</code> 里本项目需要的项</h3>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># ── 必填 ──────────────────────────────────────────────
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># ── 必填 ──────────────────────────────────────────────
 DOCKERHUB_USERNAME=你的用户名
 DOCKERHUB_IMAGE=cpa2sub2api
 
@@ -469,7 +524,17 @@ FALLBACK_PROXY=http://mihomo:7890
 # 并发（三项都会被硬性钳到 8）
 IMPORT_WORKERS=4
 TEST_PLAN_WORKERS=8
-PRICING_WORKERS=8</pre></div>
+PRICING_WORKERS=8
+
+# 默认只分析配置，不请求上游站点
+MODEL_PROBE_ENABLED=false
+MODEL_PROBE_HARD_DISABLED=false
+ONLINE_PROBE_HOSTS=
+AUTO_RECOVER_ENABLED=true
+AUTO_RECOVER_CRON=0 3 * * 0
+SETTINGS_PATH=/app/state/设置.json
+CPA2SUB2API_IMAGE_TAG=latest
+RUN_INTERVAL_SECONDS=0</pre></div>
 
 <div class="danger">
   <b>两个最容易配错的地方</b>
@@ -480,19 +545,19 @@ PRICING_WORKERS=8</pre></div>
   写 <code>8070</code> 连不上。
 </div>
 
-<h4>2.2 <code>config.yaml</code></h4>
+<h3 class="doc-subheading">2.2 <code>config.yaml</code></h3>
 
 <p>直接把 CPA / CPAMP 生成的那份拷过来即可，本工具只读不写。</p>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>routing:
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">routing:
   strategy: round-robin          # 决定 weight&lt;=0 是否等于停用
 
 max-retry-credentials: 12
 max-retry-interval: 2            # 建议压到 2，别超出 CF 的 120 秒窗口
 
 claude-api-key:
-  - api-key: sk-ant-xxxxxxxx
+  - api-key: REPLACE_WITH_UPSTREAM_KEY
     base-url: https://your-upstream.example.com
     priority: 1000
     weight: 5
@@ -502,7 +567,7 @@ claude-api-key:
     proxy-url: "http://mihomo:7890"   # 需要代理的上游才写
 
 codex-api-key:
-  - api-key: sk-xxxxxxxx
+  - api-key: REPLACE_WITH_UPSTREAM_KEY
     base-url: https://your-codex-upstream.example.com
     priority: 1000
     models:
@@ -513,27 +578,24 @@ openai-compatibility:
   - name: your-provider
     base-url: https://your-openai-upstream.example.com
     api-key-entries:
-      - api-key: sk-yyyyyyyy
+      - api-key: REPLACE_WITH_UPSTREAM_KEY
         weight: 2
     models:
       - name: gpt-6
         alias: gpt-6</pre></div>
 
 <p>
-  本项目镜像<b>自带 mihomo</b>（代理内核 + 地理数据都打进镜像了）。所以代理不需要
-  额外的镜像、也不需要宿主机放任何 mihomo 文件 —— 同一个镜像起两个容器就够了：
+  本项目镜像<b>自带 mihomo</b>（代理内核 + 地理数据都打进镜像了）。独立部署可由同镜像承担代理初始化与运行；已有共享栈应复用 upstream-importer 的 mihomo，不再额外起同端口代理。宿主机无需放 mihomo 源码：
   一个跑 <code>bootstrap-mihomo.sh</code> 把配置物化进共享卷，一个跑
   <code>mihomo</code> 本体。
 </p>
 
 <div class="box tip">
-  <b>为什么不直接用 mihomo 官方镜像</b>
-  它基于 scratch：没有 shell、没有 python，展不开
-  <code>config.template.yaml</code>（要填订阅 URL 与 secret），连 bootstrap 脚本都跑不起来。
-  而部署约束是「VPS 只拉镜像 + 只上传三个配置文件」，宿主机上不能预置配置 ——
-  所以由本镜像兼任 init 与代理两个角色。
-  实测该二进制是 Go 静态编译（不 link musl 运行库），搬到 Debian 基座上照跑：
-  <code>mihomo -v</code> → v1.19.31，<code>-t</code> 语法检查 rc=0。
+  <b>部署文件与镜像职责</b>
+  VPS 只使用父部署根的 <code>.env</code>、<code>config.yaml</code>、<code>docker-compose.yml</code>、<code>nginx.conf</code>。
+  代理内核、地理数据和 <code>/app/mihomo-manager</code> 随镜像发布；初始化入口为
+  <code>/bin/sh /app/mihomo-manager/bootstrap-mihomo.sh</code>，配置写到 <code>/root/.config/mihomo</code> 命名卷。
+  本仓库的同名compose和示例是模板，不能覆盖已有共享数据库/网络/代理配置。
 </div>
 
 <div class="step"><span class="sn">3</span><span class="st">接入 compose</span></div>
@@ -542,9 +604,9 @@ openai-compatibility:
   本项目服务通过服务名复用同栈的 mihomo：
 </p>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>  cpa2sub2api:
-    image: ${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">  cpa2sub2api:
+    image: ${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:${CPA2SUB2API_IMAGE_TAG:-latest}
     pull_policy: always          # 见下方说明，别用默认的 missing
     container_name: cpa2sub2api
     restart: "no"                # 运维工具，跑完即退
@@ -557,12 +619,18 @@ openai-compatibility:
       CPA_BASE_URL: "${CPA_BASE_URL:-http://cli-proxy-api:8317}"
       CPA_MANAGEMENT_KEY: "${CPA_MANAGEMENT_KEY:-}"
       FALLBACK_PROXY: "${FALLBACK_PROXY:-http://mihomo:7890}"
+      SETTINGS_PATH: /app/state/设置.json
+      MODEL_PROBE_ENABLED: "${MODEL_PROBE_ENABLED:-false}"
+      MODEL_PROBE_HARD_DISABLED: "${MODEL_PROBE_HARD_DISABLED:-false}"
+      ONLINE_PROBE_HOSTS: "${ONLINE_PROBE_HOSTS:-}"
+      AUTO_RECOVER_CRON: "${AUTO_RECOVER_CRON:-0 3 * * 0}"
       TZ: "Asia/Shanghai"
 
     volumes:
       # 单文件挂载：挂整个 /opt/deploy 等于把 .env、secrets/ 一起递给它
-      - ./config.yaml:/app/config.yaml:ro,Z
-      - cpa2sub2api-out:/app/out:Z
+      - ./config.yaml:/app/config.yaml:ro,z
+      - cpa2sub2api-out:/app/out
+      - cpa2sub2api-state:/app/state
 
     # 它持有 sub2api 管理员密钥且能批量建号/改号，收紧权限
     cap_drop: [ALL]
@@ -593,8 +661,13 @@ openai-compatibility:
   你原来那条命令链加一步即可，<b>不需要额外手动执行任何 py 命令</b>：
 </p>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>docker-compose down && docker-compose pull && docker-compose up -d && docker-compose logs --tail=180</pre></div>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">cd /opt/deploy
+docker compose config --quiet
+docker compose pull cpa2sub2api
+docker compose up -d --no-deps --force-recreate cpa2sub2api
+docker compose logs --tail 180 cpa2sub2api
+docker compose ps -a cpa2sub2api</pre></div>
 
 <div class="box tip">
   <b>它是怎么自动跑的</b>
@@ -608,68 +681,30 @@ openai-compatibility:
   实际一次都没同步，必须人工 <code>docker compose run</code> 才有效果。现已改正。
 </div>
 
-<h4>同步是幂等的</h4>
+<h3 class="doc-subheading">同步是幂等的</h3>
 <p>
   重复执行不会重复建号：账号名含内容指纹（<code>sha1(api_key|base_url)</code> 前 8 位），
-  已存在的走<b>差异同步</b>，只更新真正变化的字段。所以每次 <code>up -d</code>
-  都可以放心让它跑一遍。
+  已存在的走<b>差异同步</b>，只更新真正变化的字段。默认总闸关闭时不请求上游；每次执行仍会更新受管账号字段，应先检查对照表并保留备份。
 </p>
 
-<h4>想要定时重复同步</h4>
-<p>两种方式，按你的部署习惯选：</p>
+<h3 class="doc-subheading">配置同步与探活计划要分开</h3>
+<p>默认 <code>RUN_INTERVAL_SECONDS=0</code>，导入完成即退出。退出码0代表作业完成；退出码非0需排查。配置同步不等于模型探活，不必为了周频探活增加另一个宿主cron或循环。</p>
+<p>授权站的恢复计划由 sub2api 调度，默认每周一次。每次修改授权或停用总闸后执行 <code>probes reconcile</code>，核对旧计划已停用或迁移。不要让宿主cron、容器循环、旧半小时计划重复运行。</p>
+<p>自动检测还有按规范化主机共享的 <b>604800 秒周预算</b>：正常导入的自动批次与 sub2api 原生周计划共用同一账本，更换 KEY、模型或运行代际不会重新放行。预算在请求前持久化，失败或中断也计入该周；未到期受控跳过，上游请求数为零，不把健康账号改成错误。<code>MODEL_PROBE_CACHE_TTL=604800</code> 只管理结果缓存，缓存过期或最高模型上次失败都不能绕过周预算。显式 <code>diagnose</code> / <code>recover</code> 使用独立手工诊断路径，不占自动周预算，仍逐次核对总闸、站授权和永久禁探规则。</p>
+<div class="box warn"><b>同步会校正已有字段</b>本工具会按当前输入与管理策略重算受管账号的模型、优先级等字段。你在sub2api手工调整的受管参数可能被覆盖；先预览，保留目标数据库及私有配置备份。</div>
 
-<div class="tw">
-<table>
-  <thead><tr><th>方式</th><th>做法</th><th>适用</th></tr></thead>
-  <tbody>
-    <tr>
-      <td><b>容器内循环</b></td>
-      <td>在 <code>.env</code> 里设 <code>RUN_INTERVAL_SECONDS=3600</code>，
-          并把 compose 的 <code>restart</code> 改成 <code>unless-stopped</code></td>
-      <td>希望配置全在 compose 里，不碰宿主机</td>
-    </tr>
-    <tr>
-      <td><b>宿主 cron</b></td>
-      <td>加一条 crontab，定时执行
-          <code>docker-compose run --rm cpa2sub2api</code></td>
-      <td>想和宿主上其它定时任务统一管理</td>
-    </tr>
-  </tbody>
-</table>
-</div>
-
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 方式一：容器内循环（.env）
-RUN_INTERVAL_SECONDS=3600
-# 同时把 compose 里 cpa2sub2api 的 restart 改成 unless-stopped
-
-# 方式二：宿主 cron（crontab -e）
-0 3 * * * cd /opt/deploy && docker-compose run --rm cpa2sub2api >> /var/log/cpa2sub2api.log 2>&1</pre></div>
-
-<div class="box warn">
-  <b>自动化的一个副作用，决定前请先权衡</b>
-  每次导入都会按 sub2api 的<b>实测健康度</b>重算优先级
-  （可调度率 ×0.6 + 活跃率 ×0.4），并覆盖线上值。
-  <br><br>
-  也就是说：<b>你在 sub2api 后台手工调整过的优先级会被算法值覆盖</b>。
-  <ul style="margin-bottom:0">
-    <li>不手工干预 → 定时同步很合适，坏站会被自动降级</li>
-    <li>会手工干预 → 建议保持「每次 up -d 同步一次」，不要叠定时任务</li>
-  </ul>
-</div>
-
-<h4>临时/手动执行（可选）</h4>
+<h3 class="doc-subheading">临时/手动执行（可选）</h3>
 <p>不想重新起整个栈时，也可以单独跑一次：</p>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 只跑一次同步（不碰其它服务）
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 只跑一次同步（不碰其它服务）
 docker compose run --rm cpa2sub2api
 
 # 交互菜单：分步操作、回滚、推送定价
-docker compose run --rm cpa2sub2api python run.py
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api run.py
 
 # 空跑预览：只生成对照表，不写 sub2api
-docker compose run --rm cpa2sub2api python 一键导入.py --dry-run
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api 一键导入.py --dry-run
 
 # 查看产物（卷名前缀 = compose 项目名，通常是部署根目录名）
 docker volume ls | grep cpa2sub2api-out
@@ -679,7 +714,7 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 <h2 id="s4">四、配置文件逐项说明</h2>
 
 <h3>4.1 连接配置</h3>
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>变量</th><th>默认</th><th>说明</th></tr></thead>
   <tbody>
@@ -693,7 +728,7 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 </div>
 
 <h3>4.2 并发配置</h3>
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>变量</th><th>默认</th><th>上限</th><th>说明</th></tr></thead>
   <tbody>
@@ -711,7 +746,7 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 </p>
 
 <h3>4.3 策略开关</h3>
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>变量</th><th>默认</th><th>作用</th></tr></thead>
   <tbody>
@@ -719,24 +754,28 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
     <tr><td><code>SYNC_EXISTING_ACCOUNTS</code></td><td>true</td><td>已存在的账号也同步最新参数</td></tr>
     <tr><td><code>RESPECT_WEIGHT_ZERO</code></td><td>true</td><td>weight=0 降级而非停用</td></tr>
     <tr><td><code>POOL_MODE_ENABLED</code></td><td>true</td><td>同账号重试瞬时抖动</td></tr>
-    <tr><td><code>AUTO_RECOVER_ENABLED</code></td><td>true</td><td>定时探活并自动恢复</td></tr>
-    <tr><td><code>AUTO_RECOVER_CRON</code></td><td>*/30 * * * *</td><td>探活频率</td></tr>
+    <tr><td><code>MODEL_PROBE_ENABLED</code></td><td>false</td><td>未保存总闸时的默认值；保存master true/false优先</td></tr><tr><td><code>MODEL_PROBE_HARD_DISABLED</code></td><td>false</td><td>true独立禁止所有provider检测，拒绝新增开启授权，允许关闭撤权</td></tr>
+    <tr><td><code>ONLINE_PROBE_HOSTS</code></td><td>空</td><td>非空逗号列表提供并限制可开范围，持久false仍撤权；空值保留站授权，初始全部关闭</td></tr>
+    <tr><td><code>AUTO_RECOVER_ENABLED</code></td><td>true</td><td>仅为通过总闸且已授权的站协调恢复计划</td></tr>
+    <tr><td><code>AUTO_RECOVER_CRON</code></td><td>0 3 * * 0</td><td>每周一次，按目标调度器时区；旧计划需迁移</td></tr>
     <tr><td><code>DISABLE_PROXY_FALLBACK</code></td><td>false</td><td>调试时关掉代理兜底</td></tr>
   </tbody>
 </table>
 </div>
 
 <h3>4.4 HTTP 行为</h3>
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>变量</th><th>默认</th><th>说明</th></tr></thead>
   <tbody>
     <tr><td><code>HTTP_TIMEOUT</code></td><td>30</td><td>单次请求超时（秒）</td></tr>
-    <tr><td><code>HTTP_RETRIES</code></td><td>3</td><td>只重试瞬时故障：连接层错误 / 429 / 5xx。4xx 不重试</td></tr>
+    <tr><td><code>HTTP_RETRIES</code></td><td>3</td><td>通用瞬时故障重试次数：连接错误 / 429 / 5xx；管理 API 的 429 按下述独立规则，其余 4xx 不重试</td></tr>
     <tr><td><code>USER_AGENT</code></td><td>浏览器 UA</td><td>sub2api 在 CF 后面时必需</td></tr>
   </tbody>
 </table>
 </div>
+
+<p>管理 API 返回 <code>429</code> 时，按 <code>Retry-After</code> 的秒数或 HTTP 日期等待；缺失或无效时等待 60 秒，最多额外重试两次。任一次要求等待超过 120 秒就明确失败，不缩短服务器冷却时间。这个管理请求规则不授权任何上游探测。</p>
 
 <div class="box warn">
   <b>为什么 User-Agent 要伪装成浏览器</b>
@@ -765,7 +804,7 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 
 <p>config.yaml 里与本工具相关的顶层段一共 6 个，各自对应 sub2api 的一个渠道：</p>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
 <thead><tr><th>顶层段名</th><th>平台</th><th>渠道分组</th><th>协议</th></tr></thead>
 <tbody>
@@ -779,22 +818,24 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 </table>
 </div>
 
+<p>OpenAI 平台账号按来源写入合法固定模式：Codex 为 <code>force_responses</code>，OpenAI 兼容来源为 <code>force_chat_completions</code>。目标版本不会因这两种模式进入创建后的 <code>auto</code> 能力探测；协议选定仍需与上游和客户端实际要求匹配。</p>
+
 <p><b>凭据级字段</b>（每个段下面 <code>- </code> 开头的条目）——这些是最需要看明白的：</p>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
 <thead><tr><th>字段</th><th>含义</th><th>本工具怎么处理</th></tr></thead>
 <tbody>
 <tr>
   <td><code>api-key</code></td>
   <td>上游密钥明文</td>
-  <td>原样迁到 sub2api 的 <code>credentials.api_key</code>。<b>必填</b>——为空会被跳过，
+  <td>直连写入 <code>credentials.api_key</code>；relay账号改用绑定原KEY的随机路由令牌。<b>原KEY必填</b>，为空会被跳过，
       并记进「丢弃说明」让你看得见（以前是无声丢弃）</td>
 </tr>
 <tr>
   <td><code>base-url</code></td>
   <td>上游端点</td>
-  <td>迁到 <code>credentials.base_url</code>；同时决定归组用的<b>域名</b></td>
+  <td>直连写入 <code>credentials.base_url</code>；relay写入运行入口，但归组/排序/授权仍按原主机和经验证的来源元数据计算</td>
 </tr>
 <tr>
   <td><code>priority</code></td>
@@ -805,13 +846,12 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 <tr>
   <td><code>weight</code></td>
   <td>加权轮询份额。省略=1，<b>非正数=排除</b></td>
-  <td>sub2api 没有对应字段。默认策略是「降到队尾」（可逆），
-      而不是建成停用（不可逆）。见 4.3 的 <code>WEIGHT_ZERO_POLICY</code></td>
+  <td>直连路径无同等权重消费；零权重处理见 <code>WEIGHT_ZERO_POLICY</code>。relay 默认逐 KEY 绑定，只有显式开启 <code>REQUEST_RELAY_WEIGHTED_BUCKET</code> 才在同 scope/类型/分组/主机池内消费权重，详见 <a href="#s6-relay">relay</a></td>
 </tr>
 <tr>
   <td><code>prefix</code></td>
   <td>模型命名空间前缀，如 <code>ANT/</code></td>
-  <td>只进备注（sub2api 侧靠分组区分渠道），不参与调度</td>
+  <td>对外用分组与模型映射区分来源；relay生成内部不透明prefix绑定路由，无需手工复制或修改</td>
 </tr>
 <tr>
   <td><code>models</code></td>
@@ -827,11 +867,7 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 <tr>
   <td><code>headers</code></td>
   <td>附加请求头</td>
-  <td>迁到 <code>credentials.header_overrides</code>。
-      <b>值以 <code>$</code> 开头的是动态头</b>（从下游请求复制同名头），
-      sub2api 只能存静态值，所以整条丢弃并记进「丢弃说明」。
-      另外黑名单（<code>authorization</code> / <code>x-api-key</code> / <code>cookie</code> 等 30 条）
-      里的头会被剔除——带了服务端会 400 拒掉整条账号</td>
+  <td>直连迁移目标可消费的静态 <code>header_overrides</code> 并遵守目标黑名单；动态头需要 relay。relay 由原 CPA 消费原 headers，sub2api 到 relay 的前跳移除源头覆盖，避免覆盖路由凭据。不能仅凭字段写入推断实际请求头</td>
 </tr>
 <tr>
   <td><code>proxy-url</code></td>
@@ -849,15 +885,12 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 <tr>
   <td><code>cloak</code></td>
   <td>请求伪装（改 system 提示、注入计费头、混淆敏感词）</td>
-  <td>写入 <code>extra.cloak</code>，但 <b>sub2api 网关层没有消费逻辑</b>，
-      写了不生效。已在备注里标注</td>
+  <td>sub2api API key 路径无等价消费者；启用 <a href="#s6-relay">request-relay</a> 后由原官方 CPA 实际消费。需要该行为但 relay 未启用时明确拒绝，不把写备注算作生效</td>
 </tr>
 <tr>
   <td><code>fingerprint-profile</code></td>
   <td>选 Claude Code 请求指纹</td>
-  <td>只置 <code>extra.enable_tls_fingerprint=true</code>。
-      <b>模板绑定需要人工做</b>：sub2api 的 TLS 指纹只对 Anthropic OAuth /
-      setup-token 账号生效，而本工具导入的全是 api_key 账号</td>
+  <td>由 relay 保留官方 CPA 的请求线形语义；通用站点 TLS 另需 <a href="#s6-tls">显式站级预设</a>。布尔开关不推断预设，也不证明合法客户端身份/签名</td>
 </tr>
 <tr>
   <td><code>websockets</code></td>
@@ -872,8 +905,7 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 <tr>
   <td><code>disabled</code></td>
   <td>该 provider 是否关闭（只在 <code>openai-compatibility</code> 有）</td>
-  <td>建成 <code>status=inactive</code>。但<b>仍然会被探活</b>——
-      探活证明可用后会重新启用，见 4.3 的 <code>REVIVE_PROVEN_INACTIVE</code></td>
+  <td>仍做离线分析；默认不探活。只有该站同时通过总闸和站授权且不在永久禁探名单，才可检测并依证据恢复；手工禁用意图应保留</td>
 </tr>
 <tr>
   <td><code>api-key-entries</code></td>
@@ -885,15 +917,15 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 <tr>
   <td><code>rebuild-mid-system-message</code></td>
   <td>把 role=system 的中途消息提到顶层</td>
-  <td>无 sub2api 等价物，只记进备注</td>
+  <td>sub2api 无等价消费者；启用 relay 后由官方 CPA 重建，保留工具与用户内容。未启用时拒绝需要该行为的记录</td>
 </tr>
 </tbody>
 </table>
 </div>
 
-<p><b>顶层全局字段</b>里，本工具真正会读的只有一处：</p>
+<p><b>顶层全局字段</b>按运行消费者分工：直连转换读取调度相关项；relay 额外保留经过合同核准的全局请求行为。</p>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
 <thead><tr><th>字段</th><th>本工具怎么用</th></tr></thead>
 <tbody>
@@ -906,7 +938,7 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
 </tr>
 <tr>
   <td>其余全局项（<code>port</code> / <code>tls</code> / <code>debug</code> / <code>cloak</code> 全局开关等）</td>
-  <td>本工具不读取、不迁移。它们作用于 CPA 自己那一侧的行为</td>
+  <td>服务监听、调试等部署项不搬到账号。relay 对请求消费使用核准白名单（如 payload、claude/codex、请求重试和 header defaults）；未知受管字段/漂移会拒绝，详见 <a href="#s6-contract">当前合同</a></td>
 </tr>
 </tbody>
 </table>
@@ -918,8 +950,8 @@ docker run --rm -v "$(basename "$PWD")_cpa2sub2api-out":/o alpine ls -l /o</pre>
   <code>api-key</code> 和 <code>base-url</code> 的条目。下面的骨架可以直接复制改。
 </div>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># CPA 的 config.yaml —— 最小可用骨架
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># CPA 的 config.yaml —— 最小可用骨架
 # 注意：这是 CPA 那边生成的配置，不是本工具的配置（本工具是 .env）
 
 port: 8317
@@ -930,8 +962,8 @@ routing:
 
 # ── Claude 渠道 ──────────────────────────────────────
 claude-api-key:
-  - api-key: "sk-ant-你的密钥"
-    base-url: "https://上游.example.com"
+  - api-key: "REPLACE_WITH_UPSTREAM_KEY"
+    base-url: "https://upstream.example"
     prefix: "ANT"
     priority: 100          # 数值越大越优先（与 sub2api 相反，本工具会翻转）
     weight: 1
@@ -944,8 +976,8 @@ claude-api-key:
 
 # ── Codex 渠道（走 Responses 协议）──────────────────
 codex-api-key:
-  - api-key: "sk-你的密钥"
-    base-url: "https://上游.example.com/v1"
+  - api-key: "REPLACE_WITH_UPSTREAM_KEY"
+    base-url: "https://upstream.example/v1"
     prefix: "CDX"
     priority: 100
     models:
@@ -955,23 +987,23 @@ codex-api-key:
 # ── OpenAI 兼容渠道（provider 级 priority，key 挂在 entries 下）──
 openai-compatibility:
   - name: "某聚合站"
-    base-url: "https://聚合站.example.com"
+    base-url: "https://aggregator.example"
     prefix: "CHMA"
     priority: 100
     models:
       - name: "claude-opus-5"
         alias: "claude-opus-5"
     api-key-entries:
-      - api-key: "sk-密钥一"
+      - api-key: "REPLACE_WITH_UPSTREAM_KEY"
         weight: 1
-      - api-key: "sk-密钥二"
+      - api-key: "REPLACE_WITH_UPSTREAM_KEY"
         weight: 1
         proxy-url: "http://mihomo:7890"   # 这个 key 单独走代理
 
 # ── Gemini 渠道 ─────────────────────────────────────
 gemini-api-key:
-  - api-key: "AIza...你的密钥"
-    base-url: "https://private-site-01.example.invalid"
+  - api-key: "REPLACE_WITH_GEMINI_KEY"
+    base-url: "https://gemini-upstream.example"
     prefix: "GLE"
     priority: 100
     models:
@@ -1000,7 +1032,7 @@ gemini-api-key:
   <defs>
     <marker id="ar3" markerWidth="9" markerHeight="9" refX="7" refY="3"
             orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+      <path d="M0,0 L0,6 L8,3 z" fill="#94A3B8"/>
     </marker>
     <marker id="ar3g" markerWidth="9" markerHeight="9" refX="7" refY="3"
             orient="auto" markerUnits="strokeWidth">
@@ -1016,7 +1048,7 @@ gemini-api-key:
   <text x="90" y="145" fill="#E5E7EB" font-size="13" text-anchor="middle">发起请求</text>
   <text x="90" y="163" fill="#9CA3AF" font-size="10" text-anchor="middle">默认直连</text>
 
-  <line x1="150" y1="148" x2="206" y2="148" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar3)"/>
+  <line x1="150" y1="148" x2="206" y2="148" stroke="#94A3B8" stroke-width="1.7" marker-end="url(#ar3)"/>
 
   <rect x="210" y="120" width="130" height="56" rx="10" fill="url(#gA)" stroke="#38BDF8" stroke-opacity=".5"/>
   <text x="275" y="145" fill="#E5E7EB" font-size="13" text-anchor="middle">直连成功？</text>
@@ -1038,17 +1070,17 @@ gemini-api-key:
   <text x="640" y="228" fill="#E5E7EB" font-size="13" text-anchor="middle">经 mihomo 重试一次</text>
   <text x="640" y="246" fill="#9CA3AF" font-size="10" text-anchor="middle">proxy-url / fallback</text>
 
-  <line x1="715" y1="232" x2="771" y2="232" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar3)"/>
+  <line x1="715" y1="232" x2="771" y2="232" stroke="#94A3B8" stroke-width="1.7" marker-end="url(#ar3)"/>
   <rect x="775" y="206" width="95" height="52" rx="10" fill="url(#gC)" stroke="#6EE7B7" stroke-opacity=".55"/>
   <text x="822" y="228" fill="#E5E7EB" font-size="13" text-anchor="middle">返回</text>
   <text x="822" y="246" fill="#9CA3AF" font-size="10" text-anchor="middle">或如实报错</text>
 
-  <text x="450" y="292" fill="#6B7280" font-size="11" text-anchor="middle">
+  <text x="450" y="292" fill="#94A3B8" font-size="11" text-anchor="middle">
     代理也不通时，如实报「直连的那个错」—— 不拿代理的错掩盖真实原因
   </text>
 </svg>
 <figcaption>
-  <b>图 3</b>　代理兜底流程。只有<b>连接层失败 / 429 / 5xx</b> 才会换出口；
+  <b>图 3</b>　代理兜底流程。只有已授权的上游检测才进入代理兜底；管理API重试与站点探测分别处理。连接层失败 / 429 / 5xx 才考虑换出口；
   4xx 是请求本身的问题，换出口也一样失败。
 </figcaption>
 </figure>
@@ -1056,14 +1088,14 @@ gemini-api-key:
 <h3>5.2 配置订阅</h3>
 
 <p>在部署根的 <code>.env</code> 里填：</p>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>MIHOMO_SECRET=自己生成的随机串
-MIHOMO_SUBSCRIPTIONS=wog=https://机场订阅地址</pre></div>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">MIHOMO_SECRET=自己生成的随机串
+MIHOMO_SUBSCRIPTIONS=wog=https://subscription.example/REPLACE_WITH_TOKEN</pre></div>
 
 <p>或者每个订阅一个变量（两种可混用，<code>MIHOMO_SUB_&lt;名称&gt;</code> 优先）：</p>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>MIHOMO_SUB_WOG=https://机场订阅地址
-MIHOMO_SUB_WOGB=https://另一个订阅地址</pre></div>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">MIHOMO_SUB_WOG=https://subscription.example/REPLACE_WITH_TOKEN
+MIHOMO_SUB_WOGB=https://backup-subscription.example/REPLACE_WITH_TOKEN</pre></div>
 
 <h3>5.3 验证（四步，缺一不可）</h3>
 
@@ -1112,7 +1144,7 @@ MIHOMO_SUB_WOGB=https://另一个订阅地址</pre></div>
   <line x1="40" y1="88" x2="30" y2="88" stroke="#1E2636" stroke-width="2"/>
   <line x1="40" y1="268" x2="30" y2="268" stroke="#1E2636" stroke-width="2"/>
 
-  <text x="450" y="342" fill="#6B7280" font-size="11" text-anchor="middle">
+  <text x="450" y="342" fill="#94A3B8" font-size="11" text-anchor="middle">
     容器之间走 Docker 网络直连容器 IP、用服务名 mihomo，不经过宿主机端口映射
   </text>
 </svg>
@@ -1123,14 +1155,14 @@ MIHOMO_SUB_WOGB=https://另一个订阅地址</pre></div>
 </figure>
 
 <h4>① 进程与 API 是否活着</h4>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>docker compose ps mihomo
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">docker compose ps mihomo
 curl -fsS -H "Authorization: Bearer $MIHOMO_SECRET" \
   http://127.0.0.1:9090/version</pre></div>
 
 <h4>② AUTO 组里到底有没有节点 <span class="bd bd-hot">最容易漏</span></h4>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>curl -fsS -H "Authorization: Bearer $MIHOMO_SECRET" \
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">curl -fsS -H "Authorization: Bearer $MIHOMO_SECRET" \
   http://127.0.0.1:9090/proxies/AUTO | jq '{now: .now, count: (.all|length)}'</pre></div>
 
 <div class="danger">
@@ -1141,19 +1173,19 @@ curl -fsS -H "Authorization: Bearer $MIHOMO_SECRET" \
 </div>
 
 <h4>③ 宿主机能否出网</h4>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>curl -fsS -m 15 -x http://127.0.0.1:7890 -o /dev/null \
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">curl -fsS -m 15 -x http://127.0.0.1:7890 -o /dev/null \
   -w 'egress OK: %{http_code}\n' https://www.gstatic.com/generate_204</pre></div>
 
 <h4>④ 从本工具容器内部再验一次（真实路径）</h4>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>docker compose exec cpa2sub2api \
-  curl -fsS -m 15 -x http://mihomo:7890 -o /dev/null \
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">docker compose run --rm --no-deps --entrypoint curl cpa2sub2api \
+  -fsS -m 15 -x http://mihomo:7890 -o /dev/null \
   -w '%{http_code}\n' https://www.gstatic.com/generate_204</pre></div>
 
 <h3>5.4 CPA 侧怎么指定哪些站点走代理</h3>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 在 CPA 的 config.yaml 里，给需要代理的条目加：
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 在 CPA 的 config.yaml 里，给需要代理的条目加：
 proxy-url: "http://mihomo:7890"</pre></div>
 <p>
   本工具据此为对应账号绑定代理，并让<b>同域名</b>的其它条目自动跟进
@@ -1168,24 +1200,13 @@ proxy-url: "http://mihomo:7890"</pre></div>
 </p>
 
 <div class="box tip">
-  <b>同一个 mihomo，两个项目都能用</b>
-  整栈上通常还跑着 <code>upstream-importer</code>，而<b>它的镜像里也打了同一份
-  mihomo</b>。实测两者的 mihomo 完全同源：二进制 md5 相同、<code>mihomo -v</code>
-  都是 <code>v1.19.31</code>、<code>healthcheck.sh</code> 与
-  <code>bootstrap-mihomo.sh</code> 的 md5 也相同、路径都是
-  <code>/usr/local/bin/mihomo</code>。
-  <b>所以代理服务用哪个镜像起都行</b>，所以这里写成了变量：
-  <div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>image: "${MIHOMO_IMAGE:-${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest}"</pre></div>
-  不设 <code>MIHOMO_IMAGE</code> 就用本项目镜像；想在整栈里改用 importer 的，
-  在部署根 <code>.env</code> 里设：
-  <div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>MIHOMO_IMAGE=registry-user/cpa-upstream-importer:latest</pre></div>
-  <b>两个服务（<code>mihomo</code> 与 <code>mihomo-init</code>）必须用同一个镜像</b> ——
-  它们是同一个能力的两半（前者物化配置进卷、后者读卷跑代理）。
+  <b>复用已有共享代理</b>
+  已有父栈通常由 upstream-importer 镜像提供 <code>mihomo-init</code> 与 <code>mihomo</code>。本工具通过服务名访问，不另外起同端口代理。
+  本镜像也包含初始化脚本、内核和数据，适用于独立部署或替代镜像。具体版本按实际镜像摘要和 <code>mihomo -v</code> 核对，不能沿用旧md5结论。
+  初始化服务与代理本体必须使用兼容镜像、共享配置卷和同一控制器凭据。
 </div>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>消费方</th><th>怎么指向这个代理</th></tr></thead>
   <tbody>
@@ -1210,8 +1231,8 @@ proxy-url: "http://mihomo:7890"</pre></div>
   本机若装着 Clash / Mihomo 客户端，它自己就占着 7890，<code>up -d</code> 会直接
   失败（<code>bind: Only one usage of each socket address</code>）。
   宿主侧端口是<b>可覆盖</b>的，在 <code>.env</code> 里改：
-  <div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 宿主端口冲突时改这两个（容器内端口不能动）
+  <div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 宿主端口冲突时改这两个（容器内端口不能动）
 MIHOMO_HTTP_PORT=7890
 MIHOMO_API_PORT=9090</pre></div>
   容器内端口必须保持 7890/9090 —— 它要与 config.yaml 里的
@@ -1219,8 +1240,8 @@ MIHOMO_API_PORT=9090</pre></div>
   的探测端口一致。改宿主侧即可，容器间通信走服务名，不受影响。
 </div>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>  mihomo-init:              # 一次性：把配置物化进共享卷
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">  mihomo-init:              # 一次性：把配置物化进共享卷
     image: "${MIHOMO_IMAGE:-${DOCKERHUB_USERNAME}/${DOCKERHUB_IMAGE:-cpa2sub2api}:latest}"
     pull_policy: always
     restart: "no"
@@ -1265,7 +1286,7 @@ MIHOMO_API_PORT=9090</pre></div>
     <li>两个服务必须挂<b>同一个卷</b>，否则 init 写的配置本体读不到；</li>
     <li>两个服务都写 <code>user: "0:0"</code> —— 命名卷首次由 Docker 以 root 建出，
         uid 1000 往里写会 <code>Permission denied</code>；</li>
-    <li>卷要用 <code>:Z</code>，CentOS 9 默认 SELinux enforcing，不加标签容器读不到。</li>
+    <li>CentOS 9启用SELinux时，多个服务共享同一config文件使用 <code>:ro,z</code> 共享标签；只给单个容器独占的bind才考虑私有 <code>:Z</code>，不能反复给共享文件重打私有标签。</li>
   </ul>
 </div>
 
@@ -1285,15 +1306,15 @@ MIHOMO_API_PORT=9090</pre></div>
 </p>
 
 <ol>
-  <li>查 9090 API 是否响应（没响应 = 进程坏了，退出 1 让 docker 重启）；</li>
+  <li>查 9090 API 是否响应（失败使健康检查退出非0；Docker不会仅因unhealthy自动重启）；</li>
   <li>清点 AUTO 组节点数（只用于日志，节点数不是可用性判据）；</li>
   <li>真正经 7890 出一次网。通 → 若当前在 DIRECT 就切回 AUTO；</li>
   <li>不通 → 调 <code>PUT /proxies/PROXY {"name":"DIRECT"}</code> 降级，
       再试直连；直连通就保持健康（降级不算失败），都不通才报 unhealthy。</li>
 </ol>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 手动跑一次（排查用；它真的会切组）
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 手动跑一次（排查用；它真的会切组）
 docker compose exec mihomo sh /root/.config/mihomo/healthcheck.sh; echo rc=$?
 
 # 正常时的两种输出：
@@ -1306,7 +1327,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
 
 <div class="danger">
   <b>脚本要在两种基座里都能跑</b>
-  mihomo 官方镜像是 busybox，本项目镜像是 Debian slim —— 两者可用的命令不同。
+  不同 mihomo 镜像的基座可能不同，本项目镜像是 Debian slim —— 两者可用的命令不同。
   Debian 里装了 busybox 也<b>不会</b>自动出现 <code>/usr/bin/nc</code>
   （实测：have busybox，MISS nc），而切换出口是 PUT，busybox 的 wget 只能发 GET/POST，
   必须有 nc。所以脚本对 <code>nc</code> / <code>wget</code> 各做一次"命令探测 +
@@ -1317,16 +1338,30 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s6">六、执行导入</h2>
 
-<h3>6.1 两种入口</h3>
-<div class="tw">
+<h3>6.1 按任务选择入口</h3>
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>入口</th><th>命令</th><th>适用</th></tr></thead>
   <tbody>
+    <tr><td>只读预览 / 指定范围</td><td><code>python tool.py import --preview</code></td><td>首次、全量或单站导入前核查</td></tr>
     <tr><td>一键全自动</td><td><code>python 一键导入.py</code></td><td>日常使用</td></tr>
     <tr><td>交互菜单</td><td><code>python run.py</code></td><td>分步操作、回滚、推送定价</td></tr>
   </tbody>
 </table>
 </div>
+
+<h3 id="s6-import">6.1-A 全量 / 单站：先只读预览，再添加或同步</h3>
+<p>新增账号先加到权威 CPA <code>config.yaml</code>；已有账号修改同一输入后走同一同步流程。新命令 <code>import --preview</code> 只读取本地配置并检查合同，<b>不访问管理端或上游 HTTP、不发布 relay 私有状态</b>。它与会生成产物、可能执行管理读取的旧 <code>一键导入.py --dry-run</code> 不同。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0">cd /opt/deploy
+# 不加 --host 是全量输入；先看范围、字段警告和放行模型
+docker compose run --rm cpa2sub2api python tool.py import --preview
+# 确认后，全量新增/同步当前来源
+docker compose run --rm cpa2sub2api python tool.py import --yes
+
+# 只添加/同步当前配置里的指定主机，可重复 --host
+docker compose run --rm cpa2sub2api python tool.py import --host upstream.example.invalid --preview
+docker compose run --rm cpa2sub2api python tool.py import --host upstream.example.invalid --yes</pre></div>
+<div class="box note"><b>范围与完整性</b><code>--host</code> 接受当前配置中的精确规范化主机名，不带协议、路径或端口。它保留完整输入的优先级与 relay 代际上下文，只缩小账号变更范围，不更新或清理其他站。普通导入不隐式执行模型/TLS诊断。首次使用保留探测总闸关闭。</div>
 
 <h3>6.2 导入流程</h3>
 
@@ -1343,29 +1378,29 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
     </linearGradient>
   </defs>
 
-  <text x="30" y="28" fill="#6B7280" font-size="12" font-family="monospace">[1/6]</text>
+  <text x="30" y="28" fill="#94A3B8" font-size="12" font-family="monospace">[1/6]</text>
   <rect x="90" y="14" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
   <text x="106" y="34" fill="#E5E7EB" font-size="12.5">建齐分组、建立降级链</text>
 
-  <text x="30" y="76" fill="#6B7280" font-size="12" font-family="monospace">[2/6]</text>
+  <text x="30" y="76" fill="#94A3B8" font-size="12" font-family="monospace">[2/6]</text>
   <rect x="90" y="62" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
   <text x="106" y="82" fill="#E5E7EB" font-size="12.5">建齐代理</text>
 
-  <text x="30" y="124" fill="#6B7280" font-size="12" font-family="monospace">[3/6]</text>
+  <text x="30" y="124" fill="#94A3B8" font-size="12" font-family="monospace">[3/6]</text>
   <rect x="90" y="110" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
   <text x="106" y="130" fill="#E5E7EB" font-size="12.5">去重、健康度重排、批量建号</text>
 
-  <text x="30" y="172" fill="#6B7280" font-size="12" font-family="monospace">[4/6]</text>
+  <text x="30" y="172" fill="#94A3B8" font-size="12" font-family="monospace">[4/6]</text>
   <rect x="90" y="158" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
   <text x="106" y="178" fill="#E5E7EB" font-size="12.5">给需要停用的账号补停用</text>
 
-  <text x="30" y="220" fill="#6B7280" font-size="12" font-family="monospace">[5/6]</text>
+  <text x="30" y="220" fill="#94A3B8" font-size="12" font-family="monospace">[5/6]</text>
   <rect x="90" y="206" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
-  <text x="106" y="226" fill="#E5E7EB" font-size="12.5">挂定时探活计划</text>
+  <text x="106" y="226" fill="#E5E7EB" font-size="12.5">按有效授权创建、停用或校准周频计划</text>
 
-  <text x="30" y="268" fill="#6B7280" font-size="12" font-family="monospace">[6/6]</text>
+  <text x="30" y="268" fill="#94A3B8" font-size="12" font-family="monospace">[6/6]</text>
   <rect x="90" y="254" width="700" height="30" rx="7" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".35"/>
-  <text x="106" y="274" fill="#E5E7EB" font-size="12.5">回收被关掉的调度开关、复活已证明可用的账号</text>
+  <text x="106" y="274" fill="#E5E7EB" font-size="12.5">保留状态意图；只有明确恢复授权才可恢复账号</text>
 
   <!-- 第二阶段 -->
   <rect x="90" y="308" width="700" height="46" rx="7" fill="url(#gS2)"
@@ -1379,21 +1414,21 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
 
   <path d="M790 284 L830 284 L830 331 L800 331" stroke="#A78BFA" stroke-width="1.6"
         fill="none" stroke-dasharray="4 3"/>
-  <text x="450" y="392" fill="#6B7280" font-size="11" text-anchor="middle">
+  <text x="450" y="392" fill="#94A3B8" font-size="11" text-anchor="middle">
     第二阶段只在本轮真的新建过账号时执行；没新建就说明是第二次以后的运行，跳过
   </text>
-  <text x="450" y="410" fill="#6B7280" font-size="11" text-anchor="middle">
+  <text x="450" y="410" fill="#94A3B8" font-size="11" text-anchor="middle">
     这一层解决了「必须手工跑第二遍才能应用智能优先级」的冷启动问题
   </text>
 </svg>
 <figcaption>
   <b>图 5</b>　导入的六个阶段<b>加上第二阶段重排</b>。
-  最后那一步是新增的，专门解决冷启动。
+  恢复账号仍需明确ID授权和即时证据；冷启动排序不自动恢复手工禁用。
 </figcaption>
 </figure>
 
 <h3>6.3 产物</h3>
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>文件</th><th>内容</th></tr></thead>
   <tbody>
@@ -1408,10 +1443,337 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
 <div class="box tip">
   <b>导入前先看对照表</b>
   <code>out/对照表.md</code> 里的「放行模型」就是真正会写进 sub2api 的白名单，
-  与线上生效的完全一致（口径已修正）。抽查几条确认没有意外被砍的模型。
+  是计划将写入的白名单；仍须在实际消费者和管理页读回核实。抽查几条确认没有意外被砍的模型。
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<h2 id="s6-probes">六-A、每站检测开关与批量授权</h2>
+<p>本工具提供 CLI、菜单和<a href="#s6-web">独立 Web 授权面板</a>；sub2api 原生管理页不会因本镜像更新而自动出现这些按钮。交互菜单 <b>[9]</b> 显示每站 <b>[开/关/永久禁止]</b> 并提供批量操作，和 CLI 使用同一状态。保存的master控制总闸，<code>MODEL_PROBE_ENABLED</code> 只提供未保存时的默认值。<code>ONLINE_PROBE_HOSTS</code> 非空仍提供并限制站点授权；独立 <code>MODEL_PROBE_HARD_DISABLED=true</code> 始终阻断provider检测。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 查看站点、总闸与永久禁探状态
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes list
+
+# 站点授权（主机名请替换为你的站点）
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes enable upstream.example
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes disable upstream.example
+
+# 批量授权或关闭；永久禁探站点不会被开启
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes enable-all
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes disable-all
+
+# 管理保存的总闸；已保存值优先于MODEL_PROBE_ENABLED默认值
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes master on
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes master off
+
+# 按当前授权协调已有 sub2api 恢复计划，不主动探测
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes reconcile</pre></div>
+<div class="box danger"><b>永久禁探规则</b>受保护站点会在规范化的主机名、子域、尾点、代理路径、计划和 TLS 检测中统一拒绝。不要用代理、批量命令或直接改设置文件绕过。</div>
+<p>确认要发起检测时，先明确授权站点并保存总闸开启，再检查当前有效状态。<code>MODEL_PROBE_ENABLED=false</code> 不覆盖已保存的true，环境true也不能复活已保存的false。独立硬禁开启时，新增开启操作返回 <code>409 PROBE_HARD_DISABLED</code>，仍可关闭既有授权；需将三个服务的 <code>MODEL_PROBE_HARD_DISABLED=false</code> 统一配置并重建后才能重新开启。正常开启只保存，<code>applyStatus=saved</code>，不校准计划或发模型请求；关闭后仍应确认旧计划停止。</p>
+
+<h3>显式TLS对照诊断</h3>
+<p><code>diagnose</code>会向指定站发送真实模型测试，仅处理受管、active且schedulable、没有429或临时冷却的账号。必须同时打开总闸和站授权，且不在永久禁探名单。完整原生周检测、恢复和TLS诊断需要已同步、已就绪的安全relay。普通Direct账号先将部署根 <code>.env</code> 的 <code>REQUEST_RELAY_ENABLED=true</code>、<code>REQUEST_RELAY_FORCE_ALL_ACCOUNTS=true</code> 与 <code>COMPOSE_PROFILES=request-relay</code> 设置好，再预览并同步指定站。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 先按上文设置.env；预览不访问管理端或模型上游
+docker compose up -d request-relay
+docker compose run --rm cpa2sub2api python tool.py import --preview --host upstream.example
+docker compose run --rm cpa2sub2api python tool.py import --yes --host upstream.example
+# 已授权站的显式模型请求
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes diagnose upstream.example</pre></div>
+<p>先测当前真实源传输参数，失败后才试一个明确TLS预设，每账号最多两个模型请求。有效输出、实时授权、账号/来源快照及完整state校验通过，才在 <code>request_relay_learned_tls_profiles</code> 保存绑定来源、KEY、实际模型和consumer二进制摘要的参数，来源或版本变化后旧结果失效。它不试写sub2api账号TLS布尔字段。失败、取消、撤权或并发修改均保留主设置、CURRENT、secrets及其他路由；中断事务由journal恢复。普通导入使用有效学习参数，不隐式诊断；源级成功不代表原生客户端或所有模型兼容。</p>
+
+<h3>明确选择账号恢复</h3>
+<p>普通导入不会复活来源不明的手工inactive或单独 <code>schedulable=false</code>。需要恢复时明确指定你核实过的受管账号ID；这条命令也会向上游发送实际测试，仍受双闸、永久禁探、归属与429/临时冷却约束。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 示例ID必须替换成你核实过的账号ID
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes recover 7 8</pre></div>
+<p>自动错误的 <code>error + schedulable=false</code> 也可恢复，但必须明确指定ID、当前源仍启用，且密钥归属和模型映射一致；源映射变化先同步。检测失败不会清错；<code>error</code> 但调度已经开启时会停止并提示核对。不能仅凭另一个KEY成功恢复该账号。</p>
+<p>错误恢复分为清错和恢复调度两步，每步及管理429重试前都重新核对授权、来源、代际与状态。未来有效冷却、无法解释的时间或运行状态仍阻断；明确过期的残留可在即时成功后清理。最终读回active、schedulable=true且错误清除才计成功，清错后调度未恢复属于部分完成。</p>
+<p>目标管理API没有原子比较并交换条件，前后校验不能消除两个请求之间的全部并发竞态；执行恢复时避免同时手工修改同一账号。</p>
+<div class="box warn"><b>手工账号也要检查原生探测开关</b>本工具对导入账号关闭sub2api的自动费率探测和自动费率同步。实际管理页手工创建第三方账号时，应检查并关闭这两个开关；本工具默认禁探不能替你控制未受管账号的原生任务。</div>
+
+<h2 id="s6-web">六-A.1、可选 Web：每站开关与批量操作</h2>
+<p>本工具提供独立授权面板，CLI、交互菜单与 Web 使用相同持久化设置和文件锁。它让你看见每站保存值、当前有效值和永久禁探状态；<b>启动、登录、刷新、开启开关都不向上游发送模型/TLS请求</b>。sub2api 原生管理页不会因此新增这些按钮。</p>
+<h3>启动并登录</h3>
+<p>先在私有 <code>.env</code> 填入强随机 <code>PROBE_UI_TOKEN</code>：至少32字符、至少12种不同字符、无空白。仅在登录表单提交令牌，不放进 URL、教程、截图、命令行参数或浏览器持久存储。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0">PROBE_UI_PORT=8775
+PROBE_UI_ORIGIN=http://127.0.0.1:8775
+# PROBE_UI_TOKEN 仅在私有 .env 填写强随机值，公开示例不提供令牌</pre></div><div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0">docker compose --profile probe-ui up -d probe-ui
+# Docker 本机浏览器打开 http://127.0.0.1:8775
+
+# 远程 VPS：在自己的电脑建立 SSH 隧道（替换用户名与占位域名）
+ssh -L 8775:127.0.0.1:8775 user@server.example.invalid</pre></div>
+<p>宿主只映射回环 <code>127.0.0.1:8775</code>。改宿主端口时，必须同步把 <code>PROBE_UI_ORIGIN</code> 改为浏览器看见的精确 <code>http(s)://主机:端口</code> 并重建面板；Origin 不含路径，不自动信任 <code>X-Forwarded-*</code>，当前不支持任意反代子路径。</p>
+<h3>逐站：先看有效状态，再保存</h3>
+<figure class="responsive-illustration">
+<svg viewBox="0 0 800 430" role="img" aria-label="合成面板示意：逐站显示保存授权与当前有效状态，永久禁探行锁定">
+<rect x="12" y="12" width="776" height="406" rx="14" fill="#F0F4F8"/>
+<rect x="32" y="32" width="736" height="60" rx="9" fill="#17324F"/>
+<text x="52" y="60" fill="#FFFFFF" font-size="19" font-weight="700">站点检测授权</text><text x="52" y="80" fill="#D6E6F4" font-size="13">界面示意 · 合成站名 · 不含真实数据</text>
+<rect x="32" y="108" width="736" height="52" rx="8" fill="#FFF1CF"/><text x="48" y="130" fill="#704800" font-size="14">独立硬禁：开启</text><text x="48" y="149" fill="#704800" font-size="13">既有保存开启仍无效；MODEL_PROBE_HARD_DISABLED=true</text>
+<text x="48" y="190" fill="#29425A" font-size="14" font-weight="700">站点 / 类型</text><text x="380" y="190" fill="#29425A" font-size="14" font-weight="700">保存授权</text><text x="530" y="190" fill="#29425A" font-size="14" font-weight="700">本次有效</text>
+<rect x="32" y="202" width="736" height="57" rx="7" fill="#FFFFFF"/><text x="48" y="225" fill="#17324F" font-size="15">alpha.example.invalid</text><text x="48" y="246" fill="#486178" font-size="13">Claude</text><text x="390" y="236" fill="#146343" font-size="15">开启</text><text x="540" y="236" fill="#704800" font-size="15">关闭</text><rect x="665" y="216" width="85" height="29" rx="6" fill="#E8EFF6"/><text x="707" y="236" text-anchor="middle" fill="#17324F" font-size="14">关闭授权</text>
+<rect x="32" y="270" width="736" height="57" rx="7" fill="#FFFFFF"/><text x="48" y="293" fill="#17324F" font-size="15">beta.example.invalid</text><text x="48" y="314" fill="#486178" font-size="13">OpenAI 兼容</text><text x="390" y="304" fill="#486178" font-size="15">关闭</text><text x="540" y="304" fill="#486178" font-size="15">关闭</text><rect x="665" y="284" width="85" height="29" rx="6" fill="#E8EFF6"/><text x="707" y="304" text-anchor="middle" fill="#486178" font-size="14">硬禁阻断</text>
+<rect x="32" y="338" width="736" height="57" rx="7" fill="#E5EAF0"/><text x="48" y="361" fill="#17324F" font-size="15">locked.example.invalid</text><text x="48" y="382" fill="#486178" font-size="13">永久禁探（仅示意）</text><text x="390" y="372" fill="#6A4655" font-size="15">锁定</text><text x="540" y="372" fill="#486178" font-size="15">关闭</text><text x="680" y="372" fill="#6A4655" font-size="14">不可开启</text>
+</svg>
+<div class="mobile-illustration" role="group" aria-label="合成站点授权手机示意">
+<strong>站点检测授权 · 合成示意</strong><p class="demo-warning">独立硬禁开启：既有保存开启也不生效</p>
+<div class="demo-row"><strong>alpha.example.invalid</strong>Claude<br><span class="demo-state">保存：开启</span> · <span class="demo-warning">本次有效：关闭</span></div>
+<div class="demo-row"><strong>beta.example.invalid</strong>OpenAI兼容<br>保存：关闭 · 本次有效：关闭<br>独立硬禁阻断新增开启授权</div>
+<div class="demo-row"><strong>locked.example.invalid</strong><span class="demo-lock">永久禁探（仅示意）：锁定，不可开启</span></div>
+</div><figcaption><b>Web 逐站示意</b>　“保存授权”记录意图，“本次有效”包含独立硬禁和永久禁探规则；此图站名与布局内容均为合成示意。</figcaption>
+</figure>
+<p>示意中的第一站已有保存授权，但独立硬禁开启，所以当前有效仍为关闭。界面通过 <code>master.hardDisabled</code> 和 <code>master.hardDisableReason</code> 显示具体原因；此时禁用开启控件，允许关闭撤权。<code>MODEL_PROBE_ENABLED</code> 只为未保存master提供默认值，已保存true/false优先；非空 <code>ONLINE_PROBE_HOSTS</code> 继续限制可开启范围。永久禁探站保持独立永久锁。</p>
+<h3>批量：选择可操作站，再查看保存与应用结果</h3>
+<figure class="responsive-illustration">
+<svg viewBox="0 0 800 345" role="img" aria-label="合成批量操作示意：选择可操作站，批量关闭先保存撤权，再检查旧计划应用状态">
+<rect x="12" y="12" width="776" height="321" rx="14" fill="#F0F4F8"/>
+<text x="32" y="49" fill="#17324F" font-size="19" font-weight="700">批量管理授权 · 合成示意</text>
+<rect x="32" y="69" width="736" height="50" rx="8" fill="#FFFFFF"/><rect x="48" y="84" width="20" height="20" rx="4" fill="#17324F"/><path d="M52 94l4 4 9-11" fill="none" stroke="#FFFFFF" stroke-width="2"/><text x="80" y="100" fill="#17324F" font-size="15">全选可操作站</text><text x="318" y="100" fill="#486178" font-size="14">永久禁探项不进入选择</text>
+<rect x="32" y="136" width="212" height="49" rx="8" fill="#17324F"/><text x="138" y="167" text-anchor="middle" fill="#FFFFFF" font-size="16">开启所选授权</text><rect x="263" y="136" width="212" height="49" rx="8" fill="#913445"/><text x="369" y="167" text-anchor="middle" fill="#FFFFFF" font-size="16">关闭所选授权</text><rect x="494" y="136" width="274" height="49" rx="8" fill="#E0E9F2"/><text x="631" y="167" text-anchor="middle" fill="#17324F" font-size="16">重试校准计划</text>
+<path d="M369 194v20" stroke="#913445" stroke-width="2"/><path d="M364 208l5 7 5-7" stroke="#913445" stroke-width="2" fill="none"/>
+<rect x="32" y="226" width="736" height="84" rx="8" fill="#FFF1CF"/><text x="48" y="252" fill="#704800" font-size="16" font-weight="700">授权已保存；部分旧计划尚未应用</text><text x="48" y="277" fill="#704800" font-size="14">saved_not_applied：先检查管理连接，再重试校准并确认 applied</text><text x="48" y="299" fill="#704800" font-size="13">保存与应用分别反馈；开授权不执行任何模型检测</text>
+</svg>
+<div class="mobile-illustration" role="group" aria-label="批量授权手机示意">
+<strong>批量管理授权 · 合成示意</strong><ol><li>全选可操作站；永久禁探项不进入选择。</li><li>选择“开启所选授权”或“关闭所选授权”。</li><li>关闭先保存撤权，再尽力停用旧计划。</li></ol>
+<p class="demo-warning">saved_not_applied：授权已保存，部分计划尚未应用。检查管理连接，再重试校准。</p><p>开启只保存，产生零次模型检测。</p>
+</div><figcaption><b>Web 批量示意</b>　批量关闭先持久保存撤权，再尽力停用相应旧计划；黄色提示需要继续处理管理端应用结果。</figcaption>
+</figure>
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格"><table><thead><tr><th>反馈</th><th>已经发生</th><th>下一步</th></tr></thead><tbody>
+<tr><td><code>saved</code></td><td>授权已保存；开启不会检测</td><td>核对本次有效状态；需要测试时另用明确命令</td></tr>
+<tr><td><code>applied</code></td><td>关闭已保存，管理端计划校准已核实</td><td>可在 sub2api 查看旧计划状态</td></tr>
+<tr><td><code>saved_not_applied</code></td><td>撤权已保存，但计划应用失败或状态再次变化</td><td>检查管理连接后重试校准，不能当作旧计划已停止</td></tr>
+</tbody></table></div>
+<p>面板开启只保存；关闭会尽力调用管理 API 停用相关旧计划。独立“校准计划”同样只调用管理 API，不是上游可用性检测。CLI 关闭后仍需手动运行 <code>probes reconcile</code>。重建容器后设置由同一 state 卷保留；不要删除该卷。</p>
+<p>关闭后的计划校准会逐账号核实。账号较多或管理端返回429时，页面可能等待一个或多个限流窗口；等待期间显示旧列表不代表撤权没有保存。网页请求超过120秒会提示超时，此时先刷新确认保存值和应用结果，避免重复点击。核实 <code>applied</code> 后，才可认为相关旧计划已完成停用校准。</p>
+
+<h2 id="s6-prune">六-B、修正已有账号与清理陈旧账号</h2>
+<p>正常导入会同步本工具受管账号的现有参数；全部成功后默认自动清理严格受管的陈旧账号，可用 <code>PRUNE_STALE_ACCOUNTS=false</code> 关闭。也可用独立命令先预览再应用。只有完整读取当前配置、所有当前目标均已存在、同步成功且管理标记匹配时，才允许清理；逐候选再次核实并读回删除结果。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py prune preview
+# 检查对照表、计数、所有权标记和失败项后
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py prune apply</pre></div>
+<p>分页读取失败、配置损坏、字段合同漂移、导入部分失败或没有严格来源证据时，工具必须停止清理。清理还要求当前 source scope 所有权一致；仅有历史短指纹的 <code>legacy_claim</code> 保留，不自动删除。未知来源旧账号先按<a href="#s6-scope">明确 ID 强证据认领</a>处理；名称带 <code>ANT-</code> 或备注提到 CPA 都不能单独证明归属。</p>
+<p>去重限定在同一来源协议/分组内。同一URL和KEY出现在Codex与OpenAI兼容段时，即使目标平台都为openai，也可能分别走Responses和Chat协议，必须保留各自身份。名称使用稳定来源/分组后缀区分，并迁移可确认受管归属的旧重名账号，不能跨渠道折叠。</p>
+
+<h2 id="s6-relay">六-B.1、request-relay：运行原 CPA 行为</h2>
+<p>原 CPA 的 cloak、中途 system 重建、请求头、prompt-cache、连接/重试策略与 Responses WebSocket 等行为，需要真正的运行消费者。可选 <code>request-relay</code> 在<b>同一应用镜像内运行从固定官方 CPA 源码构建的 consumer</b>，本项目在诊断出站边界加入禁止重定向的安全补丁，原第三方工作区不修改；镜像包含其 MIT 许可。sub2api 继续负责分组、账号和调度，relay 消费原输入中的相关配置。</p>
+<h3>consumer来源与原生计划诊断标记</h3>
+<p><code>/app/third_party/CLIProxyAPI.PROVENANCE.json</code> 记录固定上游commit、构建镜像、二进制SHA256、构建输入摘要、CGO、Go版本和架构。诊断功能标识为 <code>cpa2sub2api-diagnostic-no-redirect-v1</code>。实际可执行文件与来源记录还必须同时证明整数 <code>automatic_output_cap: 16</code> 和 <code>automatic_output_header: X-CPA2SUB2API-Auto-Output-Cap</code>；只有旧诊断标识的二进制不能就绪。自动请求在 CPA 全部 payload 规则处理后、最后出站前限制输出最多16；压缩、签名、thinking/reasoning 等无法证明小输出的配置受控跳过，不降低选定的真实最高模型。只设置重试为0不能阻止HTTP重定向；诊断分支不跟随30x，relay转换为受控非重定向错误并去掉Location，避免下游再次跟随。普通业务保留原传输行为；手工诊断不使用自动16输出额度，仍遵守诊断分支的禁止重定向和授权检查。</p>
+<p>周计划使用 <code>aRID40-hash64</code> 自动标记，显式手工诊断使用 <code>dRID40-hash64</code>；两类都由工具按当前route与实际model摘要生成，固定106个合法ASCII字符，各自写入精确self-map，完整保留普通和通配模型映射。不要手工拼 <code>dRID/model</code>：Gemini URL模型片段不允许斜线。relay认证后验证当前route/model与全局、站级双闸；自动请求还需匹配当前主机、KEY来源、模型及代际的周预算票据，才选择内部诊断prefix。标记不是需要填入上游配置的真实模型名。</p>
+<figure class="responsive-illustration">
+<svg viewBox="0 0 800 330" role="img" aria-label="relay 链路示意：导入先导出私有代际并验证实际 consumer，再写账号；业务默认绑定原 KEY">
+<rect x="20" y="25" width="220" height="76" rx="10" fill="#142A3A" stroke="#38BDF8"/><text x="130" y="55" text-anchor="middle" fill="#38BDF8" font-size="17">权威 config.yaml</text><text x="130" y="81" text-anchor="middle" fill="#D7E3F4" font-size="14">scope + 原参数 + 原 KEY</text>
+<path d="M247 64h49" stroke="#38BDF8" stroke-width="2"/><path d="M287 59l9 5-9 5" fill="none" stroke="#38BDF8" stroke-width="2"/>
+<rect x="305" y="25" width="220" height="76" rx="10" fill="#26223E" stroke="#A78BFA"/><text x="415" y="55" text-anchor="middle" fill="#A78BFA" font-size="17">原子导出私有代际</text><text x="415" y="81" text-anchor="middle" fill="#D7E3F4" font-size="14">仅 runtime state 卷</text>
+<path d="M533 64h42" stroke="#A78BFA" stroke-width="2"/><path d="M566 59l9 5-9 5" fill="none" stroke="#A78BFA" stroke-width="2"/>
+<rect x="585" y="25" width="195" height="76" rx="10" fill="#16372F" stroke="#6EE7B7"/><text x="682" y="55" text-anchor="middle" fill="#6EE7B7" font-size="17">代际就绪屏障</text><text x="682" y="81" text-anchor="middle" fill="#D7E3F4" font-size="14">实际 consumer 匹配</text>
+<path d="M682 110v37H130v24" stroke="#6EE7B7" stroke-width="2" fill="none"/><path d="M125 162l5 9 5-9" stroke="#6EE7B7" stroke-width="2" fill="none"/>
+<rect x="20" y="180" width="220" height="76" rx="10" fill="#142A3A" stroke="#38BDF8"/><text x="130" y="210" text-anchor="middle" fill="#38BDF8" font-size="17">创建 / 同步 sub2api</text><text x="130" y="236" text-anchor="middle" fill="#D7E3F4" font-size="14">保留来源所有权与模型</text>
+<path d="M247 218h49" stroke="#38BDF8" stroke-width="2"/><path d="M287 213l9 5-9 5" fill="none" stroke="#38BDF8" stroke-width="2"/>
+<rect x="305" y="180" width="220" height="76" rx="10" fill="#26223E" stroke="#A78BFA"/><text x="415" y="210" text-anchor="middle" fill="#A78BFA" font-size="17">relay → 官方 CPA</text><text x="415" y="236" text-anchor="middle" fill="#D7E3F4" font-size="14">默认 exact-key 原 KEY</text>
+<path d="M533 218h42" stroke="#A78BFA" stroke-width="2"/><path d="M566 213l9 5-9 5" fill="none" stroke="#A78BFA" stroke-width="2"/>
+<rect x="585" y="180" width="195" height="76" rx="10" fill="#16372F" stroke="#6EE7B7"/><text x="682" y="210" text-anchor="middle" fill="#6EE7B7" font-size="17">原站 / 显式代理</text><text x="682" y="236" text-anchor="middle" fill="#D7E3F4" font-size="14">可选固定目标 TLS</text>
+<text x="400" y="298" text-anchor="middle" fill="#B3BECE" font-size="14">启动与就绪检查不合成模型请求；状态文件、KEY、令牌禁止公开</text>
+</svg><div class="mobile-illustration" role="group" aria-label="relay运行链路手机示意"><strong>先就绪，再写账号</strong><ol><li>读取权威config及稳定scope。</li><li>原子导出到私有runtime state卷。</li><li>验证实际官方consumer与代际一致。</li><li>创建/同步sub2api账号。</li><li>业务默认exact-key，经relay及原显式代理访问原站。</li></ol><p class="demo-state">启动和就绪检查不合成模型请求。</p></div><figcaption><b>relay 运行链路</b>　首次导入必须先导出、验证实际 consumer 代际，再写账号；这里没有使用任何私有环境数据。</figcaption></figure>
+<h3>首次启用：开关和 profile 要同时配置</h3>
+<p>公开模板默认 <code>REQUEST_RELAY_ENABLED=false</code>，保持可直接迁移输入的原行为。若只读预览提示字段需要 relay，默认关闭会明确拒绝该记录，不能把只写备注当成功。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0">REQUEST_RELAY_ENABLED=true
+# 默认false只选择需CPA行为的记录；true也迁移普通Direct受管账号
+REQUEST_RELAY_FORCE_ALL_ACCOUNTS=false
+COMPOSE_PROFILES=request-relay
+REQUEST_RELAY_BASE_URL=http://request-relay:8380
+REQUEST_RELAY_STATE_DIR=/app/state/relay
+REQUEST_RELAY_SOURCE_SCOPE=default
+REQUEST_RELAY_WEIGHTED_BUCKET=false
+REQUEST_RELAY_TIMEOUT=600
+REQUEST_RELAY_MAX_RESPONSE_BYTES=67108864
+REQUEST_RELAY_TLS_PROFILES={}</pre></div><div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0">cd /opt/deploy
+# 首次没有私有状态时暂时 unready 正常；不要让导入 depends_on healthy 卡住首次导出
+docker compose up -d request-relay
+# 此步不会导出私有状态，也不会调用管理端/上游
+docker compose run --rm cpa2sub2api python tool.py import --preview
+# 此步先导出，等待实际 consumer 代际一致后，才创建/同步账号
+docker compose run --rm cpa2sub2api python tool.py import --yes
+docker compose ps request-relay
+docker compose logs --tail 100 request-relay</pre></div>
+<p>服务不映射宿主端口，sub2api 必须能在共同 Docker 网络访问 <code>http://request-relay:8380</code>。派生配置和随机 route/control/consumer 令牌只放在命名 state 卷，<b>不从 Git 或宿主源码目录读取运行派生状态</b>。state 目录绑定一个 scope，保留旧代际用于受控回滚。启动和重载不合成用户请求；新代际先停止接入并排空旧流，默认600秒后取消超时流再切换。</p>
+<p>每次官方consumer启动都使用独立的空OAuth目录；旧代际配置和私有令牌保留。正常重启后重新核实服务健康，无需删除state卷；删除该卷会丢失现有路由和控制令牌。</p>
+<p><code>REQUEST_RELAY_FORCE_ALL_ACCOUNTS</code> 默认false，保留普通Direct业务；显式true且relay已启用时，可用 <code>import --preview --host</code> / <code>import --yes --host</code> 迁移指定站，保留身份、优先级和普通模型映射。普通Direct业务与显式单次源探测仍可使用；完整原生诊断需安全relay。</p>
+<h3>逐 KEY、显式权重池与证据归属</h3>
+<p>默认业务路径绑定原 KEY，名称、优先级、白名单和来源元数据仍按原配置计算。只有明确设置 <code>REQUEST_RELAY_WEIGHTED_BUCKET=true</code>，才在<b>同 scope、来源类型、分组、原主机</b>内使用权重池。池内另一 KEY 成功只能说明池请求成功，不能当作最初 KEY 的成功证据。</p>
+<p>诊断使用 exact-key、零额外重试，并在实际发送前重新核对原站授权；不会借用其他 KEY 证明指定账号可恢复。普通业务仍保留源配置的显式重试策略。未筛出合格模型时保持阻断，不能把空白名单解释为放行所有模型。OpenAI 账号仍采用合法固定 <code>force_responses</code> / <code>force_chat_completions</code>，避免创建后的 <code>auto</code> 探测。</p>
+<p><code>recover</code> 只读加载已有 <code>CURRENT</code> 代际，不重新导出配置或轮换令牌；<code>diagnose</code> 仅在成功事务中保存完整新代际，保留其他路由与现有令牌。发送请求、保存TLS参数及恢复写入前重新核对授权、来源、relay地址、状态目录、权重/账号选择模式和当前代际，中途变化时旧成功结果不能继续使用。遇到不匹配先同步当前来源并核对服务就绪。</p>
+<h3 id="s6-tls">显式 TLS 预设与请求代理</h3>
+<p><code>fingerprint-profile</code> 是 CPA 请求线形配置，布尔 TLS 开关也不能推出任意主机的 TLS 预设。需要时显式配置精确主机映射：</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0">REQUEST_RELAY_TLS_PROFILES={&quot;upstream.example.invalid&quot;:{&quot;impersonate&quot;:&quot;chrome136&quot;}}</pre></div>
+<p>允许 <code>chrome</code>（当前固定到 <code>chrome136</code>）、<code>chrome136</code>、<code>firefox135</code>、<code>safari184</code>。也可在受管来源条目上写 <code>request-relay-tls</code>，不能写入 <code>api-key-entries</code> 子项：</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0"># 工具扩展；只在目标确实需要、已启用 relay 时配置
+claude-api-key:
+  - api-key: REPLACE_WITH_PRIVATE_KEY
+    base-url: https://upstream.example.invalid
+    models:
+      - name: claude-sonnet-4-5
+        alias: claude-sonnet-4-5
+    proxy-url: http://mihomo:7890
+    request-relay-tls:
+      impersonate: chrome136
+      # 可选：容器内绝对可读路径，须自行只读挂载；无需自定义CA时删除
+      # ca-bundle: /app/certs/private-ca.pem</pre></div>
+<p>目标必须是 HTTPS；未知 preset、冲突 Host、不可读或相对 CA 路径在发布 state 前拒绝。adapter 绑定目标、SNI/Host、每 KEY 认证与显式代理，拒绝重定向，并保持证书及主机名验证。每 KEY/预设隔离连接，环境 <code>NO_PROXY</code> 不会静默绕过已指定代理。</p>
+<p>HTTP/SSE 与文本、二进制 WebSocket 使用真实流式传输；只归一化规定的模型协议字段，保留提示词、工具、ID和签名。gzip/deflate 有界解码，Brotli 依赖已安装能力，不支持时明确拒绝。默认解码上限64MiB，可配置1–512MiB，并限制压缩膨胀。畸形压缩会关闭响应，不伪造成功终态。</p>
+<div class="box warn"><b>客户端身份和权限边界</b>TLS 预设或 cloak 参数真实执行，不代表拥有合法 Claude Code 身份、签名、专属分组权限，也不能保证任何站永不封号。上游的账号授权与请求协议仍需按其要求验证。</div>
+<h3 id="s6-ws">nginx：保留 Responses WebSocket 与 SSE</h3>
+<p>下面是客户端到 sub2api 的独立域名反代片段，合并到自己的现有配置；证书路径、服务名和网络均需按实际部署填写。它不把 request-relay 公开到宿主端口。<code>map</code> 在 <code>http</code> 块，<code>location</code> 在自己的 TLS <code>server</code> 块。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0"># http { ... } 内
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    &#x27;&#x27;      close;
+}
+
+# 容器 Nginx 与后端在同一 Docker 网络；以下放入已配置证书的 server
+# Docker DNS 动态刷新，后端重建换 IP 后无需依赖旧地址
+resolver 127.0.0.11 valid=5s ipv6=off;
+
+# API server { ... } 内；示意 server_name api.example.invalid
+location /v1/ {
+    set $sub2api_backend http://sub2api:8080;
+    proxy_pass $sub2api_backend;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+}
+
+# 另一个面板 server { ... } 内；示意 server_name panel.example.invalid
+# 此 server 同样配置上面的 resolver；PROBE_UI_ORIGIN=https://panel.example.invalid
+location / {
+    set $probe_ui_backend http://probe-ui:8775;
+    proxy_pass $probe_ui_backend;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+}</pre></div>
+<p>保留完整 <code>/v1/responses</code> 路径与 Upgrade/Connection 头，同时关闭 SSE 缓冲。超时应覆盖你的有界请求预算；增大 nginx 超时不能解除 CDN 固定时限。真实验证要分别检查 HTTP Responses、SSE终态、WebSocket升级和续接；仅 <code>nginx -t</code> 或首页200不证明这些协议通过。</p>
+<p>Web 授权面板如用独立 HTTPS 域名反代，将 <code>PROBE_UI_ORIGIN</code> 设为浏览器实际 HTTPS 源，并保留 <code>Host</code>。面板无子路径契约；容器 nginx 通过同网络 <code>probe-ui:8775</code> 访问，使用 Docker DNS resolver 与变量形式的 <code>proxy_pass</code>，在面板重建换 IP 后重新解析。变量地址不附加路径，保留原始 URI；若使用固定解析的旧配置，后端重建后须执行 <code>nginx -t &amp;&amp; nginx -s reload</code>。宿主 <code>127.0.0.1:8775</code> 和 SSH 隧道入口继续按前文使用。</p>
+<h3 id="s6-contract">版本信息、源码缓存与字段合同</h3>
+<p><code>import --preview</code> 和显式离线检查不访问 GitHub；预览也不访问管理端或模型上游。公开模板设 <code>FETCH_UPSTREAM_SRC=true</code>，正常线上执行按TTL自动查询官方最新稳定 tag/commit及候选源码，默认每7天；缓存新鲜时不重复HTTP。设 false 则正常执行只用本地证据。镜像内官方 CPA consumer 仍固定版本及摘要，查到新版本不会替换已运行的 consumer 或目标 sub2api。</p>
+<figure id="upstream-version-flow" tabindex="0" style="overflow-x:auto" aria-label="版本跟进三步骤，窄屏可左右滚动">
+<svg viewBox="0 0 900 180" role="img" style="min-width:760px" aria-label="版本发现、固定运行版本与受控升级的三个步骤">
+  <rect x="16" y="22" width="270" height="116" rx="14" fill="#102D2C" stroke="#6EE7B7"/>
+  <text x="36" y="51" fill="#6EE7B7" font-size="17" font-weight="700">① 官方版本发现</text>
+  <text x="36" y="80" fill="#E5E7EB" font-size="13">显式 refresh --latest</text>
+  <text x="36" y="105" fill="#D1D5DB" font-size="12">取得 commit / SHA / 候选报告</text>
+  <text x="301" y="84" fill="#A78BFA" font-size="23">→</text>
+  <rect x="328" y="22" width="250" height="116" rx="14" fill="#25213A" stroke="#A78BFA"/>
+  <text x="348" y="51" fill="#C4B5FD" font-size="17" font-weight="700">② 保持已验证运行版本</text>
+  <text x="348" y="80" fill="#E5E7EB" font-size="13">固定 consumer + 字段合同</text>
+  <text x="348" y="105" fill="#D1D5DB" font-size="12">实际合同漂移时阻写与删除</text>
+  <text x="595" y="84" fill="#FCD34D" font-size="23">→</text>
+  <rect x="625" y="22" width="259" height="116" rx="14" fill="#302719" stroke="#FCD34D"/>
+  <text x="645" y="51" fill="#FCD34D" font-size="17" font-weight="700">③ 适配、验证、发布</text>
+  <text x="645" y="80" fill="#E5E7EB" font-size="13">新语义适配 / 容器与管理页</text>
+  <text x="645" y="105" fill="#D1D5DB" font-size="12">验证调用链后使用新镜像摘要</text>
+</svg>
+<figcaption>版本发现提供升级证据；当前运行版本和消费语义分别核实。窄屏可左右滚动查看三个步骤。</figcaption>
+</figure>
+<h4>先检查，再显式取得候选源码</h4>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 当前缓存状态：零网络、零缓存写入
+docker compose run --rm cpa2sub2api python tool.py upstream inspect
+# 显式刷新已固定版本的源码
+docker compose run --rm cpa2sub2api python tool.py upstream refresh
+# 已有缓存的离线检查与复用
+docker compose run --rm cpa2sub2api python tool.py upstream refresh --offline
+# 官方最新稳定版及候选源码；不会自动切换consumer
+docker compose run --rm cpa2sub2api python tool.py upstream refresh --latest</pre></div>
+<p>默认检查 <code>all</code>；可加 <code>--kind cpa</code> 或 <code>--kind sub2api</code>。<code>--latest</code> 不能与 <code>--offline</code> 同用。官方代码查询不等于上游模型探活，站级探测开关仍默认关闭。</p>
+<h4>缓存过期与候选漂移如何处理</h4>
+<p>默认缓存有效期7天，环境变量为 <code>UPSTREAM_CACHE_TTL_SECONDS=604800</code>，对应设置键 <code>upstream_cache_ttl_seconds</code>。源码保存于 <code>out/upstream-cache/&lt;kind&gt;/&lt;commit&gt;/&lt;generation&gt;/manifest.json</code>，每个文件检查 SHA；只有完整代际才更新该 commit 下的 <code>CURRENT.json</code>。最新版本发现报告为 <code>out/upstream-cache/release-evidence.json</code>，固定源码刷新报告为同目录的 <code>source-cache-evidence.json</code>。完整且摘要一致的固定版本缓存过期后可离线复用，但会标记 stale；离线复用不证明当前最新。首次空 out 卷仍可按镜像内固定合同导入，不要求下载Go源码。</p>
+<p>未激活的新版本候选不阻止匹配当前固定合同的导入。实际使用的源码发生未审查漂移、出现未知受管字段或旧计划固定身份不匹配时，实际导入和 prune 才会拒绝继续写入或删除。升级时先审查字段及消费语义，适配并固定新 consumer 摘要与基线SHA，再完成真实配置容器、管理页与请求链验证，最后发布已验证镜像。删除候选报告不能让新源码变成兼容源码；没有未审核自动激活任意未来版本的命令。</p>
+<p>仅已人工审查并登记、Go AST、完整 token 与编译指令均一致的精确注释/排版源码表示，允许继续采用原字段合同。<code>verified_reviewed_equivalent</code> 描述单个源文件；例如已登记的 CPA v8.0.61 配置结构文件仍采用 v8.0.60 consumer 合同，不会自动升级运行消费者。原始文件 SHA 仍保留在计划与消费前校验中，更换源码后必须重新生成计划；未登记的字节变化、未知字段或语义变化仍需受控复核。</p>
+<p>当前受管字段基于已核准的官方 CPA <code>v8.0.60</code>。未知字段、嵌套类型变化和不完整输入必须处理；错误只报告有界字段路径或类别，不回显配置值。其他无关全局字段不被一概否决。</p>
+<details><summary>展开当前受管字段与递归类型清单（CPA v8.0.60）</summary>
+<p>这是当前合同的字段清单，字段存在不等于直连sub2api已消费。<code>interactions-api-key</code>复用GeminiKey，<code>xai-api-key</code>复用CodexKey；各自仍保留来源协议身份。</p>
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格"><table><thead><tr><th>受管段</th><th>官方字段</th></tr></thead><tbody><tr><td><code>gemini-api-key</code></td><td><code>api-key</code>, <code>priority</code>, <code>weight</code>, <code>prefix</code>, <code>base-url</code>, <code>proxy-url</code>, <code>connection-pool</code>, <code>models</code>, <code>headers</code>, <code>excluded-models</code>, <code>disable-cooling</code>, <code>request-retry</code>, <code>request-scoped-errors</code></td></tr><tr><td><code>codex-api-key</code></td><td><code>api-key</code>, <code>priority</code>, <code>weight</code>, <code>prefix</code>, <code>base-url</code>, <code>websockets</code>, <code>alpha-search</code>, <code>proxy-url</code>, <code>connection-pool</code>, <code>models</code>, <code>headers</code>, <code>excluded-models</code>, <code>disable-cooling</code>, <code>disable-codex-cloaking</code>, <code>request-retry</code>, <code>request-scoped-errors</code></td></tr><tr><td><code>claude-api-key</code></td><td><code>api-key</code>, <code>priority</code>, <code>weight</code>, <code>prefix</code>, <code>base-url</code>, <code>proxy-url</code>, <code>connection-pool</code>, <code>models</code>, <code>headers</code>, <code>excluded-models</code>, <code>rebuild-mid-system-message</code>, <code>native-tool-search</code>, <code>disable-cooling</code>, <code>request-retry</code>, <code>request-scoped-errors</code>, <code>cloak</code>, <code>fingerprint-profile</code>, <code>experimental-cch-signing</code></td></tr><tr><td><code>openai-compatibility</code></td><td><code>name</code>, <code>priority</code>, <code>disabled</code>, <code>prefix</code>, <code>base-url</code>, <code>api-key-entries</code>, <code>connection-pool</code>, <code>models</code>, <code>headers</code>, <code>support-prompt-cache-key</code>, <code>disable-cooling</code>, <code>request-retry</code>, <code>request-scoped-errors</code></td></tr></tbody></table></div>
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格"><table><thead><tr><th>嵌套类型</th><th>YAML字段（类型）</th></tr></thead><tbody><tr><td><code>config.ProxyConnectionPoolConfig</code></td><td><code>enabled</code> (*bool)<br><code>idle-conn-timeout</code> (string)<br><code>max-idle-conns-per-host</code> (*int)</td></tr><tr><td><code>config.GeminiModel</code></td><td><code>name</code> (string)<br><code>alias</code> (string)<br><code>display-name</code> (string)<br><code>max-context-length</code> (int)<br><code>force-mapping</code> (bool)<br><code>is-compat</code> (bool)<br><code>thinking</code> (*registry.ThinkingSupport)</td></tr><tr><td><code>registry.ThinkingSupport</code></td><td><code>min</code> (int)<br><code>max</code> (int)<br><code>zero-allowed</code> (bool)<br><code>dynamic-allowed</code> (bool)<br><code>disable-type</code> (string)<br><code>levels</code> ([]string)</td></tr><tr><td><code>config.RequestScopedErrorRule</code></td><td><code>status</code> (int)<br><code>match</code> ([]string)<br><code>match-regexr</code> ([]string)<br><code>action</code> (string)</td></tr><tr><td><code>config.CodexModel</code></td><td><code>name</code> (string)<br><code>alias</code> (string)<br><code>display-name</code> (string)<br><code>max-context-length</code> (int)<br><code>force-mapping</code> (bool)<br><code>is-compat</code> (bool)<br><code>support-configuration-update</code> (bool)<br><code>thinking</code> (*registry.ThinkingSupport)</td></tr><tr><td><code>config.ClaudeModel</code></td><td><code>name</code> (string)<br><code>alias</code> (string)<br><code>display-name</code> (string)<br><code>max-context-length</code> (int)<br><code>force-mapping</code> (bool)<br><code>is-compat</code> (bool)<br><code>thinking</code> (*registry.ThinkingSupport)</td></tr><tr><td><code>config.CloakConfig</code></td><td><code>mode</code> (string)<br><code>strict-mode</code> (bool)<br><code>sensitive-words</code> ([]string)<br><code>cache-user-id</code> (*bool)</td></tr><tr><td><code>config.OpenAICompatibilityAPIKey</code></td><td><code>api-key</code> (string)<br><code>weight</code> (*int)<br><code>proxy-url</code> (string)<br><code>connection-pool</code> (*ProxyConnectionPoolConfig)</td></tr><tr><td><code>config.OpenAICompatibilityModel</code></td><td><code>name</code> (string)<br><code>alias</code> (string)<br><code>display-name</code> (string)<br><code>max-context-length</code> (int)<br><code>force-mapping</code> (bool)<br><code>image</code> (bool)<br><code>input-modalities</code> ([]string)<br><code>output-modalities</code> ([]string)<br><code>is-compat</code> (bool)<br><code>use-max-completion-tokens</code> (bool)<br><code>thinking</code> (*registry.ThinkingSupport)</td></tr></tbody></table></div>
+<p>列表必须逐项校验；整数排除布尔值；布尔字段不接受字符串或整数真值；headers是开放头名到字符串的映射，其键不是schema字段。YAML thinking使用<code>zero-allowed</code>/<code>dynamic-allowed</code>/<code>disable-type</code>，不要把JSON下划线名混入YAML。重复YAML键、无效嵌套形状不能被静默覆盖后解释为完整输入。</p>
+<p>工具扩展：<code>request-relay-tls</code>仅允许<code>impersonate</code>和可选<code>ca-bundle</code>；Gemini/Codex/Claude段的<code>disabled</code>仅为本工具调度扩展，不代表官方对应struct有此字段；模型字符串简写由工具规范化，不是官方Model对象结构。不接受任意<code>extensions</code>对象绕过合同。</p>
+</details>
+
+<h3 id="s6-scope">多来源隔离、旧账号修复与显式认领</h3>
+<p><code>REQUEST_RELAY_SOURCE_SCOPE=default</code> 是默认稳定来源标识；关闭 relay 时也参与账号所有权。多来源分别使用不同 scope、不同 state_dir/卷和独立配置；不要轮流把两个来源放进同一完整输入来清理。一个 state 目录绑定一个 scope，不能直接改名覆盖其他来源。</p>
+<p>新账号携带严格来源所有权；更新、诊断与清理前重读核实。A 来源不能清理 B 来源。普通导入先寻找唯一受管来源，再决定新增或修复；可确认的历史旧名不会因此重复创建。</p>
+<h4>旧名称、类型与平台：先看身份和依赖</h4>
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的旧账号修复规则表"><table><thead><tr><th>情况</th><th>实际处理</th></tr></thead><tbody>
+<tr><td>唯一旧名，sentinel、来源段、URL、协议和指纹一致</td><td>原 ID 修正名称及受管参数，保留原状态、调度开关和非受管附加信息。</td></tr>
+<tr><td>合法类型变化，例如受管 OAuth → apikey</td><td>完整来源身份核实后用原 ID；显式清除旧类型敏感凭据并读回。影子依赖或目标 API 不允许改型时停止。</td></tr>
+<tr><td>平台不同，API 不支持原 ID 改平台</td><td>强来源身份、无影子/计划等依赖时，按下方隔离步骤创建新 ID 并替换。</td></tr>
+<tr><td>只有历史短指纹，完整凭据导出不可用</td><td>同平台、同类型修复旧名和非身份参数，记录 <code>legacy_claim</code>；不改密钥、类型或平台，不自动清理。</td></tr>
+<tr><td>无 sentinel、手工账号、其它 scope 或候选冲突</td><td>保留；无 sentinel 的历史账号只能明确 ID 强证据认领，普通手工名称不会被认领。</td></tr>
+</tbody></table></div>
+<h4>平台替换的四个核实阶段</h4>
+<ol>
+<li><b>隔离创建：</b>候选先进入随机独占隔离组并限制全部模型；精确 ID 原文凭据与创建参数读回一致后，明确停用候选并核对状态。</li>
+<li><b>最终参数：</b>写入完整配置、原有及配置要求的分组、原状态和调度意图；再次核实原文凭据及全部受管字段。</li>
+<li><b>删除前复核：</b>重读旧账号身份、快照及影子/计划依赖，同时再次核实候选原文凭据和快照；变化或未知结果会取消删除。</li>
+<li><b>最后删除旧 ID：</b>前述成功后才删除，并读回确认。失败时保留旧账号，只清理可确认由本次操作创建的候选与隔离组；删除响应丢失而结果未知时，保留已验证候选并报告失败。</li>
+</ol>
+<div class="box warn"><b>平台替换会改变账号 ID</b><p>已有计划等关联不能静默搬移。普通管理接口隐藏密钥时，平台替换仍须在线读回候选原文凭据；导出被拒绝或密钥错误时保留旧账号。最终读回是管理 API 观察校验，不是服务端原子条件删除；操作期间应避免另一管理员同时改动这些账号。</p></div>
+<h4>明确 ID 认领没有完整来源标记的历史账号</h4>
+<p>先备份目标数据，在管理页核对具体 ID 与当前完整 <code>config.yaml</code>。认领要求实际完整密钥、URL、协议和配置记录唯一对应；无 sentinel 时还限定历史 <code>ANT-域名-数字</code> 名称形式，但名称本身不是授权。不会批量猜测 <code>ANT-</code> 前缀，也不会认领普通手工名称。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0"># 示例ID必须替换成已核实且能与当前完整config唯一绑定的历史账号
+docker compose run --rm cpa2sub2api python tool.py prune claim-preview 101 102
+# 重新生成并核对预演后，在提示中输入大写 CLAIM
+docker compose run --rm cpa2sub2api python tool.py prune claim-apply 101 102
+# 完整同步确认成功后，再检查当前scope清理范围
+docker compose run --rm cpa2sub2api python tool.py prune preview</pre></div>
+<p>认领预演访问管理 API，并通过精确 ID 管理员原文导出核实敏感凭据，与不联网的 <code>import --preview</code> 不同；原文只在内存中比较，不打印或写公开产物。应用前重读配置、账号快照和完整凭据，变化即取消。认领只添加来源归属并修正配置名称/备注，不改状态或调度开关。已有其它来源归属的账号留在原 scope；单站 <code>import --host</code> 不授权跨站清理。</p>
+<h4>原文导出返回 403 或要求增强验证</h4>
+<p>保持目标门禁，在管理页完成要求的登录/管理员增强验证，再手工导出所选单个账号。不能关闭增强验证或把隐藏密钥当成已核实。将原文文件另存在 VPS 私有位置，只授予容器实际 <code>APP_UID</code> 必要读取权限；不要放进仓库、镜像、日志、截图或公开教程。下面是占位路径，文件须为管理员原文导出的 <code>accounts</code> 单元素结构，明确 ID 必须与刚核对的账号一致：</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0"># 私有单账号导出只读挂入一次性容器
+docker compose run --rm \
+  --volume /opt/deploy/private/account-101-export.json:/private/account-101-export.json:ro \
+  cpa2sub2api python tool.py prune claim-preview 101 \
+  --evidence /private/account-101-export.json</pre></div>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button><pre tabindex="0"># 核对预演，再按提示输入 CLAIM；--evidence 每次只接受一个明确ID
+docker compose run --rm \
+  --volume /opt/deploy/private/account-101-export.json:/private/account-101-export.json:ro \
+  cpa2sub2api python tool.py prune claim-apply 101 \
+  --evidence /private/account-101-export.json</pre></div>
+<div class="box danger"><b>导出文件包含真实凭据</b><p>显式私有导出仍须匹配当前快照、URL与配置完整密钥。来源不明、含多个账号、出现冲突或预演后配置变化时停止；该流程不降低在线权限，不替代备份和最终同步读回，也不授权删除所有历史名称。</p></div>
+
+<h2 id="s3-upgrade">六-C、升级与回滚</h2>
+<p>升级前记录镜像标签/摘要，备份父目录四个部署文件、state/out 卷和目标 sub2api 数据。启用 Web/relay 时三个服务使用相同镜像版本，分别拉取重建对应 profile；保留稳定 scope 和 relay state 代际。不要 <code>down -v</code>，否则会删除状态卷。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">cd /opt/deploy
+docker compose pull cpa2sub2api
+docker compose up -d --no-deps --force-recreate cpa2sub2api
+docker compose logs --tail 200 cpa2sub2api
+docker compose ps -a cpa2sub2api
+
+# 回滚：先把 .env 的 CPA2SUB2API_IMAGE_TAG 改回旧SHA标签，再重复上面三条命令</pre></div>
+
+<h3>从旧版迁移与回滚检查</h3><ol>
+<li>先关闭保存的探测总闸，必要时开启独立硬禁，再备份目标数据及私有配置/state；用新 <code>import --preview</code> 检查字段、来源和范围。</li>
+<li>需要 relay 时同时开关与 profile，先启动服务，再实际导入：原子导出 → 实际 consumer 代际匹配 → 创建/同步。旧格式代际从权威配置重新导出，不手工修改私有清单。</li>
+<li>未知来源旧受管账号按明确 ID 预览/认领；完整同步成功后才检查 prune。新增第二来源使用独立 scope 和 state，不覆写原 scope。</li>
+<li>在实际管理页核对模型、代理、原生费率探测关闭和调度意图；Web 逐站/批量关闭后检查 <code>applied</code>，再重建确认持久化。</li>
+<li>程序回滚使用已记录镜像和相容 state；账号数据变更由备份恢复。不能只停 relay，已导入的 relay URL/令牌会失效。</li>
+</ol><p>若要退回直连，先确认原输入无需 CPA 独有消费者，再设 <code>REQUEST_RELAY_ENABLED=false</code>、预览并从原来源重新导入；不能把不支持的字段静默丢弃。需要这些行为的输入应回滚已验证镜像及对应状态/数据。</p>
+
+<h3 id="s6-proxy-policy">共享代理：节点自动检测与模型探测分别控制</h3>
+<p><code>MIHOMO_AUTOMATIC_TESTS=false</code> 关闭 provider 节点健康检测和 url-test，自动检测组转为手工 <code>select</code>，保留节点、过滤和规则。它与模型账号的总闸、站级授权分别控制，不互相授权。</p>
+<p>共享栈执行顺序是：原 upstream-importer <code>mihomo-init</code> 完成 → 本项目镜像的 <code>mihomo-policy-init</code> 无网络原子处理已有共享配置 → 原共享 <code>mihomo</code> 内核启动。policy-only 不复制本项目模板、地理数据或健康脚本，保留原中立连通性健康脚本和手工 fallback。配置缺失、非普通文件或符号链接时策略处理失败，内核继续等待。</p>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 私有.env：MIHOMO_AUTOMATIC_TESTS=false
+docker compose stop mihomo
+docker compose up -d --force-recreate mihomo-init mihomo-policy-init mihomo
+docker compose ps -a mihomo-init mihomo-policy-init mihomo</pre></div>
+<p>恢复自动节点检测时，明确设置 true，并恢复组的自动类型和 provider health-check，或使用已备份配置/受控重建，再按相同次序启动。仅改成 true 不会把已转成 select 的组自动还原，也不会授权模型站探测。</p>
+
 <h2 id="s7">七、工作原理</h2>
 
 <h3>7.1 优先级是「桶号」，不是权重</h3>
@@ -1420,7 +1782,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
 
 <figure>
 <svg viewBox="0 0 900 250" role="img" aria-label="分桶调度示意">
-  <text x="450" y="24" fill="#6B7280" font-size="12" text-anchor="middle" font-family="monospace">
+  <text x="450" y="24" fill="#94A3B8" font-size="12" text-anchor="middle" font-family="monospace">
     优先级 = 桶号，不是权重
   </text>
 
@@ -1456,7 +1818,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
   <text x="450" y="204" fill="#FB7185" font-size="11.5" text-anchor="middle">
     「整桶挂掉才降级」的容灾特性就失效了
   </text>
-  <text x="450" y="230" fill="#6B7280" font-size="11" text-anchor="middle">
+  <text x="450" y="230" fill="#94A3B8" font-size="11" text-anchor="middle">
     方向相反：CPA 里数值大者优先，sub2api 里数值小者优先 —— 本工具负责转换
   </text>
 </svg>
@@ -1470,7 +1832,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
 
 <figure>
 <svg viewBox="0 0 900 300" role="img" aria-label="健康分到桶号的映射">
-  <text x="450" y="22" fill="#6B7280" font-size="12" text-anchor="middle" font-family="monospace">
+  <text x="450" y="22" fill="#94A3B8" font-size="12" text-anchor="middle" font-family="monospace">
     健康分 → 桶号
   </text>
 
@@ -1484,7 +1846,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
     可调度权重更高，因为它更严格（见下方说明）
   </text>
 
-  <text x="438" y="78" fill="#6B7280" font-size="18">→</text>
+  <text x="438" y="78" fill="#94A3B8" font-size="18">→</text>
 
   <!-- 分档 -->
   <rect x="470" y="42" width="390" height="58" rx="10" fill="url(#gB)" stroke="#A78BFA" stroke-opacity=".45"/>
@@ -1541,11 +1903,11 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
   <defs>
     <marker id="d1" markerWidth="9" markerHeight="9" refX="7" refY="3"
             orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+      <path d="M0,0 L0,6 L8,3 z" fill="#94A3B8"/>
     </marker>
   </defs>
 
-  <text x="450" y="22" fill="#6B7280" font-size="12" text-anchor="middle" font-family="monospace">
+  <text x="450" y="22" fill="#94A3B8" font-size="12" text-anchor="middle" font-family="monospace">
     同一域名 5 个 KEY：3 个已导入（2 可调度 / 2 活跃）＋ 2 个本次新增
   </text>
 
@@ -1563,13 +1925,13 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
   <text x="335" y="62" fill="#FB7185" font-size="10.5" text-anchor="middle">已导入</text>
   <text x="335" y="74" fill="#9CA3AF" font-size="9.5" text-anchor="middle">已停·error</text>
 
-  <rect x="392" y="46" width="86" height="34" rx="7" fill="rgba(107,114,128,.14)" stroke="#6B7280" stroke-opacity=".6" stroke-dasharray="4 3"/>
+  <rect x="392" y="46" width="86" height="34" rx="7" fill="rgba(107,114,128,.14)" stroke="#94A3B8" stroke-opacity=".6" stroke-dasharray="4 3"/>
   <text x="435" y="67" fill="#9CA3AF" font-size="10.5" text-anchor="middle">新增</text>
 
-  <rect x="484" y="46" width="86" height="34" rx="7" fill="rgba(107,114,128,.14)" stroke="#6B7280" stroke-opacity=".6" stroke-dasharray="4 3"/>
+  <rect x="484" y="46" width="86" height="34" rx="7" fill="rgba(107,114,128,.14)" stroke="#94A3B8" stroke-opacity=".6" stroke-dasharray="4 3"/>
   <text x="527" y="67" fill="#9CA3AF" font-size="10.5" text-anchor="middle">新增</text>
 
-  <text x="600" y="67" fill="#6B7280" font-size="10.5">← 新增的还没有任何实测数据</text>
+  <text x="600" y="67" fill="#94A3B8" font-size="10.5">← 新增的还没有任何实测数据</text>
 
   <!-- 左：已导入数 -->
   <rect x="40" y="106" width="390" height="196" rx="11" fill="rgba(110,231,183,.07)"
@@ -1596,7 +1958,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
     扩容不影响老域名的评分
   </text>
 
-  <path d="M440 204 L470 204" stroke="#6B7280" stroke-width="1.6" marker-end="url(#d1)"/>
+  <path d="M440 204 L470 204" stroke="#94A3B8" stroke-width="1.6" marker-end="url(#d1)"/>
 
   <!-- 右：KEY 总数 -->
   <rect x="480" y="106" width="380" height="196" rx="11" fill="rgba(239,68,68,.06)"
@@ -1649,7 +2011,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
   <defs>
     <marker id="ar5" markerWidth="9" markerHeight="9" refX="7" refY="3"
             orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+      <path d="M0,0 L0,6 L8,3 z" fill="#94A3B8"/>
     </marker>
   </defs>
 
@@ -1660,14 +2022,14 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
     某个 KEY 没钱 / 被封 / 其他原因
   </text>
 
-  <line x1="450" y1="66" x2="450" y2="96" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar5)"/>
+  <line x1="450" y1="66" x2="450" y2="96" stroke="#94A3B8" stroke-width="1.7" marker-end="url(#ar5)"/>
 
   <rect x="280" y="100" width="340" height="40" rx="9" fill="url(#gS)" stroke="#38BDF8" stroke-opacity=".4"/>
   <text x="450" y="125" fill="#E5E7EB" font-size="12.5" text-anchor="middle">
     仅该账号被标 error（桶内其余 KEY 不受影响）
   </text>
 
-  <line x1="450" y1="140" x2="450" y2="170" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar5)"/>
+  <line x1="450" y1="140" x2="450" y2="170" stroke="#94A3B8" stroke-width="1.7" marker-end="url(#ar5)"/>
 
   <!-- 第一层 -->
   <rect x="150" y="174" width="600" height="46" rx="9" fill="rgba(110,231,183,.13)"
@@ -1678,7 +2040,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
   </text>
   <text x="720" y="203" fill="#9CA3AF" font-size="11" text-anchor="end">桶内冗余</text>
 
-  <line x1="450" y1="220" x2="450" y2="248" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar5)"/>
+  <line x1="450" y1="220" x2="450" y2="248" stroke="#94A3B8" stroke-width="1.7" marker-end="url(#ar5)"/>
 
   <!-- 第二层 -->
   <rect x="150" y="252" width="600" height="46" rx="9" fill="rgba(167,139,250,.14)"
@@ -1689,7 +2051,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
   </text>
   <text x="720" y="281" fill="#9CA3AF" font-size="11" text-anchor="end">跨域名降级</text>
 
-  <line x1="450" y1="298" x2="450" y2="326" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar5)"/>
+  <line x1="450" y1="298" x2="450" y2="326" stroke="#94A3B8" stroke-width="1.7" marker-end="url(#ar5)"/>
 
   <!-- 第三层 -->
   <rect x="150" y="330" width="600" height="42" rx="9" fill="rgba(56,189,248,.13)"
@@ -1706,13 +2068,14 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
 </figure>
 
 <h3>7.4 模型「就高原则」 <span class="bd bd-fix">已修</span></h3>
+<p>下列型号用于说明家族和版本比较，不代表当前市场最新目录。实际选择以本次获取的可信模型目录、来源类型和日志为准；未检测不标实测可用。</p>
 
 <figure>
 <svg viewBox="0 0 900 330" role="img" aria-label="模型选择分流">
   <defs>
     <marker id="ar6" markerWidth="9" markerHeight="9" refX="7" refY="3"
             orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+      <path d="M0,0 L0,6 L8,3 z" fill="#94A3B8"/>
     </marker>
   </defs>
 
@@ -1721,7 +2084,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
     CPA config.yaml 的某一条凭据
   </text>
 
-  <line x1="450" y1="58" x2="450" y2="84" stroke="#6B7280" stroke-width="1.7" marker-end="url(#ar6)"/>
+  <line x1="450" y1="58" x2="450" y2="84" stroke="#94A3B8" stroke-width="1.7" marker-end="url(#ar6)"/>
   <text x="468" y="76" fill="#9CA3AF" font-size="10.5">按来源段分流</text>
 
   <!-- 四路 -->
@@ -1745,10 +2108,10 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
   <text x="765" y="139" fill="#E5E7EB" font-size="10.5" text-anchor="middle">多族：每族各取最高级</text>
   <text x="765" y="157" fill="#9CA3AF" font-size="10" text-anchor="middle">openai-compatibility 段</text>
 
-  <line x1="450" y1="76" x2="128" y2="94" stroke="#6B7280" stroke-width="1.2" stroke-dasharray="3 3"/>
-  <line x1="450" y1="76" x2="338" y2="94" stroke="#6B7280" stroke-width="1.2" stroke-dasharray="3 3"/>
-  <line x1="450" y1="76" x2="548" y2="94" stroke="#6B7280" stroke-width="1.2" stroke-dasharray="3 3"/>
-  <line x1="450" y1="76" x2="765" y2="94" stroke="#6B7280" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <line x1="450" y1="76" x2="128" y2="94" stroke="#94A3B8" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <line x1="450" y1="76" x2="338" y2="94" stroke="#94A3B8" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <line x1="450" y1="76" x2="548" y2="94" stroke="#94A3B8" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <line x1="450" y1="76" x2="765" y2="94" stroke="#94A3B8" stroke-width="1.2" stroke-dasharray="3 3"/>
 
   <!-- 说明 -->
   <rect x="30" y="198" width="840" height="52" rx="9" fill="rgba(251,191,36,.09)" stroke="#FBBF24" stroke-opacity=".4"/>
@@ -1772,36 +2135,36 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
 </figcaption>
 </figure>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>类型</th><th>规则</th></tr></thead>
   <tbody>
     <tr><td>gemini</td><td>只选带 <code>pro</code> 的最高编号，保留该版本全部变体</td></tr>
-    <tr><td>claude</td><td>只选当代，保留全部档位（opus / sonnet / haiku）</td></tr>
-    <tr><td>codex</td><td><b>单族</b>：只保留当代 gpt 系列<b>全部</b>模型名</td></tr>
-    <tr><td>openai</td><td><b>多族</b>：每一族各取最高级，允许多族并存</td></tr>
-    <tr><td>其他</td><td>原样保留（grok 等）</td></tr>
+    <tr><td>claude</td><td>按完整数值版本就高，区分短次版本与日期，保留同版本全部有效档位和后缀</td></tr>
+    <tr><td>codex</td><td><b>单族</b>：GPT整体比较数值版本，只保留最高版本及其全部有效后缀变体</td></tr>
+    <tr><td>openai</td><td><b>多族</b>：GPT、Grok、Claude、Gemini、Kimi及DeepSeek等已识别谱系分别就高，允许多族并存</td></tr>
+    <tr><td>未识别名称</td><td>保持原配置语义，不猜测代际或擅自删改</td></tr>
   </tbody>
 </table>
 </div>
 
-<div class="note note-warn">
+<div class="note note-warn" tabindex="0" role="group" aria-label="可横向滚动的说明">
   <b>低档模型一律不勾选</b>
   <p>名字里带 <code>mini</code> / <code>flash</code> / <code>fast</code> 的排除，
-  四条路径（gemini / claude / codex / openai）统一执行。过滤后一个不剩时保留原列表并出声
-  —— 白名单为空等于该账号退出调度，比留几个低档模型更糟。</p>
-  <p>注意 claude 的 <code>haiku</code> <b>不算低档</b>：它与 opus / sonnet 是同代不同档位，
-  按「同等级系列全部勾选」应当保留。低档判据只认那三个词。</p>
+  四条路径（gemini / claude / codex / openai）统一执行。过滤后一个不剩时应从可信目录补齐该类型最高系列，或明确记录无法确定；不能把被排除的低档模型静默加回，也不能把空名单假报成功。</p>
+  <p>注意 claude 的 <code>haiku</code> <b>不因档位名称被排除</b>：完整数值版本相同时，opus / sonnet / haiku及其他有效后缀都保留；较低版本仍按就高规则处理。低档关键词判据只认前述三个词。</p>
 </div>
 
 <h4>连通性探测：最新代打不通时的兜底</h4>
 
 <p>上游声明了 <code>gpt-6</code> 不等于真的能调。模型目录是站方自己填的，
 常有「列了但调不通」的情况。开启探测后按<b>代际</b>实发请求验证，据结果分三种处理。</p>
+<p>Grok使用动态数值版本比较，保留最高数值版本的全部有效后缀，仍排除 <code>mini</code>、<code>flash</code>、<code>fast</code>。GPT跨主版本作为一个家族比较，不能因为同属一个主版本，就把较低次版本当成最高级的后缀变体。</p>
+<p>Kimi K与Moonshot V、DeepSeek V与R分别比较；日期、上下文长度和普通模式后缀不当成更高代际。Claude同时识别已知的档位在前和版本在前形式，日期后缀不作为次版本。未标版本的符号别名及无法识别的名称保留，不猜测其当前指向，也不为凑出“最高”而删除。</p>
 
 <figure>
 <svg viewBox="0 0 900 340" role="img" aria-label="连通性探测的三种分支">
-  <text x="450" y="20" fill="#6B7280" font-size="12" text-anchor="middle" font-family="monospace">
+  <text x="450" y="20" fill="#94A3B8" font-size="12" text-anchor="middle" font-family="monospace">
     按代际探一次 &#8594; 三种处理
   </text>
 
@@ -1835,7 +2198,7 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
   <rect x="605" y="116" width="250" height="150" rx="10"
         fill="rgba(239,68,68,.13)" stroke="#EF4444" stroke-opacity=".5"/>
   <text x="730" y="140" fill="#F87171" font-size="12.5" text-anchor="middle" font-weight="700">两代都不通</text>
-  <text x="730" y="166" fill="#9CA3AF" font-size="11.5" text-anchor="middle">上游自身的问题</text>
+  <text x="730" y="166" fill="#9CA3AF" font-size="11.5" text-anchor="middle">需区分参数、网络与上游</text>
   <text x="730" y="196" fill="#E5E7EB" font-size="12" text-anchor="middle" font-family="monospace">按目录最高级填充</text>
   <text x="730" y="222" fill="#9CA3AF" font-size="11" text-anchor="middle">并出声告警，说明原因</text>
   <text x="730" y="240" fill="#9CA3AF" font-size="11" text-anchor="middle">（503 / 超时 / SSL 等）</text>
@@ -1853,19 +2216,22 @@ docker inspect --format '{{range .State.Health.Log}}exit={{.ExitCode}} {{.Output
 </figcaption>
 </figure>
 
-<div class="note">
-  <b>成本：231 个账号 &#8594; 49 个探测单元 &#8594; 约 30 秒</b>
-  <p>不逐模型探测，那样会打上千个请求。按 <code>(段, 域名)</code> 去重，
-  每个单元最多 2 个请求（最新代 + 次最新代）。同一站的多个 KEY 共享判定结果 ——
-  它们打的是同一个上游，模型可用性一致。</p>
-  <p>结果缓存 6 小时，重跑命中缓存 <b>0 秒</b>。关闭探测时零开销，行为与不带该功能完全一致。</p>
+<div class="box note">
+  <b>仅显式授权时才有模型请求成本</b>
+  <p>默认关闭时不向上游探测。开启后，默认入口的自动批次与 sub2api 原生周计划按规范化主机共享604800秒周预算；更换KEY、模型或代际不能重新放行。请求前持久化预算，失败或中断也计入该周，未到期受控跳过、上游请求为零，并保持健康账号状态。具体请求数、超时和缓存命中以本轮日志为准。</p>
+  <p><code>MODEL_PROBE_CACHE_TTL=604800</code> 管理结果缓存；缓存过期或最高模型上次失败不能绕过自动周预算。显式 <code>diagnose</code> / <code>recover</code> 走手工d标记，不占自动周预算，仍需总闸与站授权，永久禁探站始终拒绝。</p>
+  <p>同域名不同KEY可能有不同分组或模型权限；一个KEY成功不能证明全部KEY可用，更不能据此恢复未验证账号。</p>
+  <p>各家族的最新/次新分别检测；只有本轮同KEY、同来源目录和相符代际的成功结果，才能在保留最高版本的同时补入该家族次新。缓存按家族、来源和运行代际区分；旧的次新成功记录不能授权本轮新增次新。</p>
 </div>
 
-<pre><code class="lang-bash">MODEL_PROBE_ENABLED=true       # 默认开启，设 false 完全跳过
-MODEL_PROBE_WORKERS=8          # 并发
-MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数（6 小时）</code></pre>
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"><code class="lang-bash">MODEL_PROBE_ENABLED=false      # 未保存master时默认关闭
+MODEL_PROBE_HARD_DISABLED=false # true为独立硬禁，三个服务配置一致
+ONLINE_PROBE_HOSTS=           # 默认无站授权；非空继续限制可开启范围
+MODEL_PROBE_WORKERS=2         # 显式授权后才使用
+MODEL_PROBE_CACHE_TTL=604800  # 缓存秒数（7天）</code></pre></div>
 
-<div class="note note-warn">
+<div class="note note-warn" tabindex="0" role="group" aria-label="可横向滚动的说明">
   <b>端点拼接必须与 CPA 源码一致</b>
   <p>探测用的 URL 按 CPA 自己的拼法构造：<code>baseURL</code> <b>原样</b>
   加各平台端点后缀，<b>不剥离尾部 <code>/v1</code></b>。CPA 的 base-url 是声明式配置，
@@ -1879,84 +2245,37 @@ MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数（6 小时）</code></pre>
       <tr><td>gemini-api-key</td><td><code>baseURL + "/v1beta/models/&#123;model&#125;:generateContent"</code></td></tr>
     </tbody>
   </table>
-  <p>自行剥离 <code>/v1</code> 会拼出 <code>.../v1/v1/messages</code>，
-  拿到 nginx 的 404 HTML 页，把「端点拼错」误判成「上游不通」。</p>
+  <p>按字符串猜测并增删 <code>/v1</code> 可能制造重复版本路径或丢失版本路径，拿到404/HTML。应对照该来源类型的真实协议端点，不能把路径错误当作模型不可用。</p>
 </div>
 
-<div class="note note-warn">
+<div class="note note-warn" tabindex="0" role="group" aria-label="可横向滚动的说明">
   <b>判「通」不能只看 200</b>
   <p>很多中转站有 catch-all 路由：错误的端点也返回 <code>200</code>，但响应体是
   HTML 前端页而不是 LLM 响应。必须校验响应体形态
   （<code>id</code>/<code>choices</code>/<code>content</code> 等字段），否则会得到大量假阳性。</p>
-  <p><code>400</code> / <code>422</code> 也算通：请求到了模型、只是参数被挑刺，
-  说明这个模型确实存在且可路由。<code>404 model_not_found</code>、
-  <code>503 No available channel</code> 才是真不通。</p>
+  <p><code>400</code> / <code>422</code> 只能说明请求被拒绝，不能证明模型可用；应保留参数/协议诊断，不作为恢复成功证据。成功还需符合预期LLM响应结构或有效SSE；目录、HTTP状态和实际模型能力分开判断。</p>
 </div>
 
-<h3>7.5 反测活</h3>
-
+<h3>7.5 默认关闭与周频检测</h3>
 <figure>
-<svg viewBox="0 0 900 200" role="img" aria-label="探活时刻错开">
-  <text x="30" y="26" fill="#FB7185" font-size="12.5">改造前：所有账号在同一分钟一起探活</text>
-
-  <!-- 密集对齐 -->
-  <line x1="60" y1="76" x2="860" y2="76" stroke="#1E2636" stroke-width="1"/>
-  <g fill="#FB7185" fill-opacity=".85">
-    <circle cx="200" cy="66" r="5"/><circle cx="200" cy="76" r="5"/>
-    <circle cx="200" cy="86" r="5"/><circle cx="200" cy="96" r="5"/>
-    <circle cx="200" cy="106" r="5"/><circle cx="200" cy="116" r="5"/>
-    <circle cx="200" cy="126" r="5"/>
-  </g>
-  <text x="216" y="100" fill="#FB7185" font-size="11">同时性本身就是机器特征</text>
-  <text x="216" y="118" fill="#9CA3AF" font-size="10.5">（真实用户的请求时刻是分散的）</text>
-  <text x="60" y="150" fill="#6B7280" font-size="10.5" font-family="monospace">*/30 * * * *</text>
-
-  <line x1="30" y1="164" x2="870" y2="164" stroke="#1E2636" stroke-width="2"/>
-
-  <!-- 分散 -->
-  <text x="30" y="190" fill="#6EE7B7" font-size="12.5">改造后：每个账号有稳定的分钟偏移，散开</text>
-  <line x1="60" y1="176" x2="860" y2="176" stroke="#1E2636" stroke-width="1"/>
-  <g fill="#6EE7B7" fill-opacity=".8">
-    <circle cx="120" cy="176" r="4"/><circle cx="164" cy="176" r="4"/>
-    <circle cx="205" cy="176" r="4"/><circle cx="252" cy="176" r="4"/>
-    <circle cx="300" cy="176" r="4"/><circle cx="341" cy="176" r="4"/>
-    <circle cx="392" cy="176" r="4"/><circle cx="430" cy="176" r="4"/>
-    <circle cx="478" cy="176" r="4"/><circle cx="521" cy="176" r="4"/>
-    <circle cx="566" cy="176" r="4"/><circle cx="610" cy="176" r="4"/>
-    <circle cx="655" cy="176" r="4"/><circle cx="700" cy="176" r="4"/>
-    <circle cx="744" cy="176" r="4"/><circle cx="790" cy="176" r="4"/>
-    <circle cx="830" cy="176" r="4"/>
-  </g>
+<svg viewBox="0 0 900 230" role="img" aria-label="总闸、站授权、永久禁探三级判定">
+<rect x="25" y="45" width="240" height="100" rx="10" fill="#161D2B" stroke="#38BDF8"/>
+<text x="145" y="79" text-anchor="middle" fill="#38BDF8" font-size="17">总闸开启</text>
+<text x="145" y="109" text-anchor="middle" fill="#B3BECE" font-size="13">保存的总闸开启</text>
+<path d="M275 95 H320" stroke="#94A3B8" stroke-width="2"/>
+<rect x="330" y="45" width="240" height="100" rx="10" fill="#161D2B" stroke="#A78BFA"/>
+<text x="450" y="79" text-anchor="middle" fill="#A78BFA" font-size="17">站点明确授权</text>
+<text x="450" y="109" text-anchor="middle" fill="#B3BECE" font-size="13">单站或批量开关</text>
+<path d="M580 95 H625" stroke="#94A3B8" stroke-width="2"/>
+<rect x="635" y="45" width="240" height="100" rx="10" fill="#161D2B" stroke="#6EE7B7"/>
+<text x="755" y="79" text-anchor="middle" fill="#6EE7B7" font-size="17">不在永久禁探名单</text>
+<text x="755" y="109" text-anchor="middle" fill="#B3BECE" font-size="13">代理和计划也不能绕过</text>
+<text x="450" y="191" text-anchor="middle" fill="#FBBF24" font-size="16">全部满足才允许检测；默认全部关闭</text>
 </svg>
-<figcaption>
-  <b>图 12</b>　探活时刻错开。<b>调用模式的规律性</b>（间隔方差为 0、全体同时）
-  比单条 prompt 的措辞权重更高。
-</figcaption>
+<figcaption><b>图12</b>　线上检测授权顺序。恢复计划默认每周一次，不能从随机语料推断“不会封号”。</figcaption>
 </figure>
-
-<p>两层措施：</p>
-<ul>
-  <li><b>语料</b>：中英双语、覆盖多种日常话题，随机抽取。不用
-      「test」「你好」「你是什么模型」这类教科书特征。
-      <span class="bd bd-new">2026-09-19 补齐</span>
-      探活计划那条链路本来就有 30 条语料池，但<b>探测链路</b>
-      （<code>model_probe.py</code>，导入时用来判模型通不通）三处都硬写着
-      <code>"hi"</code> —— 那是个常量，站方按「请求体恒为 hi 且
-      <code>max_tokens=1</code>」就能一眼认出探活流量，比措辞本身更好认。
-      现已改成与探活同类的短句池（中英各 5 条）随机抽取，
-      仍保持 <code>max_tokens=1</code> 的极低消耗。</li>
-  <li><b>时刻错开</b> <span class="bd bd-new">新增</span>：
-      给每个账号派生一个稳定的分钟偏移（用账号名哈希，保证同一账号每次
-      得到同一偏移、不同账号之间散开）。实测 100 个账号会散到 29/30 种可能的时刻。</li>
-</ul>
-
-<div class="box tip">
-  <b>两条链路的语料为什么是两个池</b>
-  探活计划（sub2api 定时任务）用的是 30 条较长句子，因为它要模型
-  <b>真的把话答完</b>才算成功；探测链路只判「这一代模型在这个站上认不认」，
-  请求体越小越不容易被限流，所以用短句。两者都避开教科书特征词，
-  但长度诉求相反 —— 合成一个池反而两头不讨好。
-</div>
+<p>不要发送问候、模型身份询问或周期保活来制造活动。确需检测时，只对你明确授权的站点进行最少必要请求，遵守其使用约定，并使用缓存和周频计划降低重复请求。</p>
+<p>关闭授权会协调停用旧计划。请在 sub2api 管理页面核对计划状态和下次执行时间；若旧半小时任务仍在运行，保持总闸关闭并执行 <code>probes reconcile</code> 排查。</p>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s8">八、故障排查</h2>
@@ -1973,7 +2292,7 @@ MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数（6 小时）</code></pre>
   整栈有两个 Python 服务都支持 DEBUG 落盘，<b>变量名不同</b>，写在执行根的 <code>.env</code>：
 </p>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>变量</th><th>默认（当前设置）</th><th>作用服务</th><th>说明</th></tr></thead>
   <tbody>
@@ -2002,8 +2321,8 @@ MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数（6 小时）</code></pre>
   屏幕要能看清结论，文件要能事后追查 —— 两者的诉求正好相反。
 </div>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 一次排查运行的完整姿势
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 一次排查运行的完整姿势
 
 # 1) 在执行根 .env 里（v1.0.0 起已是默认值，无需修改）：
 CPA2SUB_LOG_LEVEL=DEBUG
@@ -2027,7 +2346,7 @@ CPA2SUB_LOG_LEVEL=DEBUG CPA2SUB_LOG_TO_FILE=1 python 一键导入.py</pre></div>
 
 <p>日志里该看什么——按"最常问的四个问题"对照：</p>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>你想知道</th><th>日志里搜什么</th><th>说明</th></tr></thead>
   <tbody>
@@ -2083,19 +2402,19 @@ CPA2SUB_LOG_LEVEL=DEBUG CPA2SUB_LOG_TO_FILE=1 python 一键导入.py</pre></div>
   <rect x="20" y="16" width="150" height="290" rx="10" fill="#161D2B"/>
   <rect x="20" y="16" width="150" height="42" rx="10" fill="#1E2636"/>
   <text x="40" y="43" fill="#E5E7EB" font-size="12" font-weight="700">IP 管理</text>
-  <text x="40" y="76" fill="#6B7280" font-size="11">仪表盘</text>
+  <text x="40" y="76" fill="#94A3B8" font-size="11">仪表盘</text>
   <text x="40" y="100" fill="#38BDF8" font-size="11">IP 管理</text>
-  <text x="40" y="124" fill="#6B7280" font-size="11">渠道管理</text>
-  <text x="40" y="148" fill="#6B7280" font-size="11">账号管理</text>
-  <text x="40" y="172" fill="#6B7280" font-size="11">订阅管理</text>
+  <text x="40" y="124" fill="#94A3B8" font-size="11">渠道管理</text>
+  <text x="40" y="148" fill="#94A3B8" font-size="11">账号管理</text>
+  <text x="40" y="172" fill="#94A3B8" font-size="11">订阅管理</text>
 
   <!-- 表格头 -->
-  <text x="195" y="48" fill="#6B7280" font-size="10.5">名称</text>
-  <text x="330" y="48" fill="#6B7280" font-size="10.5">协议</text>
-  <text x="410" y="48" fill="#6B7280" font-size="10.5">地址</text>
-  <text x="560" y="48" fill="#6B7280" font-size="10.5">账号数</text>
-  <text x="650" y="48" fill="#6B7280" font-size="10.5">延迟</text>
-  <text x="760" y="48" fill="#6B7280" font-size="10.5">状态</text>
+  <text x="195" y="48" fill="#94A3B8" font-size="10.5">名称</text>
+  <text x="330" y="48" fill="#94A3B8" font-size="10.5">协议</text>
+  <text x="410" y="48" fill="#94A3B8" font-size="10.5">地址</text>
+  <text x="560" y="48" fill="#94A3B8" font-size="10.5">账号数</text>
+  <text x="650" y="48" fill="#94A3B8" font-size="10.5">延迟</text>
+  <text x="760" y="48" fill="#94A3B8" font-size="10.5">状态</text>
   <line x1="185" y1="58" x2="870" y2="58" stroke="#1E2636" stroke-width="1.5"/>
 
   <!-- 数据行 -->
@@ -2112,7 +2431,7 @@ CPA2SUB_LOG_LEVEL=DEBUG CPA2SUB_LOG_TO_FILE=1 python 一键导入.py</pre></div>
 
   <!-- 说明 -->
   <line x1="185" y1="106" x2="870" y2="106" stroke="#1E2636" stroke-width="1.5"/>
-  <text x="195" y="132" fill="#6B7280" font-size="10.5" font-style="italic">
+  <text x="195" y="132" fill="#94A3B8" font-size="10.5" font-style="italic">
     注：这是界面示意图（已脱敏），不是真实截图
   </text>
 
@@ -2151,7 +2470,7 @@ CPA2SUB_LOG_LEVEL=DEBUG CPA2SUB_LOG_TO_FILE=1 python 一键导入.py</pre></div>
 </figcaption>
 </figure>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>可能性</th><th>怎么查</th></tr></thead>
   <tbody>
@@ -2211,7 +2530,7 @@ CPA2SUB_LOG_LEVEL=DEBUG CPA2SUB_LOG_TO_FILE=1 python 一键导入.py</pre></div>
     客户端侧表现为 503 / 524，低优先级站点一次都没被尝试
   </text>
 
-  <text x="450" y="288" fill="#6B7280" font-size="11" text-anchor="middle">
+  <text x="450" y="288" fill="#94A3B8" font-size="11" text-anchor="middle">
     实测证据：15 次请求全部选中同一个账号（sticky_honored=true），上游一律返回 402
   </text>
 </svg>
@@ -2225,7 +2544,7 @@ CPA2SUB_LOG_LEVEL=DEBUG CPA2SUB_LOG_TO_FILE=1 python 一键导入.py</pre></div>
 <ol>
   <li><b>域名级冷却</b>：402「预算池耗尽」是<b>整个上游</b>层面的状态
       （同一站的所有 KEY 共用同一个池子），不是单个 KEY 的毛病。
-      本工具给这类错误码下发更长（180 分钟）、关键词更特异的冷却规则，
+      本工具给这类错误码下发15分钟、关键词更特异的冷却规则，
       避免在同一池子里逐个 KEY 空撞。</li>
   <li><b>分组内唯一桶号</b>：保证「整桶挂掉才降级」真的能降级。
       编号范围是分组内 —— sub2api 选号按 <code>group_id</code> 取候选，
@@ -2256,8 +2575,8 @@ CPA2SUB_LOG_LEVEL=DEBUG CPA2SUB_LOG_TO_FILE=1 python 一键导入.py</pre></div>
   一旦超时 CF 直接返回 524，此时源站其实还在正常重试。
   对策是<b>压缩单次请求的上游尝试预算</b>：
 </p>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># CPA 的 config.yaml（全局段）
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># CPA 的 config.yaml（全局段）
 max-retry-credentials: 4     # 12 → 4
 max-retry-interval: 2        # 8 → 2
 
@@ -2271,8 +2590,8 @@ max-retry-interval: 2        # 8 → 2
   此后若上游失败，网关已经<b>没有退路</b>——响应头发出去了，不能改 5xx、
   也不能换凭据。唯一结果就是「语法合法但一个事件都没有」的 200。
 </p>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># CPA 的 config.yaml
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># CPA 的 config.yaml
 codex:
   stream-bootstrap-buffering: true   # false → true
 streaming:
@@ -2280,18 +2599,19 @@ streaming:
 
 <h3>8.7 报 <code>403 error code: 1010</code></h3>
 <p>Cloudflare 浏览器完整性检查拦截，请求没到源站。设置浏览器 UA：</p>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># .env
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># .env
 USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36</pre></div>
 
 <h3>8.8 查看日志</h3>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>docker compose logs -f cpa2sub2api
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">docker compose logs -f cpa2sub2api
 docker compose logs -f mihomo
 docker compose exec mihomo sh -c 'wget -q --spider \
   --header="Authorization: Bearer $MIHOMO_SECRET" http://127.0.0.1:9090/version'</pre></div>
 
 <h3>8.9 CPA 与 CPAMP 的五个密钥，别再搞混</h3>
+<div class="box warn"><b>关联项目的版本边界</b>下面密钥重置、数据库路径和命令参数来自关联项目的既有实现。执行前核对你当前镜像版本及命令帮助，并备份目标数据；不要仅凭本工具更新就认定第三方命令和路径不变。优先使用目标管理页面提供的受支持操作。</div>
 
 <p>
   这一节来自一次真实排障：改了密钥之后 CPAMP 登不进去，反复试了很久才定位。
@@ -2303,7 +2623,7 @@ docker compose exec mihomo sh -c 'wget -q --spider \
   <defs>
     <marker id="k1" markerWidth="9" markerHeight="9" refX="7" refY="3"
             orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L8,3 z" fill="#6B7280"/>
+      <path d="M0,0 L0,6 L8,3 z" fill="#94A3B8"/>
     </marker>
   </defs>
 
@@ -2355,10 +2675,10 @@ docker compose exec mihomo sh -c 'wget -q --spider \
   <text x="652" y="318" fill="#9CA3AF" font-size="10.5">表现为面板能开、数据全空</text>
   <text x="652" y="340" fill="#6EE7B7" font-size="10.5">在 CPAMP 设置页可改</text>
 
-  <path d="M640 120 L290 120" stroke="#6B7280" stroke-width="1.6"
+  <path d="M640 120 L290 120" stroke="#94A3B8" stroke-width="1.6"
         stroke-dasharray="4 3" marker-end="url(#k1)"/>
   <text x="465" y="110" fill="#9CA3AF" font-size="11" text-anchor="middle">面板登录 ≠ 连 CPA</text>
-  <path d="M640 292 L290 292" stroke="#6B7280" stroke-width="1.6"
+  <path d="M640 292 L290 292" stroke="#94A3B8" stroke-width="1.6"
         stroke-dasharray="4 3" marker-end="url(#k1)"/>
   <text x="465" y="282" fill="#9CA3AF" font-size="11" text-anchor="middle">⑤ 必须匹配 ①</text>
 </svg>
@@ -2381,8 +2701,8 @@ docker compose exec mihomo sh -c 'wget -q --spider \
 <h3>8.10 面板登不上：重置密钥（唯一有效的方法）</h3>
 
 <p>源码里写得明确（<code>bootstrap/service.go</code>）：</p>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>// 数据库里已有凭据就直接返回 —— 不再读 secrets 文件
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">// 数据库里已有凭据就直接返回 —— 不再读 secrets 文件
 if _, ok, err := st.LoadAdminCredential(ctx); err != nil || ok {
     return false, "", err
 }
@@ -2393,8 +2713,8 @@ adminKey := cfg.AdminKey   // 只有首次启动才读文件</pre></div>
   想换只能用 <code>reset-admin-key</code>（它直接改写 SQLite）。
 </p>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>cd /opt/deploy
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">cd /opt/deploy
 
 # ① 先停 CPAMP，避免 SQLite 被占用
 docker compose stop cpa-manager-plus
@@ -2424,13 +2744,13 @@ docker compose start cpa-manager-plus</pre></div>
 <h3>8.11 被自己的 IP 封禁：<code>403</code> 而不是 <code>401</code></h3>
 
 <p>改密钥时很容易触发。CPA 源码里有两个常量：</p>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>const maxFailures = 5
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">const maxFailures = 5
 const banDuration = 30 * time.Minute</pre></div>
 
 <p>认证失败累计 5 次 → <b>该 IP 封禁 30 分钟</b> → 之后所有请求返回 403，<b>包括用对密钥的</b>。</p>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
   <thead><tr><th>状态码</th><th>CPA 源码里的含义</th></tr></thead>
   <tbody>
@@ -2441,16 +2761,16 @@ const banDuration = 30 * time.Minute</pre></div>
 </div>
 
 <p><b>只看状态码分不出 403 的具体原因，必须看响应体：</b></p>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>curl -s -i -H "Authorization: Bearer $KEY" \
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">curl -s -i -H "Authorization: Bearer $KEY" \
   http://127.0.0.1:8317/v0/management/get-auth-status | head -20
 
 # 看到这个就是被封了：
 #   {"error":"IP banned due to too many failed attempts. Try again in 26m10s"}</pre></div>
 
 <p><b>解除方法</b>（失败计数在内存里，重启即清空）：</p>
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre>cd /opt/deploy
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0">cd /opt/deploy
 
 # 关键顺序：先停 CPAMP，否则它会持续重试、不断延长封禁
 docker compose stop cpa-manager-plus
@@ -2520,8 +2840,8 @@ docker compose start cpa-manager-plus</pre></div>
   写进 <code>config.yaml</code> 后认证即失效。
 </div>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 生成后立刻校验，不合格就别往下走
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 生成后立刻校验，不合格就别往下走
 echo "HASH 长度: ${#HASH}"
 case "$HASH" in
   \$2*) [ ${#HASH} -ge 59 ] && echo "OK" || echo "长度异常，中止" ;;
@@ -2532,8 +2852,8 @@ esac</pre></div>
 
 <p>顺序错了会把自己锁在外面（或触发封禁）。按这个来：</p>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># ① 生成新密钥，直接落文件、不回显（避免进入终端历史）
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># ① 生成新密钥，直接落文件、不回显（避免进入终端历史）
 cd /opt/deploy
 openssl rand -hex 24 > secrets/cpa_management_key
 
@@ -2577,10 +2897,28 @@ docker compose start cpa-manager-plus</pre></div>
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <h2 id="s9">九、附录：环境变量表</h2>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># ============ 镜像来源 ============
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># ============ 镜像来源 ============
 DOCKERHUB_USERNAME=
 DOCKERHUB_IMAGE=cpa2sub2api
+
+# ============ 可选 Web（令牌只填私有 .env）============
+PROBE_UI_TOKEN=
+PROBE_UI_PORT=8775
+PROBE_UI_ORIGIN=http://127.0.0.1:8775
+
+# ============ 可选 relay（默认关闭）============
+REQUEST_RELAY_ENABLED=false
+# 完整安全原生诊断迁移普通Direct账号时才显式开启
+REQUEST_RELAY_FORCE_ALL_ACCOUNTS=false
+COMPOSE_PROFILES=
+REQUEST_RELAY_BASE_URL=http://request-relay:8380
+REQUEST_RELAY_STATE_DIR=/app/state/relay
+REQUEST_RELAY_SOURCE_SCOPE=default
+REQUEST_RELAY_WEIGHTED_BUCKET=false
+REQUEST_RELAY_TIMEOUT=600
+REQUEST_RELAY_MAX_RESPONSE_BYTES=67108864
+REQUEST_RELAY_TLS_PROFILES={}
 
 # ============ sub2api（必填）============
 SUB2API_BASE_URL=http://sub2api:8080
@@ -2598,7 +2936,9 @@ DISABLE_PROXY_FALLBACK=false
 
 # ============ mihomo ============
 MIHOMO_SECRET=
-MIHOMO_SUBSCRIPTIONS=wog=https://你的订阅
+MIHOMO_SUBSCRIPTIONS=wog=https://subscription.example/REPLACE_WITH_TOKEN
+MIHOMO_AUTOMATIC_TESTS=false
+MIHOMO_SHARED_VOLUME=mihomo-data  # 共享叠加模板：父compose配置卷key
 # MIHOMO_SUB_WOG=
 # MIHOMO_SUB_WOGB=
 
@@ -2617,7 +2957,15 @@ WEIGHT_ZERO_POLICY=deprioritize
 ZERO_MODEL_POLICY=inactive
 POOL_MODE_ENABLED=true
 AUTO_RECOVER_ENABLED=true
-AUTO_RECOVER_CRON=*/30 * * * *
+AUTO_RECOVER_CRON=0 3 * * 0
+MODEL_PROBE_ENABLED=false
+MODEL_PROBE_HARD_DISABLED=false
+ONLINE_PROBE_HOSTS=
+MODEL_PROBE_WORKERS=2
+MODEL_PROBE_CACHE_TTL=604800
+SETTINGS_PATH=/app/state/设置.json
+RUN_INTERVAL_SECONDS=0
+CPA2SUB2API_IMAGE_TAG=latest
 AUTO_PAUSE_ON_EXPIRED=false
 
 # ============ HTTP ============
@@ -2631,13 +2979,12 @@ TZ=Asia/Shanghai</pre></div>
 
 <div class="box note">
   <b>优先级顺序</b>
-  环境变量 &gt; <code>设置.json</code> &gt; 内置默认值。
-  容器部署请只用环境变量，不要混用 <code>设置.json</code> ——
-  两份配置同时存在时排查会非常混乱。
+  连接配置通常为环境变量 &gt; <code>设置.json</code> &gt; 内置默认值；探测撤权有更严格的例外。
+  容器环境变量管理连接、未保存总闸的默认值及独立硬禁；站授权由 <code>SETTINGS_PATH=/app/state/设置.json</code> 持久化在state卷。<code>ONLINE_PROBE_HOSTS</code>非空提供并限制可开启范围；保存的master true/false优先于 <code>MODEL_PROBE_ENABLED</code> 默认值；独立 <code>MODEL_PROBE_HARD_DISABLED=true</code> 始终禁止全部provider检测，仍允许关闭撤权。排查时先看 <code>probes list</code>，不要只看文件中的一个值。
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
-<h2 id="s10">十、站方只认特定客户端：怎么让导入后的路由等价于直连</h2>
+<h2 id="s10">十、直连与中转不一致：按协议、身份和权限排查</h2>
 
 <p>
   这是需求第 2 条⑴要解决的核心问题，也是实际最常见的「明明能用却报错」：
@@ -2647,13 +2994,9 @@ TZ=Asia/Shanghai</pre></div>
 </p>
 
 <div class="box note">
-  <b>为什么直连可以、中转不行</b>
-  区别不在密钥、不在地址，在<b>请求头</b>。这类站点（多是中转/聚合站）
-  会校验客户端形态，只放行特定客户端的请求特征：
-  <code>User-Agent</code> 是不是 <code>claude-cli/…</code>、
-  有没有 <code>x-app: cli</code>、<code>anthropic-beta</code> 带的标记对不对。
-  cc-switch 直连时，这些头由 Claude Code / Codex 客户端自己发出去，所以正常；
-  一旦走中转，发出请求的变成了网关，头就没了。
+  <b>先分清错误来自哪一层</b>
+  直连和中转会改变端点、请求体、协议转换、客户端身份头、账号分组和出口。<code>only allows Claude Code clients</code>提示客户端限制；<code>No available channel for model</code>更应核对模型与分组权限。
+  这些错误不能统一归因于User-Agent。先保存脱敏错误原文、请求阶段和目标类型，再对照直连与中转的差异。
 </div>
 
 <h3>10.1 本工具现在怎么做</h3>
@@ -2669,7 +3012,7 @@ TZ=Asia/Shanghai</pre></div>
   再把 CPA 没给、但客户端形态必需的头补齐。<b>只补缺，绝不覆盖你显式配的值。</b>
 </p>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
 <thead><tr><th>平台</th><th>补入的客户端头</th></tr></thead>
 <tbody>
@@ -2689,19 +3032,19 @@ TZ=Asia/Shanghai</pre></div>
   <b>这套头的来源不是拍脑袋</b>
   它照抄的是 sub2api <b>自己内置</b>的客户端伪装常量
   （<code>backend/internal/pkg/claude/constants.go</code> 的 <code>DefaultHeaders</code>
-  与 beta 族）。所以补出来的形态与 sub2api 原生伪装<b>完全一致</b>，不会自相矛盾。
+  与 beta 族）。具体补入值应以目标版本与本次对照表为准；HTTP头一致不代表协议、会话签名或站方专属校验也一致。
 </div>
 
 <div class="box warn">
   <b>还补不上「站方要的是一个我们不知道的头」这种情况</b>
   如果某个站点只认某个私有头，本工具无从推断。此时在 CPA 的 config.yaml 里
-  给该凭据显式写上 <code>headers</code>，本工具会原样搬过去。这是唯一可靠的途径。
+  给该凭据显式写上 <code>headers</code>。直连须遵守目标可消费字段/黑名单；relay由官方CPA消费原头。随后在授权条件下验证实际请求；私有头可能仍不足以满足专属校验。
 </div>
 
 <h3>10.2 怎么确认补上了</h3>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 1) 看对照表里该账号的「请求头」列：显示"12(丢10)"表示 12 个头里保留了 2 个
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 1) 看对照表里该账号的「请求头」列：显示"12(丢10)"表示 12 个头里保留了 2 个
 grep "你的域名" out/对照表.md | head -3
 
 # 2) 直接查 sub2api 库里落库的结果（把域名换成你的）
@@ -2723,27 +3066,26 @@ FROM accounts;"</pre></div>
 
 <p><code>503</code> 不止一种成因，按错误原文分流：</p>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
 <thead><tr><th>错误原文特征</th><th>真实成因</th><th>本工具能做什么</th></tr></thead>
 <tbody>
 <tr>
   <td>带 <code>this group only allows ...</code></td>
-  <td>站方按客户端形态拦。请求头没伪装到位</td>
-  <td>已尽力：自动补齐客户端形态头（见 10.1）。
-      仍不通说明站方要的是私有头 → 在 CPA 的 <code>headers</code> 里显式写</td>
+  <td>可能涉及客户端形态、请求协议、分组或账号权限；错误文字不能单独确定根因</td>
+  <td>对齐原协议及显式配置；需要原CPA行为时启用relay。补头或TLS预设不证明合法客户端身份/签名，继续核对站方授权要求</td>
 </tr>
 <tr>
   <td>带 <code>request id</code>、<code>invalid codex request</code></td>
-  <td>凭据声明的模型列表里有上游没有的模型名，
-      或协议模式（Responses / Chat Completions）不匹配</td>
-  <td>属上游/CPA 侧配置问题，本工具不臆改。
-      检查该凭据的 <code>models</code> 是否与上游实际提供的一致</td>
+  <td>可能涉及模型名、协议模式、客户端形态或请求参数；
+      错误文字本身不足以确定根因</td>
+  <td>核对源 <code>models</code>、协议和脱敏错误信封；
+      需要原CPA行为时检查relay的实际消费结果，不预先归咎任何一层</td>
 </tr>
 <tr>
   <td>日志里全是同一个账号，<code>sticky_honored=true</code></td>
   <td>凭据级错误被判为<b>非重试</b>，请求粘死在已耗尽的账号上，低优先级站一次都不试</td>
-  <td>已修：402「预算池耗尽」这类整站级错误会下发更长的域名级冷却规则，
+  <td>402「预算池耗尽」这类错误使用同样15分钟的域名关键词规则，
       让请求转到同桶的其它 KEY（见 7.3）</td>
 </tr>
 </tbody>
@@ -2754,21 +3096,20 @@ FROM accounts;"</pre></div>
 <h2 id="s11">十一、VPS 部署验收清单</h2>
 
 <p>
-  本地跑通不等于 VPS 跑通。<b>下面每一条都是实测踩过的</b>，
-  症状都是「本机一切正常、VPS 上一堆问题」。
+  本机单元测试通过不能替代镜像、真实配置、目标API与浏览器流程。下面是必须逐项留下本轮证据的检查条件；旧截图或旧测试不算当前验收。
 </p>
 
 <figure>
 <svg viewBox="0 0 900 340" role="img" aria-label="本机与 VPS 的差异来源示意">
   <rect x="20" y="20" width="400" height="300" rx="12" fill="#0F131C" stroke="#38BDF8" stroke-width="1.5"/>
   <text x="220" y="50" fill="#38BDF8" font-size="17" font-weight="bold" text-anchor="middle">本机（Docker Desktop）</text>
-  <text x="45" y="85" fill="#6EE7B7" font-size="13">· bind mount 权限位不生效（谁都能写）</text>
+  <text x="45" y="85" fill="#6EE7B7" font-size="13">· bind mount权限语义可能与Linux不同</text>
   <text x="45" y="115" fill="#6EE7B7" font-size="13">· 通常只跑一两个 stack，网段空着</text>
   <text x="45" y="145" fill="#6EE7B7" font-size="13">· SELinux 默认没有/宽松</text>
   <text x="45" y="175" fill="#6EE7B7" font-size="13">· Docker Desktop 支持 host.docker.internal</text>
   <text x="45" y="205" fill="#6EE7B7" font-size="13">· DNS 由宿主转发，很少被拦</text>
-  <text x="45" y="235" fill="#6EE7B7" font-size="13">· 先 build 再 up，天然是最新代码</text>
-  <text x="45" y="285" fill="#FBBF24" font-size="14" font-weight="bold">→ 全绿，看不到问题</text>
+  <text x="45" y="235" fill="#6EE7B7" font-size="13">· 必须核对构建来源和镜像摘要</text>
+  <text x="45" y="285" fill="#FBBF24" font-size="14" font-weight="bold">需要真实配置与浏览器证据</text>
 
   <rect x="480" y="20" width="400" height="300" rx="12" fill="#0F131C" stroke="#FB7185" stroke-width="1.5"/>
   <text x="680" y="50" fill="#FB7185" font-size="17" font-weight="bold" text-anchor="middle">VPS（CentOS 9 + 只拉镜像）</text>
@@ -2780,33 +3121,33 @@ FROM accounts;"</pre></div>
   <text x="505" y="235" fill="#EF4444" font-size="13">· up -d 不自动拉新镜像，会跑旧代码</text>
   <text x="505" y="285" fill="#FBBF24" font-size="14" font-weight="bold">→ 需要下面这份清单逐条核对</text>
 
-  <line x1="425" y1="170" x2="475" y2="170" stroke="#6B7280" stroke-width="2" stroke-dasharray="5,4"/>
+  <line x1="425" y1="170" x2="475" y2="170" stroke="#94A3B8" stroke-width="2" stroke-dasharray="5,4"/>
 </svg>
-<figcaption>图 17　「本机全绿、VPS 报错」的六类根因，全部来自环境差异而非代码差异</figcaption>
+<figcaption>图17　本机与VPS的环境差异清单；代码缺陷、目标版本和真实配置差异也需要独立排查</figcaption>
 </figure>
 
-<div class="tw">
+<div class="tw" tabindex="0" role="group" aria-label="可横向滚动的表格">
 <table>
 <thead><tr><th>#</th><th>检查项</th><th>一条命令</th><th>不对时的症状</th></tr></thead>
 <tbody>
 <tr>
   <td>1</td>
   <td>镜像真的是最新的</td>
-  <td><code>docker compose pull cpa2sub2api &amp;&amp; docker compose up -d cpa2sub2api</code></td>
+  <td><code>docker compose pull cpa2sub2api &amp;&amp; docker compose up -d --no-deps --force-recreate cpa2sub2api</code></td>
   <td>改了代码、推了 CI，VPS 行为还是旧的。<br>
       Docker 默认「本地没有才拉」，<code>up -d</code> 不会拉新。本仓库的 compose 已设 <code>pull_policy: always</code></td>
 </tr>
 <tr>
   <td>2</td>
   <td><code>out</code> 目录可写</td>
-  <td><code>docker compose run --rm cpa2sub2api sh -c 'touch /app/out/t &amp;&amp; echo OK'</code></td>
+  <td><code>docker compose run --rm cpa2sub2api sh -c 'test -w /app/out &amp;&amp; test -w /app/state &amp;&amp; echo OK'</code></td>
   <td><code>Permission denied: '/app/out/…'</code>，
       import-plan.json / 对照表.md 全写不出来</td>
 </tr>
 <tr>
   <td>3</td>
   <td>SELinux 标签</td>
-  <td><code>getenforce</code>（enforcing 就需要挂载带 <code>:Z</code>）</td>
+  <td><code>getenforce</code>；enforcing时核对共享config挂载 <code>:ro,z</code>，独占bind再考虑 <code>:Z</code></td>
   <td><code>Permission denied</code> 读不到 config.yaml</td>
 </tr>
 <tr>
@@ -2818,7 +3159,7 @@ FROM accounts;"</pre></div>
 <tr>
   <td>5</td>
   <td>sub2api 管理接口可达</td>
-  <td><code>docker compose run --rm cpa2sub2api python 一键导入.py --dry-run</code>，看 <code>[1/5]</code></td>
+  <td><code>docker compose run --rm --no-deps --entrypoint python cpa2sub2api 一键导入.py --dry-run</code>，看 <code>[1/5]</code></td>
   <td><code>401</code> 密钥不对 / <code>404</code> 地址不对 / <strong><code>423</code> 合规确认未做</strong>（见 11.1）</td>
 </tr>
 <tr>
@@ -2839,6 +3180,20 @@ FROM accounts;"</pre></div>
 </table>
 </div>
 
+<h3>11.0 验收时应记录的证据</h3>
+<p>用本机Docker Desktop按VPS方式运行当前镜像，真实config只读挂载，sub2api数据库与网络隔离，避免影响已有服务。至少记录：</p>
+<ol>
+<li>镜像源提交/摘要、四部署文件的脱敏差异、真实输入的哈希与挂载路径。</li>
+<li>默认关闭时没有上游模型/TLS请求；永久禁探站无计划、代理或重试旁路。</li>
+<li>实际sub2api管理页登录、账号导入、详情字段、模型、优先级、代理、状态与调度开关；浏览器控制台与失败请求。</li>
+<li>重跑幂等、旧错参数修正、单KEY失败不牵连同域其余KEY、陈旧受管账号删除而手工账号保留。</li>
+<li>周频计划和旧计划迁移、Web逐站/全选批量/永久禁探锁/保存与应用反馈、手机布局、容器重建后撤权持久化、代理初始化与出口验证。</li>
+<li>当前源码镜像内官方 CPA consumer、首次代际就绪、真实本地 HTTP/SSE/Responses WS/TLS/代理夹具，以及默认逐 KEY 和显式权重池的证据归属。</li>
+<li>全量与单站更新边界、多来源不跨源删除、旧账号显式认领、合同漂移时拒绝消费/删除。</li>
+</ol>
+<p>本工具不能宣称保证上游永不封号，也不能仅凭管理API写入成功证明真实客户端调用可用。授权探测与真实业务调用结果、未测站点和第三方限制要分开报告。</p>
+<p>某些目标版本的管理API会隐藏 <code>api_key</code>，默认关闭的费率参数也可能不作为独立字段返回。核实导入应结合实际编辑页和受控存储读回，不能把“字段被隐藏”误报成“漏写KEY”，更不能把真实凭据回显到公开日志或截图。</p>
+
 <h3>11.1 <code>423 Locked</code>：这<b>不是</b>密钥问题</h3>
 
 <div class="box danger">
@@ -2854,9 +3209,9 @@ FROM accounts;"</pre></div>
   <code>423 Locked</code> + <code>ADMIN_COMPLIANCE_ACK_REQUIRED</code>。
 </p>
 
-<div class="cw"><button class="cp" onclick="cp(this)">复制</button>
-<pre># 确认是不是这个原因（看 HTTP 状态码）
-docker compose run --rm cpa2sub2api python -c "
+<div class="cw"><button type="button" class="cp" onclick="cp(this)">复制</button>
+<pre tabindex="0"># 确认是不是这个原因（看 HTTP 状态码）
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api -c "
 import tool
 s = tool.load_settings()
 ok, msg = tool.Sub2Api(s).ping()
@@ -2877,7 +3232,7 @@ SELECT id, email, role FROM users WHERE role='admin';"</pre></div>
 
 <footer>
   <p>
-    本教程对应工具版本 3.0。所有示例域名均为占位符，
+    本教程更新于2026年11月9日。所有示例域名均为占位符，
     界面插图均为<b>脱敏的自绘示意图</b>，不含任何真实数据。
   </p>
   <p>
@@ -2886,14 +3241,32 @@ SELECT id, email, role FROM users WHERE role='admin';"</pre></div>
   </p>
 </footer>
 
-</div>
+</main>
 
 <script>
+  // Executable commands and environment assignments also appear inside tables.
+  document.querySelectorAll('code').forEach(code => {
+    if(code.closest('pre')) return;
+    const text = code.textContent.trim();
+    if(!/^(?:(?:docker|python|curl|git|grep|head|ls|cd|wget|nc|getenforce)(?:\s|$)|[A-Z][A-Z0-9_]*=)/.test(text)) return;
+    const wrap = document.createElement('span');
+    wrap.className = 'inline-copy';
+    code.before(wrap);
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'cp'; button.textContent = '复制';
+    button.setAttribute('aria-label', '复制代码：' + text);
+    button.addEventListener('click', () => cp(button));
+    wrap.append(button, code);
+  });
+
   function cp(btn){
     const block = btn.nextElementSibling;
+    if(!block) return;
     const text = block.textContent;
     const done = ok => {
       const old = btn.textContent;
+      const live = document.getElementById('copy-status');
+      if(live) live.textContent = ok ? '代码已复制' : '复制失败，请手动选择代码';
       btn.textContent = ok ? '✓ 已复制' : '✗ 失败';
       btn.style.background = ok ? 'var(--emerald)' : 'var(--red)';
       setTimeout(() => {

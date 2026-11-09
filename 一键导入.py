@@ -24,7 +24,7 @@ for _name in ("stdout", "stderr"):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tool import (
     TOOL_VERSION, NOTE_SENTINEL, OUT_DIR, PLAN_PATH, CONFIG_YAML,
-    load_settings, save_settings, mask, Sub2Api, sync_constants,
+    load_settings, update_saved_settings, mask, Sub2Api, sync_constants,
     build_plan, write_plan_files, do_import, print_import_summary,
     health_check, purge, backup_accounts, wipe_all, act_open_out,
     act_pricing,
@@ -186,9 +186,11 @@ def act_setkey(s):
     print("=" * 64)
     print(" 直接回车 = 保留当前值")
     print()
+    changed = {}
     v = ask_line(" sub2api 地址 [%s]：" % s["sub2api_base_url"])
     if v:
         s["sub2api_base_url"] = v.rstrip("/")
+        changed["sub2api_base_url"] = s["sub2api_base_url"]
     print(" 当前管理密钥：%s" % mask(s["sub2api_admin_key"]))
     print(" 提示：这是 admin- 开头的那个。在 VPS 上取：")
     print("   docker exec -i sub2api-postgres psql -U sub2api -d sub2api \\")
@@ -196,7 +198,8 @@ def act_setkey(s):
     v = ask_line(" 粘贴管理密钥（回车跳过）：")
     if v:
         s["sub2api_admin_key"] = v
-    save_settings(s)
+        changed["sub2api_admin_key"] = v
+    update_saved_settings(lambda saved: dict(saved, **changed))
     print(" 已保存到 设置.json")
 
 

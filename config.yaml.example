@@ -1,155 +1,55 @@
-# ====================================
-# CPA 配置文件示例
-# ====================================
-#
-# 这是 CPA (CLIProxyAPI) 的配置文件格式
-# 工具会读取此文件并迁移到 sub2api
-#
-# 注意：
-# 1. 本文件为示例，实际使用时请替换为你的 CPA 配置
-# 2. 敏感信息（api-key）请勿提交到 Git
-# 3. priority 越大越优先
-# 4. weight=0 表示停用（工具会降优先级而不是删除）
-#
-# ====================================
+# CPA 配置格式示例，全部域名和凭据均为不可用占位符。
+# 应使用 CPA / CPA Manager 导出的真实 config.yaml，只读挂载到 /app/config.yaml。
+# 不要把 sub2api 管理密钥、代理订阅或真实上游配置提交到 Git。
+# 本文件不是完整 CPA 服务配置，也不会自行开启任何线上检测。
+# 当前受管字段合同以官方 CPA v8.0.60 为基准；未知受管字段/类型漂移会拒绝消费和删除。
+# 需要 cloak/rebuild/prompt-cache 等原 CPA 行为时，按 README 启用 request-relay。
+# REQUEST_RELAY_SOURCE_SCOPE 默认 default；多来源分别使用稳定 scope 和独立 state_dir/卷。
 
-# Claude API 账号配置
 claude-api-key:
-  # 示例账号1：高优先级
-  - api-key: sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-    base-url: https://private-site-02.example.invalid
-    priority: 1000
-    weight: 10
+  - api-key: REPLACE_WITH_PRIVATE_CLAUDE_KEY
+    base-url: https://claude-upstream.example.invalid
+    priority: 100
+    weight: 1
     models:
-      - name: claude-opus-5
-      - name: claude-sonnet-5
-      - name: claude-haiku-4-5
-    # 可选：自定义请求头
+      - name: claude-sonnet-4-5
+        alias: claude-sonnet-4-5
+    # 如上游确实要求固定头，请按其说明填写；无需则删除 headers。
     headers:
-      X-Custom-Header: value
-    # 可选：代理
-    proxy-url: http://proxy.example.com:7890
+      X-Custom-Header: REPLACE_IF_REQUIRED
+    # 可选工具扩展：仅在启用 request-relay 且目标确需该预设时取消注释。
+    # 不是合法客户端身份/签名保证；TLS 证书与主机名验证仍然启用。
+    # request-relay-tls:
+    #   impersonate: chrome136
+    #   ca-bundle: /app/certs/private-ca.pem  # 可选，须另行只读挂载真实CA；没有则删
+    # 容器共享代理示例；无需代理时删除本行。
+    proxy-url: http://mihomo:7890
 
-  # 示例账号2：中优先级
-  - api-key: sk-ant-api03-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
-    base-url: https://your-upstream.example.com
-    priority: 990
-    weight: 10
-    models:
-      - name: claude-opus-5
-      - name: claude-sonnet-5
-    # 排除某些模型
-    excluded-models:
-      - claude-haiku-*
-
-  # 示例账号3：已停用（weight=0）
-  - api-key: sk-ant-api03-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
-    base-url: https://api.example.com
-    priority: 980
-    weight: 0  # 工具会将其 priority 降至 520
-    models:
-      - name: claude-opus-5
-
-
-# OpenAI 兼容接口配置
 openai-compatibility:
-  # 示例账号1：OpenAI 官方
-  - api-key: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-    base-url: https://private-site-03.example.invalid/v1
-    priority: 950
-    weight: 10
+  - name: example-openai-provider
+    base-url: https://openai-upstream.example.invalid/v1
+    api-key-entries:
+      - api-key: REPLACE_WITH_PRIVATE_OPENAI_KEY
+    priority: 100
+    weight: 1
     models:
-      - name: gpt-4o
-      - name: o1
-      - name: o3-mini
+      - name: example-chat-model
+        alias: example-chat-model
 
-  # 示例账号2：第三方 OpenAI 接口
-  - api-key: sk-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
-    base-url: https://api.third-party.com/v1
-    priority: 940
-    weight: 10
-    models:
-      - name: gpt-4o
-    # 自定义请求头
-    headers:
-      Authorization: Bearer custom-token
-
-
-# Gemini API 配置
-gemini-api-key:
-  # 示例账号1
-  - api-key: AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-    base-url: https://private-site-01.example.invalid
-    priority: 900
-    weight: 10
-    models:
-      - name: gemini-2.0-pro
-      - name: gemini-1.5-pro
-
-  # 示例账号2
-  - api-key: AIzaSyYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
-    base-url: https://private-site-01.example.invalid
-    priority: 890
-    weight: 10
-    models:
-      - name: gemini-2.0-pro
-
-
-# Codex API 配置（OpenAI Codex）
 codex-api-key:
-  # 示例账号
-  - api-key: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-    base-url: https://private-site-03.example.invalid/v1
-    priority: 850
-    weight: 10
+  - api-key: REPLACE_WITH_PRIVATE_CODEX_KEY
+    base-url: https://codex-upstream.example.invalid
+    priority: 100
+    weight: 1
     models:
-      - name: gpt-6
+      - name: example-code-model
+        alias: example-code-model
 
-
-# ====================================
-# 字段说明
-# ====================================
-#
-# api-key (必填):
-#   - Claude: sk-ant-api03-xxxxx
-#   - OpenAI: sk-xxxxx
-#   - Gemini: AIzaSyxxxxx
-#
-# base-url (必填):
-#   - API 基础地址，末尾不带斜杠
-#
-# priority (必填):
-#   - 调度优先级，数值越大越优先
-#   - 范围：0-1000+
-#   - 工具会基于健康度动态调整
-#
-# weight (必填):
-#   - 加权轮询权重
-#   - 0 表示停用（工具会降优先级而不是删除）
-#   - 推荐：10
-#
-# models (必填):
-#   - 允许的模型列表
-#   - 支持通配符：claude-*-5
-#
-# excluded-models (可选):
-#   - 排除的模型列表
-#   - 支持通配符：claude-haiku-*
-#
-# headers (可选):
-#   - 自定义请求头
-#   - 格式：key: value
-#
-# proxy-url (可选):
-#   - 代理地址
-#   - 格式：http://host:port
-#
-# request-scoped-errors (可选):
-#   - 错误冷却规则
-#   - 示例：
-#     request-scoped-errors:
-#       - status-code: 429
-#         action: continue-and-cooldown
-#         cooldown-time: 60s
-#
-# ====================================
+gemini-api-key:
+  - api-key: REPLACE_WITH_PRIVATE_GEMINI_KEY
+    base-url: https://gemini-upstream.example.invalid
+    priority: 100
+    weight: 1
+    models:
+      - name: example-gemini-model
+        alias: example-gemini-model

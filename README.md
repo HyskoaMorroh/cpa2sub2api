@@ -1,375 +1,439 @@
 # CPA2SUB2API
 
-把 CPA / CPAMP 生成的 `config.yaml` 批量灌进 sub2api 的自动化工具。
+把 CPA / CPAMP 生成的 `config.yaml` 转为 sub2api 账号，批量创建、校正已有参数、整理模型和优先级，并清理本工具受管的陈旧账号。
 
-面向的部署形态是 **VPS 只拉远程镜像**：本机改代码 → 推 GitHub → Actions
-构建推 Docker Hub → VPS 拉镜像运行。VPS 上不需要源码。
+部署流程：本机修改与验证 → GitHub Actions 构建 Docker Hub 镜像 → VPS 拉镜像。VPS 不需要项目源码或 `mihomo-manager` 宿主目录。
 
-- 图文并茂的完整教程：[`tutorial.html`](tutorial.html)
-  —— 17 张自绘示意图（架构 / 流程 / 数据可视化）+ 30 处一键复制 + 逐项配置说明。
-  所有插图均为**脱敏的自绘 SVG**，不含任何真实域名、密钥或账号数据。
-- 代理实现文档：[`mihomo-README.md`](mihomo-README.md)、[`mihomo-manager/README.md`](mihomo-manager/README.md)
+- [图文教程](tutorial.html)：部署图、逐字段合同、全量/单站导入、Web 开关、request-relay、代理、迁移回滚与排障；代码块带复制按钮。
+- [环境变量模板](.env.example) / [CPA 输入示例](config.yaml.example)
+- [代理说明](mihomo-README.md) / [代理脚本说明](mihomo-manager/README.md)
 
----
+## 先了解默认行为
 
-## 核心能力
+**默认只做离线配置分析和 sub2api 管理操作，不向上游站点发送探测请求。** 导入会访问你配置的 sub2api 管理 API；启用远程 CPA 配置或模型目录刷新时，还会访问相应配置来源。这些管理/目录请求与上游模型探活是不同操作。
 
-| 能力 | 说明 |
+管理 API 返回 429 时，按 `Retry-After` 的秒数或 HTTP 日期等待；缺失或无效时等待 60 秒，最多额外重试两次。任一次要求等待超过 120 秒就明确失败，不缩短服务器冷却时间；其他 4xx 不重试。
+
+线上探测需要同时满足：
+
+1. 保存的总开关开启；未保存时才使用 `MODEL_PROBE_ENABLED`，默认false。
+2. 对应站点已单独授权。
+3. 站点不在内置永久禁探名单中。
+
+站点授权默认全部关闭。已保存的总闸true/false均优先于 `MODEL_PROBE_ENABLED` 默认值，环境true不能复活保存的false。独立 `MODEL_PROBE_HARD_DISABLED=true` 始终禁止provider检测，拒绝开启新授权，仍允许关闭撤权。批量开启也不能解除永久禁探限制。普通导入、代理失败重试、模型探测和恢复计划均应遵守同一策略。**改变提示词、客户端请求头或使用代理不能保证规避站方限制或封号。**
+
+已授权站点的恢复计划默认为每周一次：`AUTO_RECOVER_CRON=0 3 * * 0`，并可按账号错开分钟。执行时间按目标调度器时区解释；请在 sub2api 中核对计划的下次执行时间。旧半小时计划也需要协调停用或迁移，不能只修改环境变量。
+
+自动检测另有按规范化主机共享的 **604800 秒周预算**：默认导入入口的自动批次与 sub2api 原生周计划共用同一账本，更换 KEY、模型或运行代际不会重新放行。预算在网络请求前持久化，失败或中断也计入该周；未到期返回受控跳过、上游请求数为零，不把健康账号改成错误。`MODEL_PROBE_CACHE_TTL=604800` 管理结果缓存，缓存过期或最高模型上次失败都不能绕过周预算。显式 `diagnose` / `recover` 使用独立手工诊断路径，不占自动周预算，仍逐次核对总闸、站授权和永久禁探规则。
+
+## 功能与边界
+
+| 功能 | 行为 |
 |---|---|
-| **参数全覆盖** | credentials、priority、concurrency、auto_pause_on_expired、proxy_id、请求头、冷却规则、Websockets、模型白名单等一次性迁移 |
-| **客户端形态伪装** | 站方只认特定客户端时，自动补齐 `claude-cli` / `codex_cli_rs` / `GeminiCLI` 形态的请求头（只补缺，不覆盖你显式配的），解决「直连能用、经中转 503」 |
-| **按域名分桶** | 同一上游的多个 KEY 落进同一优先级桶，互为备份；只有整桶不可用才降级到下一个域名 |
-| **健康度重排** | 按 sub2api 实测的「可调度率×60% + 活跃率×40%」重排优先级，各分组内桶号唯一 |
-| **模型就高原则** | codex 单族 / openai 多族分开处理；代际门槛从上游源码反推，不写死版本号 |
-| **连通性探测** | 按代际实发请求验证；最新代打不通时保留最新代占位并补入实测可用的次最新代 |
-| **停用站自动复活** | 探活证明可用后自动重新启用被停用的上游（证据驱动，只动本工具导入的账号） |
-| **并发导入** | 建号 / 探活 / 定价三条链路走线程池，worker 可配且自动钳上限 |
-| **定时探活** | 复用 sub2api 自带的 scheduled-test-plans，自动恢复 error 状态 |
-| **反测活** | 自然语料 + 每个账号错开的探活时刻 |
-| **代理兜底** | 直连失败自动经 mihomo 重试；容器部署下由环境变量正确下发 |
-| **自带代理内核** | 镜像内含 mihomo 二进制与地理数据，同一个镜像兼任 init 与代理本体 —— 部署不需要第二个镜像，宿主机也不放任何配置文件 |
-| **代理镜像可互换** | `upstream-importer` 的镜像里也打了**同一份** mihomo（二进制与两份脚本的 md5 均相同）。整栈里那个共享的 `mihomo` 服务用哪个镜像起都行，用 `.env` 的 `MIHOMO_IMAGE` 切换 |
-| **出口自动降级** | 节点全挂时 `healthcheck.sh` 把 PROXY 组切到 DIRECT（裸连总比全挂好），恢复后自动切回 AUTO |
-| **可排障** | 全流程出声：丢弃的凭据条目、未迁移的能力、补入的请求头、被降级的站点都写进对照表与备注 |
+| 完整参数同步 | 新增与已有账号统一处理 credentials、模型、优先级、并发、代理、请求头、冷却规则及目标版本支持的字段；检查陈旧值 |
+| 域名分桶 | 同一来源类型、同一域名的多个 KEY 同优先级；不同域名稳定定序。CPA 的大值优先转换为 sub2api 的小值优先 |
+| 健康排序 | 使用已有账号的可调度和活跃状态；新站采用冷启动处理，不要求先导入两次 |
+| 模型选择 | codex 仅 GPT、Claude 仅 Claude、Gemini 仅最高 Pro；OpenAI 兼容来源可保留多家族各自最高系列，保留同级变体，排除 mini/flash/fast |
+| 授权模型检测 | 最新系列失败时可保留目录中的最新系列，再补入实测可用的次新系列；未检测不能标记为“实测成功” |
+| 差异与去重 | 同一来源/分组内按归一化URL/KEY识别；Codex与OpenAI兼容来源即使URL/KEY相同、平台都为openai，也保留各自协议/分组身份；名称带稳定来源区分 |
+| 陈旧清理 | 仅清理有本工具严格管理标记、已不在完整输入中的账号；提供单独预览入口。手工账号不按名称前缀推断所有权 |
+| 状态恢复 | 仅在显式指定账号ID、双授权与即时协议成功证据下恢复；验证 `status` 与 `schedulable`，保留429与真实冷却 |
+| TLS对照诊断 | 显式授权站比较最多两个真实源传输参数；有效模型输出及完整状态校验通过才保存绑定参数，失败回滚 |
+| 并发处理 | 导入、定价和显式授权的检测使用有界并发；失败明确报告 |
+| 代理 | 优先复用部署栈已有的 upstream-importer mihomo；本镜像也包含代理内核、数据和管理脚本 |
+| 日志与产物 | 记录阶段、差异与失败；本地计划、快照、对照表仍含敏感数据，应妥善保管 |
 
-### 已知限制（诚实标注）
+GPT按整个家族的数值版本就高；Codex来源也只保留最高数值版本及其全部有效后缀变体。OpenAI兼容来源中的GPT、Grok、Claude、Gemini、Kimi K和DeepSeek等已识别谱系分别比较，`mini`/`flash`/`fast`仍排除。Claude短次版本与日期后缀区分；Kimi K与Moonshot V、DeepSeek V与R各自独立，日期和上下文长度不当成更高版本。未标版本的符号别名和未知名称保持原配置语义，不猜测其当前指向。次新补充只消费本轮同KEY、同来源目录和对应家族的成功证据，保留最高版本；另一个KEY或家族成功不会被借用。
 
-| 项 | 现状 |
-|---|---|
-| `weight` 数值 | sub2api **没有**账号级 weight 字段，只落到备注；负载分配由 `load_factor` 承担。零权重默认「降到队尾」而非停用（可逆） |
-| `cloak` 请求伪装 | 写入 `extra.cloak`，但 **sub2api 网关层没有消费逻辑**，写了不生效 |
-| TLS 指纹「是否需要」 | **未实现自动检测**，只做字段搬运（`enable_tls_fingerprint`）；且 sub2api 的 TLS 指纹只对 Anthropic OAuth 账号生效，本工具导入的都是 api_key 账号 |
-| `match-regexr` 冷却规则 | 无法迁移（sub2api 只支持子串匹配，不支持正则） |
-| `rebuild-mid-system-message` | 无 sub2api 等价物，只记进备注 |
+客户端身份头只补齐缺失项，保留显式配置。`503 ... only allows Claude Code clients` 还可能涉及协议、账号授权或上游专属校验；补一个 User-Agent 不保证恢复可用。`400 invalid codex request` 也应核对 Responses/Chat 协议、模型和请求体，不能一概归咎于模型名。
 
----
+导入 OpenAI 平台账号时，Codex 来源写入 `force_responses`，OpenAI 兼容来源写入 `force_chat_completions`。这些合法固定模式避免目标版本在创建账号后进入 `auto` 能力探测；协议选定仍需与上游和客户端实际要求匹配。
 
-## 快速开始
+目标 sub2api 未消费的字段不会凭写入变得有效。需要原 CPA 运行语义的记录使用下文可选 request-relay；默认逐 KEY 绑定，权重池必须显式启用。TLS 使用有边界的显式预设，客户端权限仍需按实际上游核实。本工具不修改第三方源码或网关调度实现。
 
-### 1. 环境要求
+## VPS 部署
 
-- Python 3.8+（镜像用 3.11）
-- PyYAML 6.0+（唯一第三方依赖）
-- sub2api 实例 + 管理员密钥
+### 使用哪个文件
 
-### 2. Docker 部署
+VPS `/opt/deploy` 使用部署根目录的四个实际文件：`.env`、`config.yaml`、`docker-compose.yml`、`nginx.conf`。项目里的同名文件和 `*.example` 是模板，不能直接覆盖已有共享栈。
 
-```bash
-# .env（部署根目录）
-DOCKERHUB_USERNAME=你的DockerHub用户名   # 决定拉哪个镜像
-DOCKERHUB_IMAGE=cpa2sub2api              # 可选，留空用仓库名
-SUB2API_BASE_URL=https://sub2api.example.com
-SUB2API_ADMIN_KEY=admin-替换成你的密钥
+已有部署栈通常同时包含 sub2api、CPA、upstream-importer、数据库及共享 mihomo。只更新本工具服务；不要重复创建同端口代理、替换数据库或删除共享卷。代理脚本已经在镜像内，无需把源码目录上传 VPS。
+
+### 填写连接与策略
+
+从 `.env.example` 对照填写自己的部署根 `.env`。不要把下面占位符当作真实凭据：
+
+```dotenv
+DOCKERHUB_USERNAME=REPLACE_WITH_REGISTRY_OWNER
+DOCKERHUB_IMAGE=cpa2sub2api
+CPA2SUB2API_IMAGE_TAG=latest
+SUB2API_BASE_URL=http://sub2api:8080
+SUB2API_ADMIN_KEY=REPLACE_WITH_ADMIN_KEY
 FALLBACK_PROXY=http://mihomo:7890
+SETTINGS_PATH=/app/state/设置.json
+MODEL_PROBE_ENABLED=false
+MODEL_PROBE_HARD_DISABLED=false
+ONLINE_PROBE_HOSTS=
+AUTO_RECOVER_ENABLED=true
+AUTO_RECOVER_CRON=0 3 * * 0
+RUN_INTERVAL_SECONDS=0
+LOG_LEVEL=INFO
+```
 
-# 启动（带代理）—— 容器起来就自动同步一次，跑完即退
+- `SUB2API_BASE_URL` 必须是导入容器能访问的地址。服务名和端口以你的实际 compose 为准。
+- `SUB2API_ADMIN_KEY` 是 sub2api 管理 API 密钥，不是 CPA 管理密钥、面板密码或下游调用 KEY。
+- `config.yaml` 是 CPA/CPAMP 生成的输入，不是本工具设置文件。真实文件挂载到容器 `/app/config.yaml:ro`。不要让缺失的文件路径被 Docker 自动创建为目录。
+- CentOS启用SELinux且多个服务共享同一config文件时，使用共享标签 `:ro,z`；不要给每个容器重复打私有 `:Z` 标签。
+- `SETTINGS_PATH` 位于 `/app/state`，由 `cpa2sub2api-state` 卷持久化；`/app/out` 使用独立产物卷。升级和回滚均保留这些卷。
+- 容器内的 `127.0.0.1` 指向当前容器。共享代理通常写 `http://mihomo:7890`，不要写宿主代理的回环地址。
+- `ONLINE_PROBE_HOSTS` 非空时以逗号分隔主机名，提供并限制可开启范围；持久化站点 `false` 仍可撤权。为空则保留站授权设置。以 `probes list` 的实际有效状态为准。
+
+已有共享栈拉取并运行：
+
+```bash
+cd /opt/deploy
+docker compose config --quiet
+docker compose pull cpa2sub2api
+docker compose up -d --no-deps --force-recreate cpa2sub2api
+docker compose logs --tail 200 cpa2sub2api
+docker compose ps -a cpa2sub2api
+```
+
+本工具是一次性导入作业。`RUN_INTERVAL_SECONDS=0` 时完成后退出，退出码 0 是正常完成；退出码非 0 必须排查，不能仅因容器不常驻认定故障。日志显示成功也应继续在 sub2api 管理页抽查模型、代理、状态和调度开关。
+
+独立部署时使用仓库内 `docker-compose.yml`，将输入 `config.yaml` 放在模板约定的位置，并填写 `.env`。需要独立代理才启动 mihomo profile：
+
+```bash
 docker compose --profile mihomo up -d
-
-# 看到「同步完成」就是跑完了
-docker compose logs cpa2sub2api
-
-# ── 日志排查（两个项目都支持，v1.0.0 起默认 DEBUG + 落盘）──
-# 实时跟踪
-docker compose logs -f cpa2sub2api
-docker compose logs -f upstream-importer
-
-# 取出落盘日志文件（事后排查）
-docker compose cp cpa2sub2api:/app/out/logs ./logs-cpa/
-docker compose cp upstream-importer:/app/logs ./logs-importer/
 ```
 
-镜像名与 CI 的推送目标由**同一组仓库变量**决定，不存在写死的账号名。
-GitHub 侧的配置见 [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml) 顶部注释。
+已有共享 mihomo 的父栈不要再次运行这条独立栈命令。叠加模板 `docker-compose.cpa2sub2api.yml` 仅定义本工具，依赖既有栈的服务与网络；使用前核对实际服务名和网络。
 
-**容器起来就自动同步，跑完即退** —— 镜像默认命令是 `entrypoint.sh`，
-它执行非交互的一键导入。所以 `up -d` 之后**不需要**额外手动执行 py 命令。
-同步是幂等的：账号名含内容指纹，重复执行不会重复建号，已存在的走差异同步。
+### 先只读预览，再按范围导入
 
-想要定时重复同步，二选一（详见教程 6.2 节）：
+新增或修改账号，先更新权威 CPA `config.yaml`，再运行同一导入流程。新 CLI 的 `--preview` 只读取本地输入、检查字段与模型，既不调用管理 API 或上游 HTTP，也不导出 relay 私有状态。它与旧入口的 `--dry-run` 含义不同。
 
 ```bash
-# ① 容器内循环：.env 里设间隔，并把 compose 的 restart 改成 unless-stopped
-RUN_INTERVAL_SECONDS=3600
-
-# ② 宿主 cron
-0 3 * * * cd /opt/deploy && docker-compose run --rm cpa2sub2api >> /var/log/cpa2sub2api.log 2>&1
+cd /opt/deploy
+# 全量只读预览
+# 以下 python 位于服务命令中，保留镜像 entrypoint 对挂载权限的初始化
+docker compose run --rm cpa2sub2api python tool.py import --preview
+# 确认全量输入后，新增/同步当前来源账号
+docker compose run --rm cpa2sub2api python tool.py import --yes
+# 仅添加/同步指定站；可重复 --host，不修改或清理其他站
+docker compose run --rm cpa2sub2api python tool.py import --host upstream.example.invalid --preview
+docker compose run --rm cpa2sub2api python tool.py import --host upstream.example.invalid --yes
+# 交互菜单仍可使用
+docker compose run --rm cpa2sub2api python run.py
 ```
 
-> ⚠ 每次导入都会按 sub2api 的实测健康度重算优先级并**覆盖线上值**。
-> 如果你会在 sub2api 后台手工调整优先级，别叠定时任务 —— 算法会把你的调整算回去。
+主机名应是当前配置中的精确规范化域名，不带协议、路径或端口。只导入一站仍使用完整配置计算优先级和 relay 运行代际；`--host` 只缩小账号变更范围，不能作为跨站清理的授权。未加 `--host` 才是全量导入。普通导入不隐式执行诊断或模型检测。
 
-手动执行（临时用，不重新起整个栈）：
+旧的 `python 一键导入.py --dry-run` 会生成本地产物，并可能读取配置来源和管理端；已授权检测也受原策略约束。首次核查优先使用新的 `import --preview`，并保留探测总闸关闭。
+
+## 管理每站线上检测
+
+本工具提供 CLI、交互菜单 `[9]` 和可选独立 Web 面板。三者使用相同状态。sub2api 自带管理页面不会凭更新本镜像增加本工具按钮。CLI 中的每站 `[开/关/永久禁止]` 与批量命令如下。
 
 ```bash
-docker compose run --rm cpa2sub2api                    # 只跑一次同步
-docker compose run --rm cpa2sub2api python run.py      # 交互菜单
-docker compose run --rm cpa2sub2api python 一键导入.py --dry-run   # 空跑预览
+# 查看每站状态、永久禁探与总闸
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes list
+# 只授权指定站，主机名使用自己的真实站点
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes enable upstream.example
+# 关闭指定站
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes disable upstream.example
+# 批量授权/关闭；永久禁探名单仍生效
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes enable-all
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes disable-all
+# 协调已有恢复计划：未授权站停用，授权站按周频处理
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes reconcile
 ```
 
-### 3. 本机直接运行
+**总闸与站授权是两层设置。** `MODEL_PROBE_ENABLED=false` 只为未保存总闸提供默认关闭；保存的master true/false优先。确需检测时，明确授权站点并保存总闸开启，再核对 `probes list` 的有效状态。非空 `ONLINE_PROBE_HOSTS` 继续限制允许的站点。独立硬禁 `MODEL_PROBE_HARD_DISABLED=true` 不可被任何保存值或代理绕过；三个服务必须传入一致的此参数，默认false。
+
+可用 `python tool.py probes master on` / `off` 管理持久化总闸；保存的true/false优先于环境默认值。独立硬禁开启时不能新增开启授权，仍可 `off` 撤权。CLI 授权修改只保存；关闭后运行 `probes reconcile`，确认旧在线计划停止。此命令仅调用管理 API，不执行上游模型检测。Web 关闭则会在保存后尽力自动校准，仍须检查应用结果。
+
+### 可选 Web 授权面板
+
+CLI、菜单和本工具独立的 Web 面板共用持久化设置与文件锁。面板提供每站开关、选择全部可操作站、批量开/关和计划校准；永久禁探行锁定。它管理检测授权，不提供隐式模型/TLS测试按钮，也不替换 sub2api 管理页。
+
+在私有 `.env` 填入强随机 `PROBE_UI_TOKEN`（至少32字符、至少12种不同字符、无空白），不要使用示例口令。令牌只在登录表单中提交，不能放进 URL、截图或命令历史。
+
+```dotenv
+PROBE_UI_PORT=8775
+PROBE_UI_ORIGIN=http://127.0.0.1:8775
+# PROBE_UI_TOKEN 只在私有 .env 填入强随机值；公开示例不提供可用令牌
+```
 
 ```bash
-pip install -r requirements.txt
-python run.py            # 交互菜单
-python 一键导入.py        # 一键全自动
+docker compose --profile probe-ui up -d probe-ui
+# 在运行 Docker 的本机浏览器打开 http://127.0.0.1:8775
+# 远程 VPS：先从自己的电脑建立 SSH 隧道，替换用户名和占位域名
+ssh -L 8775:127.0.0.1:8775 user@server.example.invalid
 ```
 
----
+面板默认只映射宿主 `127.0.0.1:8775`。改变宿主端口时，必须把 `PROBE_UI_ORIGIN` 改为浏览器实际看到的精确 `http(s)://主机:端口` 并重建 `probe-ui`；不含路径，不自动信任 `X-Forwarded-*`，不支持随意挂到反代子路径。HTTPS 独立域名反代还须保留精确 Host/Origin 并自行配置访问控制。
 
-## 配置
+Nginx 也在容器内时，与后端加入同一 Docker 网络，配置 `resolver 127.0.0.11 valid=5s ipv6=off;`，通过变量地址转发到 `sub2api:8080` / `probe-ui:8775`，保留 `$http_host` 并省略代理地址后的路径，以保留原始 URI。这样后端重建换 IP 后能重新解析；使用旧的固定解析配置时，应在后端重建后运行 `nginx -t && nginx -s reload`。完整代码见教程的反向代理示例。
 
-完整逐项说明见 [`tutorial.html`](tutorial.html)。要点：
+- **开启**在独立硬禁关闭时只保存授权，产生零次上游检测，不等于模型可用。独立硬禁开启时返回 `409 PROBE_HARD_DISABLED`，允许关闭既有授权。
+- **关闭**先持久保存撤权，再尽力通过管理 API 停用相关旧计划。`saved` 是保存成功，`applied` 是计划应用成功；`saved_not_applied` 需检查管理连接并重试“校准计划”。
 
-- **优先级**：环境变量 > `设置.json` > 内置默认值。容器部署只用环境变量。
-- **代理地址**：容器里**必须**用服务名 `http://mihomo:7890`。
-  写 `127.0.0.1:7890` 指向容器自己，不是代理。
-- **代理用哪个镜像起**：本镜像与 `upstream-importer` 的镜像里打的是**同一份**
-  mihomo（实测二进制与 `healthcheck.sh`、`bootstrap-mihomo.sh` 的 md5 都相同），
-  所以整栈里那个共享的 `mihomo` 服务用哪个都行。用 `.env` 的 `MIHOMO_IMAGE`
-  切换，不设则用本镜像。
-- **宿主端口**：`MIHOMO_HTTP_PORT` / `MIHOMO_API_PORT` 可覆盖（本机已有代理
-  客户端时会占着 7890）。容器内端口不能动 —— 要与 `proxy-url` 和健康检查一致。
-- **User-Agent**：sub2api 在 Cloudflare 后面时，必须用浏览器 UA，
-  否则会被 CF 的浏览器完整性检查拦成 `403 error code: 1010`
-  （请求根本到不了源站，sub2api 日志里看不到任何记录）。
-- **并发上限**：三个 worker 都硬钳到 8。调更大只会压垮连接池，不会更快。
-- **输入文件**：本工具读的是 CPA 生成的 `config.yaml`（容器里 `/app/config.yaml`，只读）。
-  它的逐字段含义见教程 **4.5**——包括哪些字段能迁、哪些只能落备注。
-- **两个新增开关**（`PROBE_INACTIVE` / `REVIVE_PROVEN_INACTIVE`，默认都开）：
-  config.yaml 里被关闭的上游也会挂探活，证明可用后自动重新启用，不需要人工盯着。
+关闭后的计划校准会逐账号核实。账号较多或管理端返回429时，页面可能需要等待一个或多个限流窗口；等待期间显示旧列表不代表撤权没有保存。网页请求超过120秒会提示超时，此时先刷新确认保存值和应用结果，避免重复点击；只有核实`applied`，才可认为相关旧计划已完成停用校准。
+- 页面显示保存值、本次有效值及独立硬禁原因。`MODEL_PROBE_ENABLED`只提供未保存时的默认值；`MODEL_PROBE_HARD_DISABLED=true` 强制所有provider检测关闭，既有保存值true仍会显示有效false。永久禁探站保持独立永久锁。
+- 启动和刷新页面不会发起上游模型检测。只保存开启后，仍需由明确的诊断、恢复命令或获授权的计划发起请求。
 
-完整环境变量表见教程附录，或 [`.env.example`](.env.example)。
+### 显式TLS诊断与账号恢复
 
----
+以下命令会向选中的上游发起实际请求，必须先完成总闸及站授权，永久禁探站始终拒绝。原生周计划、账号恢复与TLS诊断需要已同步、已就绪的安全relay；已有普通Direct账号先按下面步骤迁移：
 
-## 工作原理
-
-### 优先级是"桶号"，不是权重
-
-CPA 和 sub2api 都按优先级**严格分桶**：只调度最优的那一桶，桶内再按负载选号。
-数值方向相反——CPA 里大者优先，sub2api 里小者优先。
-
-### 按域名分桶的三条约束
-
-1. **同一域名下所有 KEY 同桶**：它们是彼此的备份。拆进不同桶，sub2api 只调度
-   最小的那个，其余全部闲置，冗余退化成单点。
-2. **同一分组内不同域名桶号唯一**：撞桶意味着两个域名混在一桶里轮循，
-   失去"整桶挂掉才降级"的分层容灾。
-3. **步长 10**，留出人工插桶空间。
-4. **编号范围是分组内，不是全局**（2026-09-19 改）：sub2api 选号按 `group_id`
-   取候选（`SelectAccountWithGroup` → `account_groups` 中间表），实测每条账号
-   只属于一个分组 —— 所以 `CPA-Claude` 的桶号 `10` 与 `CPA-OpenAI` 的 `320`
-   永远不会被放在一起比较。每组各自从 `10` 编号，组号上限不再随**别的组**的
-   域名数增长。跨分组的桶号相同是正常的，不是缺陷。
-
-### 三层容灾
-
-```
-某 KEY 没钱/被封
-  → 仅该账号被标 error（其余 KEY 不受影响）
-  → 桶内剩余 KEY 继续轮循承载        ← 第一层
-  → 整桶全挂 → 降级到下一个域名的桶    ← 第二层
-  → 上游恢复 → 探活修回 → 回收调度开关  ← 第三层
+```bash
+# 部署根.env先设置REQUEST_RELAY_ENABLED=true、REQUEST_RELAY_FORCE_ALL_ACCOUNTS=true
+# 并启用COMPOSE_PROFILES=request-relay；预览不访问管理端或模型上游
+docker compose up -d request-relay
+docker compose run --rm cpa2sub2api python tool.py import --preview --host upstream.example
+docker compose run --rm cpa2sub2api python tool.py import --yes --host upstream.example
+# 只诊断指定已授权站；不会因此激活手工停用账号
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes diagnose upstream.example
+# 明确选择需要恢复的受管账号ID；示例ID必须替换成你核实过的账号
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py probes recover 7 8
 ```
 
-### 健康度重排
+`diagnose`只处理受管、active且schedulable、没有429或临时冷却的账号。它按当前真实来源、KEY和实际模型比较传输参数：先测原参数，失败后才试一个明确TLS预设，每账号最多两个模型请求。有效输出、实时授权、账号/来源快照及完整state校验都通过后，才保存绑定来源、KEY、模型和consumer二进制摘要的参数；来源或版本变化后旧结果失效。它不试写sub2api账号的TLS布尔字段。失败、取消、撤权或并发修改均保留主设置、CURRENT、secrets及其他路由；中断事务由journal恢复。源级成功不代表sub2api原生客户端或所有模型兼容。
 
+`recover`只读加载已有`CURRENT`代际，不重新导出配置或轮换令牌；`diagnose`仅在上述成功事务中保存完整新代际，保留其他路由与现有令牌。发送请求、保存TLS参数及恢复写入前都会重新核对授权、来源、relay地址、状态目录、权重/账号选择模式和当前代际；中途变化时旧成功结果不能继续使用。遇到不匹配，先同步当前来源并核对服务就绪。
+
+普通导入只使用已学习的TLS参数，不隐式发起该诊断，也不会复活来源不明的手工inactive或`schedulable=false`账号。`recover`是本次命令明确选择账号ID的恢复授权；自动错误的`error + schedulable=false`也可在当前源仍启用、密钥归属和模型映射一致时检测，源映射已变化应先同步。即时检测失败不会清错；`error`但调度已经开启的异常组合会停止并提示核对。
+
+自动错误恢复先清错，再恢复调度，每步及管理429重试前都重新核对授权、来源、代际和状态。未来有效冷却、无法解释的时间或运行状态仍阻断；已明确过期的残留可在即时成功后清理。只有最终读回`active`、`schedulable=true`且错误已清才算成功；清错成功但恢复调度失败属于部分完成。目标管理API没有原子比较并交换条件，前后校验不能消除两个请求之间的全部并发竞态；不要同时手工修改同一账号。
+
+本工具对导入账号显式关闭sub2api原生的“自动费率探测”和“自动费率同步”（`upstream_billing_probe_enabled` / `upstream_billing_rate_sync_enabled`），避免第三方原生任务绕过这里的检测开关。**在sub2api页面手工创建第三方上游账号时，也要检查并关闭这两个开关**；本工具的站授权不能管理未归属本工具的手工账号。
+
+不要同时设置多个重复宿主 cron、容器循环和 sub2api 探测计划。配置同步与模型探活是不同任务；默认无需周期运行同步作业。
+
+## 修正已有参数和删除陈旧账号
+
+正常导入会对已有受管账号做差异同步。请在计划和结果中分别查看新增、更新、重复、陈旧、失败数量。
+
+```bash
+# 先查看哪些严格受管账号将因不在当前config而清理
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py prune preview
+# 确认当前config是完整输入并已备份目标数据后再应用
+docker compose run --rm --no-deps --entrypoint python cpa2sub2api tool.py prune apply
 ```
-健康分 = 可调度比例 × 0.6 + 活跃比例 × 0.4
-  → 按健康分降序分配桶号（分高 → 桶号小 → 优先调度）
-  → 映射 load_factor：≥0.9→8，≥0.7→6，≥0.5→4，否则 2
+
+正常导入成功后默认自动清理，可用 `PRUNE_STALE_ACCOUNTS=false` 关闭。只在完整读取配置与目标账号、所有当前目标均已存在且同步成功、所有权标记匹配时才允许清理；逐候选重新读取并核实删除结果。损坏配置、分页读取失败、部分导入失败不能解释为“站点已删除”。仅有历史短指纹的 `legacy_claim` 账号保留，不自动删除；来源未知的旧账号先按下文核对并显式认领。名称带 `ANT-` 或备注提到 CPA 都不能单独证明归属；单站导入不清理其他站。
+
+去重不能跨来源协议折叠：相同URL和KEY同时出现在Codex与OpenAI兼容段时，可能分别使用Responses/Chat协议和不同分组。工具使用稳定的来源/分组后缀区分名称，并迁移可确认归属的旧重名账号；不能仅因目标平台都叫`openai`就删掉其中一条。
+
+## 可选 request-relay：让原 CPA 运行时消费参数
+
+sub2api API key 账号本身没有等价消费者的 CPA 行为，通过可选 `request-relay` 保留：原配置的 cloak、中途 system 重建、请求头、prompt-cache、连接/重试配置及 Responses WebSocket 等由**同一应用镜像内从固定官方 CPA 源码构建的 consumer**实际消费。本项目在诊断出站边界加入禁止重定向的安全补丁，原第三方工作区不修改。镜像附带其 MIT 许可。需要这些行为的记录在 relay 未启用或未就绪时明确拒绝，不能降为“仅写备注也算生效”。
+
+consumer 的来源记录位于 `/app/third_party/CLIProxyAPI.PROVENANCE.json`，包括固定上游 commit、构建镜像、二进制 SHA256、构建输入摘要、CGO、Go版本与架构。诊断功能标识为 `cpa2sub2api-diagnostic-no-redirect-v1`；它区分本项目派生 consumer 与原版上游镜像。relay 还要求实际可执行文件和来源记录同时证明 `automatic_output_cap: 16` 与 `automatic_output_header: X-CPA2SUB2API-Auto-Output-Cap`；旧二进制只有原诊断标识时不能就绪。自动请求在 CPA 的全部 payload 规则处理后、最后出站前限制输出为最多16；无法证明小输出的压缩、签名、thinking/reasoning 等配置受控跳过，不降低选定的真实最高模型。诊断入口选择精确 KEY、关闭重试并拒绝跟随重定向；relay 将诊断30x转换为受控非重定向错误，去掉 Location，避免下游客户端再次跟随。普通业务保留原传输行为；手工诊断不使用自动16输出额度，仍遵守诊断分支的禁止重定向和授权检查。不能把重试次数为0当作重定向已经关闭。
+
+原生周计划使用工具自动生成的 `aRID40-hash64` 自动诊断model标记；显式手工诊断使用 `dRID40-hash64`。两类标记都由当前route与实际model摘要组成，固定106个合法ASCII字符，并各自写入精确self-map，完整保留普通及通配模型映射。不要人工拼接 `dRID/model`，Gemini URL模型片段不允许斜线。relay在认证、当前route/model、双闸授权及自动周预算验证后才选内部诊断prefix；自动票据还绑定当前主机、KEY来源、模型和代际。不要手工改标记或把它当真实上游模型名。
+
+公开模板默认 `REQUEST_RELAY_ENABLED=false`，保留可直接迁移输入的原行为。若预览提示该输入需要 relay，必须同时启用开关和 profile：
+
+```dotenv
+REQUEST_RELAY_ENABLED=true
+# 默认false仅选择需要CPA行为的记录；true也选择普通Direct受管账号以支持安全诊断
+REQUEST_RELAY_FORCE_ALL_ACCOUNTS=false
+COMPOSE_PROFILES=request-relay
+REQUEST_RELAY_BASE_URL=http://request-relay:8380
+REQUEST_RELAY_STATE_DIR=/app/state/relay
+REQUEST_RELAY_SOURCE_SCOPE=default
+REQUEST_RELAY_WEIGHTED_BUCKET=false
+REQUEST_RELAY_TIMEOUT=600
+REQUEST_RELAY_MAX_RESPONSE_BYTES=67108864
+REQUEST_RELAY_TLS_PROFILES={}
 ```
 
-可调度权重更高（0.6）：sub2api 出错时会同时关掉 `status` 和 `schedulable`，
-而恢复路径只还 status 不还 schedulable —— 所以 `schedulable=false` 往往意味着
-"这个 KEY 栽过跟头且没人管过它"。
+```bash
+cd /opt/deploy
+# 首次没有导出状态时，服务暂时 unready 是正常状态；不要设置成导入前必须 healthy
+# profile 由上面的 COMPOSE_PROFILES 启用，也可显式添加 --profile request-relay
+docker compose up -d request-relay
+docker compose run --rm cpa2sub2api python tool.py import --preview
+# 此步先原子导出私有代际，等待实际 consumer 就绪且代际一致，再创建/同步账号
+docker compose run --rm cpa2sub2api python tool.py import --yes
+docker compose ps request-relay
+docker compose logs --tail 100 request-relay
+```
 
-**比例的分母是"该域名已导入的 KEY 数"，不是"KEY 总数"。** 这一条影响扩容行为：
+relay 不映射宿主端口，sub2api 与 relay 需处于可互通的 Docker 网络。私有运行状态只写入命名 state 卷，不从 Git 或宿主源码目录加载派生配置；其中包含真实 KEY、路由令牌和控制令牌，不能发布、下载作教程附件或打进镜像。服务启动、重新加载和就绪检测不合成用户模型请求；新代际先关闭接入并有界排空旧流，默认600秒后取消超时流再切换。
 
-同一域名 5 个 KEY，3 个已导入（2 个可调度、2 个活跃）、2 个是本次新增的：
+每次官方consumer启动都使用独立的空OAuth目录；旧代际配置和私有令牌保留。正常重启后应重新核实服务健康，无需删除state卷；删除该卷会丢失现有路由和控制令牌。
 
-| 分母 | 健康分 | `load_factor` |
-|---|---|---|
-| 已导入数（当前实现） | **0.667** | 4 |
-| KEY 总数 | 0.400 | 2 |
+`REQUEST_RELAY_FORCE_ALL_ACCOUNTS`默认false，保留普通Direct业务；显式true且relay已启用时，`import --preview --host` / `import --yes --host`可迁移指定站的普通受管账号。预览不联网，同步保持原身份、优先级和普通模型映射。默认Direct业务及显式单次源探测仍可使用；完整原生诊断须迁到安全relay。
 
-用"总数"会让**每次扩容都稀释老域名的健康分** —— 上例中新加 2 个 KEY
-就把老域名的流量份额腰斩，而它的实际表现一点没变。所以分母只算已有实测数据的那些。
+**默认业务请求绑定原 KEY。** `REQUEST_RELAY_WEIGHTED_BUCKET=true` 才显式使用同 scope、来源类型、分组和原主机内的权重池；原请求的业务重试仍按源配置策略。池内其他 KEY 成功不能证明最初 KEY 可用。诊断固定 exact-key、零额外重试，并即时复核原站授权；不能利用池替代指定账号的成功证据。无合格放行模型的记录保持阻断，不允许空白名单变成全部放行。
 
-整个域名都是新增（一条都没导入过）时给中位分 0.5：既不因"查无记录"被打到队尾，
-也不凭空排到已验证的健康站前面。
+### 显式站级 TLS 与代理
 
-### 模型就高原则
+`fingerprint-profile`、`enable_tls_fingerprint=true` 和“真实客户端身份”是不同能力。通用站点需要 TLS 预设时，显式配置精确 host → 对象映射；不能从一个布尔开关猜测预设：
 
-| 类型 | 规则 |
+```dotenv
+REQUEST_RELAY_TLS_PROFILES={"upstream.example.invalid":{"impersonate":"chrome136"}}
+```
+
+允许 `chrome`（当前固定到 `chrome136`）、`chrome136`、`firefox135`、`safari184`。也可在受管配置条目上写工具扩展 `request-relay-tls: {impersonate: chrome136}`，不能放在 `api-key-entries` 子项内。可选 `ca-bundle` 必须是容器内绝对、可读的证书文件路径，并另行只读挂载；证书和主机名校验仍启用。参见 [安全输入骨架](config.yaml.example)。
+
+固定目标 TLS adapter 保留指定目标、SNI/Host、每 KEY 的认证与显式代理，拒绝重定向。SSE 与文本/二进制 WebSocket 走真实流式转发；gzip/deflate 按边界解码，Brotli 取决于安装的依赖，不支持时明确拒绝。解码响应默认限制64MiB，可配置1–512MiB，并有压缩膨胀限制。它不能证明拥有合法 Claude Code 身份、签名、账号权限或保证永不封号。
+
+### 上游版本信息与字段合同
+
+`import --preview` 和显式离线检查不请求 GitHub；预览也不访问 sub2api 管理端或模型上游。公开模板设 `FETCH_UPSTREAM_SRC=true`，正常线上执行按版本证据TTL自动查询官方最新稳定 tag/commit及候选源码，默认每7天；缓存新鲜时不重复HTTP。设为 false 时正常执行只用本地证据。官方 CPA consumer 仍由镜像固定版本及摘要；发现有新 release 不会改变正在运行的 consumer 或目标 sub2api。
+
+```bash
+# 只读当前缓存和版本证据：零网络、零缓存写入
+docker compose run --rm cpa2sub2api python tool.py upstream inspect
+# 显式刷新当前固定版本的源码证据
+docker compose run --rm cpa2sub2api python tool.py upstream refresh
+# 只用已有完整缓存；此命令不向GitHub发请求
+docker compose run --rm cpa2sub2api python tool.py upstream refresh --offline
+# 显式查询官方最新稳定版，并取得候选源码；不会自动切版本
+docker compose run --rm cpa2sub2api python tool.py upstream refresh --latest
+```
+
+`--kind cpa` 或 `--kind sub2api` 可限制检查对象，默认 `all`。`--latest` 与 `--offline` 不能同时使用。官方版本查询与模型上游探测是两个独立功能，站级探测默认关闭。
+
+源码缓存保存到 `out/upstream-cache/<kind>/<commit>/<generation>/manifest.json`；每个完整代际逐文件核验 SHA，再更新该 commit 下的 `CURRENT.json`。版本发现报告位于 `out/upstream-cache/release-evidence.json`，固定源码刷新报告为同目录的 `source-cache-evidence.json`。`UPSTREAM_CACHE_TTL_SECONDS=604800`（7天）对应设置键 `upstream_cache_ttl_seconds`；过期但完整、摘要匹配的固定版本缓存可在离线模式复用，会明确标记 stale，不能据此声称最新。尚未激活的新版本候选不会阻止仍匹配当前固定合同的导入；实际使用的源码发生未审查漂移、配置含未知受管字段或旧计划固定身份不匹配时，导入及清理才会拒绝继续。首次空 out 卷仍可使用镜像内已验证的固定字段合同，不要求自动下载Go源码。
+
+仅已人工审查并登记、Go AST、完整 token 与编译指令均一致的精确注释/排版源码表示，允许继续采用原字段合同。`verified_reviewed_equivalent` 描述单个源文件；例如已登记的 CPA v8.0.61 配置结构文件仍采用 v8.0.60 consumer 合同，不会自动升级运行消费者。原始文件 SHA 仍保留在计划与消费前校验中，更换源码后必须重新生成计划；未登记的字节变化、未知字段或语义变化仍需受控复核。
+
+当前受管字段按已核准的官方 CPA v8.0.60 合同校验字段名和递归类型；不回显配置值。未知受管字段、嵌套类型改变或来源合同漂移都要处理。升级流程是：取得候选报告 → 审查新字段和消费语义 → 适配并固定新 consumer 摘要及基线源码SHA → 构建隔离容器并验证真实配置、目标管理页和调用链 → 发布已验证镜像。随后再按[升级与回滚](#升级与回滚)替换部署。没有一条命令能跳过合同适配而自动激活任意未来版本；删除候选报告也不能让新源码变成兼容源码。
+
+## 多来源隔离与旧账号认领
+
+每个独立 CPA 输入使用稳定的 `REQUEST_RELAY_SOURCE_SCOPE`（默认 `default`），即使关闭 relay 也用于账号来源所有权。多来源必须各自设置不同 scope、不同 relay `state_dir`/卷和独立配置；一个 state 目录一旦绑定 scope，不得换名覆写另一来源。不要把两个来源轮流作为同一完整输入执行清理。
+
+新增账号保存严格来源元数据，更新、诊断和删除前重新校验归属；A 来源不能清理 B 来源。普通导入先查找唯一受管来源，再决定新增或修复，因此可确认的历史旧名称不会被当成新的账号重复创建。
+
+### 已有名称、类型和平台如何修复
+
+| 情形 | 行为与证据要求 |
 |---|---|
-| gemini | 只选带 `pro` 的最高编号，保留该版本全部变体 |
-| claude | 只选当代，保留全部档位（opus / sonnet / haiku） |
-| codex | **单族**：只保留当代 gpt 系列**全部**模型名 |
-| openai | **多族**：每一族各取最高级，允许多族并存 |
-| 其他 | 原样保留（grok 等） |
+| 唯一旧名称，来源 sentinel、段、URL、协议和指纹一致 | 使用原账号 ID 修正名称及受管参数，保留原状态、调度开关和非受管附加信息 |
+| 合法账号类型变化，例如受管 OAuth 改为 apikey | 取得完整来源身份后使用原 ID；显式清除旧类型敏感凭据并读回。存在影子账号依赖或目标 API 不允许改型时停止 |
+| 平台不同，目标 API 不支持原 ID 改平台 | 仅允许强来源身份且无影子/计划等依赖的受控替换；新账号使用新 ID |
+| 只有历史短指纹，完整凭据导出不可用 | 允许同平台、同类型的旧名称和非身份参数修复，记录为 `legacy_claim`；不改密钥、类型或平台，不自动清理 |
+| 无 sentinel、手工账号、其它 scope、来源冲突或候选不唯一 | 保留；无 sentinel 的历史账号只能走下面的明确 ID 强证据认领 |
 
-**低档模型一律不勾选**：名字里带 `mini` / `flash` / `fast` 的排除，四条路径统一执行。
-过滤后一个不剩时保留原列表并出声 —— 白名单为空等于该账号退出调度，比留几个低档模型更糟。
+平台替换先把候选放进随机独占隔离组并限制全部模型，读取候选的精确 ID 原文凭据，再明确停用候选并读回。随后写入最终参数、原有及配置要求的分组、原状态与调度意图，再核实原文凭据和全部受管字段；删除旧 ID 前还会重新检查旧账号依赖和候选快照。旧 ID 删除是最后一步。失败时保留旧账号，只清理可确认由本次操作创建的候选与隔离组；删除响应丢失需读回核实，结果未知时保留已验证候选并报告失败。平台替换会改变 ID，已有计划等关联不能被静默搬移。
 
-注意 claude 的 `haiku` **不算低档**：它与 opus / sonnet 是同代不同档位，
-按"同等级系列全部勾选"应当保留。低档判据只认那三个词。
+### 显式认领没有完整来源标记的历史账号
 
-codex 与 openai 在 CPA 里是两个不同的段，但平台类型都是 `openai`。
-本工具按**来源段**分流，不靠"列表里有没有 gpt-6"猜 —— 后者会把声明了
-gpt-6 的 openai 上游误当 codex，砍掉它其余全部模型。
-
-代际门槛由上游源码里出现过的真实模型名反推，每次启动刷新。上游从 6 代走到
-7 代时门槛自动前移。反推失败时退一步用"模型列表里观测到的最高代"，不会砍错。
-
-### 连通性探测（最新代打不通时的兜底）
-
-上游声明了 `gpt-6` 不等于真的能调。模型目录是站方自己填的，常有"列了但调不通"
-的情况。开启探测后按**代际**实发请求验证，据结果分三种处理：
-
-| 探测结果 | 处理 |
-|---|---|
-| 最新代通 | 只留最新代（正常路径） |
-| 最新代不通、次最新代通 | **两代都留** —— 最新代按目录保留占位，同时补入实测可用的次最新代 |
-| 两代都不通 | 按目录最高级填充，出声告警 |
-
-"次最新"的粒度是 `(主版本, 次版本)`：`gpt-5.6` 与 `gpt-5` 不是同一代，
-`gpt-6` 打不通时补的是 `gpt-5.6` 全族，不会把更旧的 `gpt-5` 拉进来。
-
-**成本**：按 `(段, 域名)` 去重，每个单元最多 2 个请求（最新代 + 次最新代）。
-实测 231 个账号收敛成 49 个探测单元，8 并发下约 30 秒；结果缓存 6 小时，重跑 0 秒。
+先备份目标数据，在管理页核对具体 ID 和当前完整 `config.yaml`。认领要求单个候选的实际完整密钥、URL、协议及配置记录唯一对应；没有 sentinel 时还限定历史 `ANT-域名-数字` 名称形式，但这个名称形式本身不构成授权。不会批量猜测 `ANT-` 前缀，也不会认领普通手工名称。
 
 ```bash
-MODEL_PROBE_ENABLED=true       # 默认开启，设 false 完全跳过（零开销）
-MODEL_PROBE_WORKERS=8          # 并发
-MODEL_PROBE_CACHE_TTL=21600    # 缓存秒数
+# 示例ID必须换成已核实且能与当前完整config唯一绑定的历史账号
+docker compose run --rm cpa2sub2api python tool.py prune claim-preview 101 102
+# 重新生成并核对预演后，在提示中输入大写 CLAIM
+docker compose run --rm cpa2sub2api python tool.py prune claim-apply 101 102
+# 认领、完整同步均确认后，再检查清理范围
+docker compose run --rm cpa2sub2api python tool.py prune preview
 ```
 
-端点拼接与 CPA 源码一致（`baseURL` 原样 + 各平台端点后缀），
-不自行剥离尾部 `/v1` —— CPA 的 base-url 是声明式配置，末尾的 `/v1` 是其一部分。
+认领预演会访问管理 API，并通过精确 ID 的管理员原文导出核实敏感凭据；原文只在内存中比较，不打印或写入公开产物。应用前重新读取配置、账号快照与完整凭据；任一变化都会取消认领。认领只添加来源归属并修正配置名称/备注，不改变状态或调度开关。已有其它来源归属的账号仍留在其原 scope。
 
-### 反测活
+如果原文导出返回 `403` 或要求管理员增强验证，保持该门禁。按目标管理页的登录/验证流程手工导出所选单个账号，不能关闭增强验证、绕过权限或把隐藏的密钥当成已核实。将原文导出保存在 VPS 的私有位置，只授予容器实际 `APP_UID` 必要读取权限；不要放进仓库、镜像、日志、截图或公开教程。下面的宿主与容器路径是示例，文件必须是管理员原文导出的 `accounts` 单元素结构，明确 ID 必须与刚核对的账号一致：
 
-两层：中英双语自然语料随机抽取；**每个账号派生稳定的分钟偏移**，
-避免所有账号在同一分钟一起探活（"全体同时发问"这个同时性比措辞更容易被识别）。
+```bash
+# 已在管理页验证并导出单个账号101；私有文件只读挂入一次性容器
+docker compose run --rm \
+  --volume /opt/deploy/private/account-101-export.json:/private/account-101-export.json:ro \
+  cpa2sub2api python tool.py prune claim-preview 101 \
+  --evidence /private/account-101-export.json
+# 核对预演，再按提示输入 CLAIM；--evidence 每次只接受一个明确ID
+docker compose run --rm \
+  --volume /opt/deploy/private/account-101-export.json:/private/account-101-export.json:ro \
+  cpa2sub2api python tool.py prune claim-apply 101 \
+  --evidence /private/account-101-export.json
+```
 
-语料分两个池，因为两条链路的诉求相反：
+显式私有导出也要匹配当前账号快照、URL和配置完整密钥。导出来源不明、含多个账号、出现冲突或预演后配置变化时停止；认领不能替代备份和最终同步读回。
 
-- **探活计划**（sub2api 定时任务）用 30 条较长句子 —— 要模型真的把话答完才算成功
-- **模型探测**（`model_probe.py`，导入时判模型通不通）用 10 条短句中英各半 ——
-  请求体越小越不容易被限流。此前这里三处硬写 `"hi"`（常量、最容易被识别），
-  已改成随机抽取，仍保持 `max_tokens=1`
+## 代理复用与验证
 
----
+父栈共享 `mihomo` / `mihomo-init` 通常使用 upstream-importer 镜像。本项目镜像也包含 `mihomo-manager`、mihomo 内核和数据，用作独立部署或替代镜像；两者是否同版本应按实际镜像摘要核对，不保证历史 md5 永远一致。
 
-## 产出文件
+公开模板的 `MIHOMO_AUTOMATIC_TESTS=false` 关闭代理节点的自动 provider health-check 与 url-test；模型账号探测由 `MODEL_PROBE_ENABLED` 和站级授权另行控制。共享栈按 `mihomo-init` → 本项目镜像的 `mihomo-policy-init` → 原共享 `mihomo` 内核运行。叠加模板的 `MIHOMO_SHARED_VOLUME` 要填父 compose 已声明的配置卷 key，默认 `mihomo-data`；独立模板用自身的 `mihomo-config` 卷。policy-init 无网络，只对原初始化已生成的共享配置原子应用策略，不复制本项目模板或覆盖原 importer 的中立连通性健康脚本、手工 fallback。自动检测组改为手工 `select`，节点、过滤条件、规则保留。
 
-| 文件 | 内容 |
-|---|---|
-| `out/import-plan.json` | 完整导入计划 |
-| `out/对照表.md` | 逐条对照（原/新优先级、放行模型、排除规则、状态） |
-| `out/cpa-config-snapshot.yaml` | 导入时的 config 快照 |
-| `out/import-record.json` | 执行结果记录 |
+若要恢复代理节点自动检测，明确设置 `MIHOMO_AUTOMATIC_TESTS=true` 并恢复或重建原本的自动检测组配置，再按上述次序重建；仅把环境变量改成 true 不会把已转成 select 的组自动还原。它也不会授权任何模型站探测。配置缺失、不是普通文件或含符号链接时，policy-init 明确失败，内核应等待成功后再启动。
 
-导入前建议抽查 `out/对照表.md` 的「放行模型」列——那就是真正写进 sub2api
-的白名单，与线上生效的一致。
+镜像内初始化入口为 `/bin/sh /app/mihomo-manager/bootstrap-mihomo.sh`；运行配置使用 `/root/.config/mihomo` 命名卷。订阅地址和控制器密钥只在私有 `.env` 配置。已有栈的 init、代理本体和客户端需共享正确网络、配置卷及控制器凭据。
 
----
+```bash
+docker compose ps mihomo mihomo-init
+docker compose logs --tail 100 mihomo-init mihomo
+docker compose exec mihomo sh /root/.config/mihomo/healthcheck.sh
+```
+
+进程存活不代表有可用节点。还要检查订阅是否成功、AUTO 组节点数量、从本工具容器到代理的连通性，以及目标请求是否确实使用了该代理。健康脚本降级 DIRECT 是出口策略，不能代替对目标站的可用性证明。
+
+## 升级与回滚
+
+升级前记录正在使用的镜像标签/摘要，备份私有四个部署文件、state/out 卷及目标 sub2api 数据。修改 `.env` 中 `CPA2SUB2API_IMAGE_TAG` 后执行拉取与重建。使用发布提供的固定 SHA 标签比始终跟随 `latest` 更容易复现。
+
+```bash
+cd /opt/deploy
+# .env中填入已发布的目标标签后
+docker compose pull cpa2sub2api
+docker compose up -d --no-deps --force-recreate cpa2sub2api
+docker compose logs --tail 200 cpa2sub2api
+```
+
+启用了 Web/relay 时须让三个服务使用相同镜像标签，并分别拉取重建相应 profile 服务。保留 relay state 代际及稳定 scope；旧格式运行状态需从权威配置重新导出，再验证实际 consumer 就绪。迁移 relay 先预览、启服务、实际导入通过代际检查，最后抽查管理页；不要手工把账号 URL/KEY 改成派生路由。
+
+回滚时把该标签改回升级前记录的值，再执行同样命令。回滚程序镜像不会自动撤销已经写入 sub2api 的账号变更；需要撤销数据变更时使用升级前备份。如要从 relay 退回直连，先确认原输入所有字段都能由直连消费，再设 `REQUEST_RELAY_ENABLED=false`、只读预览并重新导入原来源；不能仅停 relay，否则已导入路由会失效。需要 CPA 独有行为的输入应回滚到已验证镜像和对应状态/数据备份。不要运行 `docker compose down -v`，它会删除共享栈数据卷。
 
 ## 故障排查
 
-| 现象 | 先去查 |
+| 现象 | 核查与处理 |
 |---|---|
-| IP 管理页"链接失败" | `curl .../proxies/AUTO \| jq '.all\|length'` 是否为 0；`allow-lan` 是否 true；是否同一 Docker 网络 |
-| 只调高优先级上游，低优先级不试 | 402「预算池耗尽」类的凭据级错误；见教程 8.2 |
-| `503 No available accounts` + 分组权限提示 | 该上游只接受特定客户端。本工具会自动补齐客户端形态头（教程 10.1）；仍不通则在 CPA 的 `headers` 里显式写私有头 |
-| `400 invalid codex request` | 自定义模型列表含上游不存在的模型名，或协议模式不匹配 |
-| `524 origin_response_timeout` | CF 回源超时 120 秒不可延长，需压缩 CPA 的重试预算；见教程 8.5 |
-| `empty or malformed response (HTTP 200)` + 0 SSE 事件 | 流式引导未缓冲；见教程 8.6 |
-| `403 error code: 1010` | CF 浏览器完整性检查，设置浏览器 `USER_AGENT` |
-| **所有**管理接口返回 `423 Locked` | **不是密钥问题**。sub2api 的管理员合规确认门禁：先去面板确认合规承诺；见教程 11.1 |
-| CPAMP 面板提示"管理员密钥无效" | 是**面板登录密钥**，不是 CPA 管理密钥。改文件无效，只能 `reset-admin-key`；见教程 8.9 / 8.10 |
-| `{"error":"IP banned due to too many failed attempts"}` | 认证失败超 5 次触发 30 分钟 IP 封禁。先停 CPAMP 再重启 CPA；见教程 8.11 |
-| 改了 `secret-key` 之后彻底登不进 | 该字段要的是 **bcrypt 哈希**（`$2a$` 开头），不是明文；见教程 8.12 |
-| 本机全绿但 VPS 报错 | 本机与 VPS 的六类环境差异；逐条核对教程第十一章的清单 |
-| 改了代码但 VPS 行为没变 | Docker 默认「本地没有才拉」，`up -d` 不会取新镜像。本仓库已设 `pull_policy: always`；手工 `docker compose pull cpa2sub2api` 兜底 |
-| `Permission denied: '/app/out/...'` | `out` 目录属主与容器 uid 不匹配。compose 已用 `user:` 覆盖为 root；或把宿主目录 `chown 1000:1000` |
-| `[Errno 21] Is a directory: '/app/config.yaml'` | 宿主上该路径是**目录**（Docker 在文件不存在时自动建的空目录）。放上真正的文件，或改用 `CPA_BASE_URL` 在线拉取 |
-| mihomo 容器一直 `unhealthy` | 官方镜像里**没有 python3 也没有 curl**。本仓库用纯 busybox 的 `healthcheck.sh`（教程 11 表第 7 项）。现在 mihomo 由**本项目镜像**充当，里面装了 busybox+wget，脚本对 `nc`/`wget` 会做"命令探测 + 回退到 `busybox <applet>`" |
-| mihomo 日志说「缺少 HTTP 工具」 | 镜像基座里既没有 nc/wget 也没有 busybox。这不是出口故障 —— 按 Dockerfile 装上 `busybox` 与 `wget` 即可 |
-| 出口正常但上游全 502/524 | 节点其实挂了。手动跑 `docker compose exec mihomo sh /root/.config/mihomo/healthcheck.sh` 看它有没有把出口降级到 DIRECT（教程 5.6） |
-| `bootstrap-mihomo.sh` 抛 `TypeError: must be real number` | 订阅 URL 里的 `%2F`/`%3D` 被当成格式化占位符。本仓库已改成一次填完 + `json.dumps`；若你本地有旧副本，同步一次 |
-| `Pool overlaps with other one on this address space` | 网段冲突。在 `.env` 里设 `CPA2SUB2API_SUBNET=172.29.0.0/16` |
+| `503 No available channel ... under group default` | 检查上游分组授权、模型存在性和协议；临时错误恢复还需检查 status 与 schedulable，不能无限强制启用真实失效密钥 |
+| `503 ... only allows Claude Code clients` | 对比直连和中转的端点、请求体、客户端身份头；站方专属校验可能无法由通用API代理复制 |
+| `400 invalid codex request` | 核对 Responses/Chat 模式、必填字段、模型、originator 和上游实际支持能力 |
+| `401` / `402` / `400` / `403` 冷却不符 | 检查规则是否分别为30/15/1/1分钟；确认旧账号规则也被本次导入更新 |
+| 账号 active 但不可调度 | 检查 `schedulable`、临时冷却、手工停用以及恢复证据；只改status不足 |
+| 旧半小时计划仍执行 | 保持总闸关闭，执行 `probes reconcile`，在sub2api查看计划启用状态和下次执行时间 |
+| 新config删站后旧账号还在 | 看 `prune preview`、管理标记、同步失败与分页读取结果；未标记的手工/旧账号不会被猜测删除 |
+| 旧名未修复、改型/平台替换被拒绝 | 核对唯一来源绑定、原文导出权限、影子/计划依赖和完整失败项；不要改名伪造归属或手工按ANT前缀删除 |
+| 原文导出 `403` / 增强验证要求 | 在管理页完成要求；显式认领可使用私有单账号原文导出，不能降低权限；平台替换仍须在线读回候选原文凭据 |
+| `524 origin_response_timeout` | 比较整个CPA/网关/反代重试预算和实际超时；不能靠无限增大nginx超时解决Cloudflare固定限制 |
+| mihomo“连接失败” | 检查控制器鉴权、服务名/端口、同网络、初始化卷和AUTO节点数；与模型路由错误分别排查 |
+| `423 Locked` | 目标sub2api可能有管理员合规确认门禁，在实际管理页确认；不要反复轮换管理密钥 |
+| `403 error code: 1010` | 请求可能在边缘防护层被拦，比较实际访问路径和目标策略 |
+| `/app/config.yaml` 是目录 | 核查宿主真实文件存在性，修正错误挂载后重建服务 |
+| `/app/out` 或 `/app/state` Permission denied | 核对当前镜像UID/GID与卷属主；不要在未经核实的共享卷上递归改权限 |
+| 本机通过，VPS失败 | 对比镜像摘要、四部署文件、网络、环境变量、卷权限、目标API版本与真实前端字段 |
 
-### 密钥排障速查（教程 8.9–8.13）
+目标版本可能在管理API返回中隐藏`api_key`，或把默认关闭的费率字段省略；不能只因响应没有该字段就判断未导入。应结合目标版本、实际编辑页状态和受控存储读回核实，避免把真实KEY回显到日志、截图或公开报告。
 
-管理 CPA/CPAMP 时会遇到几个**名字相近但用途完全不同**的密钥，改错对象是常见的时间黑洞：
+详细管理员密钥区分、轮换和关联项目排障见教程第八章。不要把面板登录密钥、CPA管理密钥、sub2api管理密钥和下游调用KEY混用。
 
-| 你要做的事 | 用哪个密钥 | 存在哪 |
-|---|---|---|
-| 登录 `cpas.域名/management.html` 面板 | **面板登录密钥** | CPAMP 首次启动时写入 `/data/usage.sqlite`，之后改文件无效 |
-| 让 CPAMP 读到 CPA 的账号数据 | **CPA 管理密钥** | CPAMP 侧 `secrets/cpa_management_key`，必须与 CPA 侧 `config.yaml` 的 `secret-key` **哈希对应同一把明文** |
-| Claude Code / Codex 客户端连 CPA | **下游 api-key** | `config.yaml` 的 `api-keys` 列表（`sk-` 开头） |
-| 用 curl 调 `/v0/management/*` | CPA 管理密钥 | 同上，或环境变量 `MANAGEMENT_PASSWORD`（明文，优先于哈希） |
-
-**换 CPA 管理密钥时优先用环境变量方式**，不需要 bcrypt、删掉即可回退：
-
-```yaml
-# docker-compose.yml 的 cli-proxy-api 服务
-environment:
-  - MANAGEMENT_PASSWORD=${CPA_MANAGEMENT_PASSWORD}
-```
-
-详细排查步骤见 [`tutorial.html`](tutorial.html) 第八章。
-
----
-
-## 测试
+## 本地开发与验证
 
 ```bash
-python tests/test_fixes.py
+pip install -r requirements.txt
+python run.py
+python 一键导入.py --dry-run
+python -m unittest discover -s tests -p "test_*.py"
 ```
 
-纯函数回归测试，不联网、不写 `out/`。覆盖：优先级分组内唯一定序、
-同域名同桶、健康度重排与冷启动保护、模型就高分流、域名级冷却规则、
-探活时刻错开、低档模型过滤、连通性探测三分支、配置解析。
+测试通过只证明相应测试条件。发布前还需用当前源码构建镜像、隔离数据库和网络，按VPS挂载真实config、跑实际sub2api前端，检查导入字段、旧数据修正、删除边界、计划迁移、代理和控制台错误。永久禁探站不能为验收例外开启。
 
----
+产物位于 `out/`：导入计划、对照表、配置快照、执行记录和日志。这些文件可能包含真实上游地址、KEY或账号资料，不能上传到Git或作为公开教程附件。
 
-## 目录结构
+主要模块：`probe_web.py` / `probe_web_static/`（授权面板）、`request_relay.py` / `relay/`（官方 CPA consumer 与固定目标传输）、`tool.py`（导入与管理）、`model_selection.py`（模型选择）、`model_probe.py`（授权模型检测）、`probe_policy.py`（探测策略）、`new_remap_priority.py`（健康排序）、`extract.py`（上游目录）、`pricing.py`（定价）、`mihomo-manager/`（代理脚本）、`tests/`（回归测试）。
 
-```
-.
-├── tool.py                    主程序（导入、优先级、探活、定价）
-├── 一键导入.py                 全自动流程入口
-├── run.py                     ASCII 名启动器（绕开 cmd 代码页问题）
-├── model_selection.py         模型就高原则的**唯一权威实现**
-├── model_probe.py             模型连通性探测（按代际、去重、并发、缓存）
-├── new_remap_priority.py      基于 sub2api 实测状态的智能优先级
-├── extract.py                 从上游源码反推常量与代际门槛
-├── pricing.py                 定价解析与推送
-├── mihomo-manager/            mihomo 订阅与自举
-├── tests/test_fixes.py        回归测试
-├── docker-compose.yml         独立部署（自带 mihomo）
-├── docker-compose.cpa2sub2api.yml  叠加到已有部署栈的片段
-├── tutorial.html              完整教程
-└── .github/workflows/         CI：代码检查 + 镜像构建
-```
+## 发布与隐私
 
----
+GitHub Actions配置见 [docker-publish.yml](.github/workflows/docker-publish.yml)。仓库变量决定镜像命名，发布凭据由GitHub Secrets保存。
 
-## 安全
-
-不要提交以下内容：
-
-- `.env`、`设置.json`、`config.yaml` —— 含管理密钥与连接信息
-- `mihomo-manager/mihomo-subscriptions.conf` —— 含订阅 token
-- `*.docx` / `*.pdf` / `*.mhtml` —— 需求与说明文档，
-  常含**明文密钥的界面截图**，是二进制文件、无法靠文本搜索审出来
-
-`.gitignore` 已覆盖以上全部。
-
----
+不要提交或复制进镜像：relay 派生状态/令牌、真实 `.env`、`设置.json`、`config.yaml`、订阅配置、日志、`out/`、真实测试截图，以及包含明文KEY的需求DOCX/PDF/MHTML。公开示例只使用 `example` 保留域和明显占位符。`.gitignore`不能清除已经跟踪的秘密；提交前还需扫描暂存内容和镜像构建上下文。
 
 ## 许可
 
