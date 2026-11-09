@@ -32,6 +32,7 @@ HOP_HEADERS = frozenset({"connection", "keep-alive", "proxy-authenticate", "prox
 AUTH_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key", "cookie"})
 MAX_EVENT = 8 * 1024 * 1024
 MAX_BODY = 64 * 1024 * 1024
+DIAGNOSTIC_AUTH_BODY_LIMIT = 64 * 1024
 GUARD_FEATURE = "cpa2sub2api-diagnostic-no-redirect-v1"
 GUARD_SOURCE_COMMIT = "91e0dee827abf476f9f86246f68c500a112f7155"
 DIAGNOSTIC_PREFIX_ENV = "CPA2SUB2API_DIAGNOSTIC_PREFIXES"
@@ -140,6 +141,34 @@ def resolve_diagnostic_request(route, path, body, websocket=False):
     if automatic:
         resolved["automatic_probe"] = True
     return resolved, path, body, True
+
+
+async def _authentication_rejection(request):
+    """Local diagnostic authorization failures cannot revoke an upstream key."""
+    from aiohttp import web
+    reserved = lambda model: isinstance(model, str) and re.match(r"^[ad][0-9a-f]{40}[-/]", model) is not None
+    diagnostic = any(key.lower() in {"x-relay-exact-key", "x-relay-automatic-probe"} for key in request.headers)
+    if not diagnostic:
+        path = urllib.parse.urlsplit(request.raw_path).path
+        match = re.search(r"/(?:v1beta|v1)/models/([^:]+)", path)
+        diagnostic = bool(match and reserved(urllib.parse.unquote(match.group(1))))
+    if not diagnostic and request.method == "POST":
+        length = getattr(request, "content_length", None)
+        content_type = getattr(request, "content_type", "")
+        encoding = request.headers.get("Content-Encoding", "identity").lower()
+        if (type(length) is int and 0 < length <= DIAGNOSTIC_AUTH_BODY_LIMIT
+                and content_type == "application/json" and encoding in ("", "identity")):
+            try:
+                raw = await asyncio.wait_for(request.read(), timeout=1)
+                if len(raw) <= DIAGNOSTIC_AUTH_BODY_LIMIT:
+                    value = json.loads(raw)
+                    diagnostic = isinstance(value, dict) and reserved(value.get("model"))
+            except (ValueError, UnicodeDecodeError, RecursionError, asyncio.TimeoutError,
+                    OSError, asyncio.IncompleteReadError, web.HTTPRequestEntityTooLarge):
+                pass
+    if diagnostic:
+        return web.json_response({"error": "diagnostic_authority_unavailable"}, status=400)
+    return web.json_response({"error": "unauthorized"}, status=401)
 
 
 def diagnostic_policy_allowed(route):
@@ -529,7 +558,7 @@ class RelayRuntime:
         route = (bundle or {}).get("routes", {}).get(request.match_info.get("route", ""))
         # Same response for unknown routes and wrong tokens; no route enumeration.
         if not route or not authorized(request.headers, route["token"]):
-            return web.json_response({"error": "unauthorized"}, status=401)
+            return await _authentication_rejection(request)
         requested_generation = request.headers.getall("X-Relay-Generation", [])
         exact = request.headers.getall("X-Relay-Exact-Key", [])
         automatic_tickets = request.headers.getall(AUTOMATIC_PROBE_HEADER, [])
@@ -796,7 +825,7 @@ def create_app(runtime):
     app.router.add_route("*", "/r/{route:[0-9a-f]{40}}/{tail:.*}", runtime.forward)
 
     async def unknown(request):
-        return web.json_response({"error": "unauthorized"}, status=401)
+        return await _authentication_rejection(request)
     app.router.add_route("*", "/{tail:.*}", unknown)
     return app
 
