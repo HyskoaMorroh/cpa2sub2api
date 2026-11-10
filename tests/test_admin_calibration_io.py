@@ -409,13 +409,18 @@ class AdminCalibrationTests(unittest.TestCase):
             cfg = {"sub2api_base_url": origin, "sub2api_admin_key": "synthetic",
                    "http_timeout": 2, "http_retries": 2}
             api = tool.Sub2Api(cfg)
-            start_calibration(api, cfg)
+            calibration = start_calibration(api, cfg)
+            # A wire attempt is bounded by2s; the60s cooldown is compared
+            # against the absolute phase budget, which has only30s left here.
+            calibration.phase_deadline = time.monotonic() + 30
             with patch.object(tool.time, "sleep") as sleep, \
                  patch.object(tool, "load_settings", return_value=cfg), \
                  contextlib.redirect_stdout(FlushedOutput()):
                 with self.assertRaises(tool.ApiError) as caught:
                     api.list_test_plans(7)
             self.assertEqual(caught.exception.status, 429)
+            self.assertTrue(calibration.stopped)
+            self.assertEqual(calibration.stop_status, 429)
             sleep.assert_not_called()
             self.assertEqual(len(server.received), 1)
 

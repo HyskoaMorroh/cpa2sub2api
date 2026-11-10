@@ -1233,17 +1233,18 @@ class Sub2Api(object):
     def _request(self, method, path, headers, body=None, timeout=None):
         import admin_io
         calibration = getattr(self, "_admin_calibration", None)
-        deadline = None
-        deadline_token = None
+        enclosing_deadline = admin_io.REQUEST_DEADLINE.get()
         try:
-            deadline = calibration.request_deadline() if calibration is not None else None
-            if deadline is not None:
-                deadline_token = admin_io.REQUEST_DEADLINE.set(deadline)
             for attempt in range(3):
-                if calibration is not None:
-                    calibration.check()
-                _check_admin_write_guard(method)
+                deadline = calibration.request_deadline() if calibration is not None else None
+                deadline_token = (admin_io.REQUEST_DEADLINE.set(deadline)
+                                  if deadline is not None else None)
                 try:
+                    if calibration is not None:
+                        calibration.check()
+                    # A nested guard GET may itself return429. Its original
+                    # Retry-After must reach this outermost request unchanged.
+                    _check_admin_write_guard(method)
                     bounded = ({"_admin_deadline": deadline, "_admin_origin": self.base,
                                 "_admin_progress": calibration.progress}
                                if calibration is not None else {})
@@ -1254,38 +1255,51 @@ class Sub2Api(object):
                         if time.monotonic() >= deadline:
                             raise _admin_failure(admin_io.Failure("deadline"))
                         calibration.check()
-                        # A guard/detail GET is only part of a calibration item.
-                        # Reset consecutive failures after its final readback,
-                        # not before a later plan/read/write can still fail.
+                        # Only a complete logical item resets failure counting.
                     return result
                 except ApiError as error:
-                    if error.status != 429 or attempt == 2:
+                    if error.status != 429:
                         raise
-                    wait = admin_retry_wait(getattr(error, "retry_after", None))
-                    if wait > 120 or deadline is not None and time.monotonic() + wait >= deadline:
-                        raise  # Never shorten a server cooldown to fit a local budget.
-                    print("    管理API限流，等待 %.1f 秒后重试（%d/2）。" % (wait, attempt + 1), flush=True)
-                    remaining = wait
-                    while remaining > 0:
-                        interval = min(5.0, remaining) if calibration is not None else remaining
-                        time.sleep(interval)
-                        remaining -= interval
-                        if calibration is not None:
-                            calibration.check()
-                            if remaining > 0:
-                                calibration.progress("正在遵守管理接口冷却时间")
+                    if calibration is not None and enclosing_deadline is not None:
+                        raise  # The owning outer request performs the pause.
+                    limited = error
+                finally:
+                    if deadline_token is not None:
+                        admin_io.REQUEST_DEADLINE.reset(deadline_token)
+
+                wait = admin_retry_wait(getattr(limited, "retry_after", None))
+                if calibration is not None:
+                    calibration.check()
+                    budget = min(calibration.phase_deadline, calibration.deadline)
+                    if attempt == 2 or time.monotonic() + wait >= budget:
+                        reason = ("管理接口限流重试次数已达上限，剩余校准未完成"
+                                  if attempt == 2 else
+                                  "管理接口冷却超出剩余校准预算，未缩短冷却，剩余校准未完成")
+                        calibration.stop(reason, 429)
+                        raise limited
+                elif attempt == 2 or wait > 120:
+                    raise limited
+                print("    管理API限流，等待 %.1f 秒后重试（%d/2）。" % (wait, attempt + 1), flush=True)
+                if calibration is None:
+                    time.sleep(wait)
+                    continue
+                wake_at = time.monotonic() + wait
+                while time.monotonic() < wake_at:
+                    remaining = wake_at - time.monotonic()
+                    time.sleep(min(5.0, remaining) if calibration is not None else remaining)
+                    if calibration is not None:
+                        calibration.check()
+                        if time.monotonic() < wake_at:
+                            calibration.progress("正在遵守管理接口冷却时间")
         except admin_io.Failure as failure:
             error = _admin_failure(failure)
             if calibration is not None:
                 calibration.record_error(error)
             raise error from None
         except ApiError as error:
-            if calibration is not None:
+            if calibration is not None and not (error.status == 429 and enclosing_deadline is not None):
                 calibration.record_error(error)
             raise
-        finally:
-            if deadline_token is not None:
-                admin_io.REQUEST_DEADLINE.reset(deadline_token)
 
 
     def ping(self):

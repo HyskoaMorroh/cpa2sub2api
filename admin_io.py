@@ -100,7 +100,11 @@ class Calibration:
             self.stop("管理接口 HTTP %s，停止剩余校准" % status, status)
         elif kind in ("boundary", "redirect", "calibration_stopped"):
             self.stop("管理请求边界拒绝，剩余校准未执行", status or 0)
-        elif status == 0 or status in (429, 500, 502, 503, 504) or isinstance(error, OSError):
+        elif status == 429:
+            # A server cooldown is not a failed connection. Its owning request
+            # pauses within the unchanged phase/job budget or stops explicitly.
+            return
+        elif status == 0 or status in (500, 502, 503, 504) or isinstance(error, OSError):
             self.consecutive_failures += 1
             if self.consecutive_failures >= 3:
                 self.stop("连续三次管理网络失败，停止剩余校准", status or 0)
