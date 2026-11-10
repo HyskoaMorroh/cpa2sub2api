@@ -37,6 +37,9 @@
 
 name: build
 
+env:
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+
 on:
   push:
     branches: [master, main]
