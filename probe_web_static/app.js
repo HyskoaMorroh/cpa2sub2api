@@ -28,7 +28,9 @@
   }
   async function api(path, method = 'GET', body) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
+    const managementWait = (path === '/api/reconciliation' && method === 'POST')
+      || (path === '/api/settings' && method === 'PATCH' && (body?.master === false || body?.enabled === false));
+    const timeout = setTimeout(() => controller.abort(), managementWait ? 930000 : 120000);
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (csrf) headers['X-CSRF-Token'] = csrf;
