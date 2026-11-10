@@ -63,6 +63,31 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Mask private event emails
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          emails = set()
+          pending = [event]
+          while pending:
+              value = pending.pop()
+              if isinstance(value, dict):
+                  for key, item in value.items():
+                      if key.lower() == "email" and isinstance(item, str) and item.strip():
+                          emails.add(item)
+                      elif isinstance(item, (dict, list)):
+                          pending.append(item)
+              elif isinstance(value, list):
+                  pending.extend(value)
+          for email in sorted(emails):
+              escaped = email.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print("::add-mask::" + escaped)
+          PY
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
 
@@ -118,6 +143,31 @@ jobs:
         # 没用 match/结构化模式。3.9 能跑说明兼容面够宽。
         python: ["3.9", "3.12", "3.13"]
     steps:
+      - name: Mask private event emails
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          emails = set()
+          pending = [event]
+          while pending:
+              value = pending.pop()
+              if isinstance(value, dict):
+                  for key, item in value.items():
+                      if key.lower() == "email" and isinstance(item, str) and item.strip():
+                          emails.add(item)
+                      elif isinstance(item, (dict, list)):
+                          pending.append(item)
+              elif isinstance(value, list):
+                  pending.extend(value)
+          for email in sorted(emails):
+              escaped = email.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print("::add-mask::" + escaped)
+          PY
       - uses: actions/checkout@v4
 
       - name: 隔离每个 Python 测试任务的运行状态
@@ -208,6 +258,31 @@ jobs:
         ${{ ((vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME) != ''
              && secrets.DOCKERHUB_TOKEN != '') && 'yes' || '' }}
     steps:
+      - name: Mask private event emails
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          emails = set()
+          pending = [event]
+          while pending:
+              value = pending.pop()
+              if isinstance(value, dict):
+                  for key, item in value.items():
+                      if key.lower() == "email" and isinstance(item, str) and item.strip():
+                          emails.add(item)
+                      elif isinstance(item, (dict, list)):
+                          pending.append(item)
+              elif isinstance(value, list):
+                  pending.extend(value)
+          for email in sorted(emails):
+              escaped = email.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print("::add-mask::" + escaped)
+          PY
       - uses: actions/checkout@v4
 
       # QEMU 让 x86 runner 能构建 arm64 镜像
